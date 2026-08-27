@@ -75,6 +75,11 @@ ffprobe e falha fechado quando uma operação temporal não declara source, exce
 a mídia ou sua duração não pode ser determinada. Ele não executa nem modifica
 artifacts.
 
+A validação posterior de segmentos compara o artifact publicado com o intervalo
+solicitado, incluindo path, tamanho, presença de streams e duração dentro de uma
+tolerância explícita. Assim, desvios causados por alinhamento de keyframes não
+são promovidos silenciosamente a sucesso técnico.
+
 ## Persistência e segurança
 
 Inputs em `inputs/` e `assets/` são referências imutáveis. Estado reproduzível de

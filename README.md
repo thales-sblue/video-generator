@@ -75,6 +75,12 @@ Por usar stream copy, o início efetivo pode ser ajustado ao keyframe anterior;
 essa limitação deve ser considerada por futuros renderers. A operação ainda não
 é exposta como workflow ou render final e não implica revisão visual/auditiva.
 
+`validate_segment_artifact` executa a verificação técnica posterior com ffprobe.
+Ela recusa outputs indisponíveis, alterados, sem streams, sem duração ou cuja
+duração diverge do intervalo solicitado além da tolerância explícita. Essa etapa
+torna detectável a imprecisão de keyframes do stream copy; aprovação editorial
+continua sendo uma avaliação humana separada.
+
 ## Testes
 
 ```powershell
