@@ -68,6 +68,11 @@ ferramentas, probes dos outputs e, quando possível, inspeção técnica do rend
 Revisão editorial visual/auditiva permanece explícita e não pode ser inferida
 apenas de testes automatizados.
 
+O preflight disponível carrega um `EditPlan`, inspeciona seus sources com
+ffprobe e falha fechado quando uma operação temporal não declara source, excede
+a mídia ou sua duração não pode ser determinada. Ele não executa nem modifica
+artifacts.
+
 ## Persistência e segurança
 
 Inputs em `inputs/` e `assets/` são referências imutáveis. Estado reproduzível de
@@ -86,11 +91,12 @@ A interface deve evoluir gradualmente para:
 ```text
 video-generator doctor
 video-generator inspect <source> [--json]
+video-generator preflight <edit-plan.json> [--json]
 video-generator transcribe
 video-generator plan
 video-generator render
 video-generator validate
 ```
 
-`doctor` e `inspect` existem agora. Novos comandos entram quando houver uma
-operação reutilizável e testada por trás deles.
+`doctor`, `inspect` e `preflight` existem agora. Novos comandos entram quando
+houver uma operação reutilizável e testada por trás deles.

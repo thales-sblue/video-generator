@@ -48,6 +48,8 @@ python -m video_generator doctor
 python -m video_generator doctor --json
 python -m video_generator inspect inputs\clip.mp4
 python -m video_generator inspect inputs\clip.mp4 --json
+python -m video_generator preflight projects\example\edit-plan.json
+python -m video_generator preflight projects\example\edit-plan.json --json
 ```
 
 O diagnóstico apenas inspeciona o computador. Ele não instala ferramentas, não
@@ -57,6 +59,11 @@ O comando `inspect` exige `ffprobe` no `PATH`, valida que o source seja um
 arquivo local e retorna formato, duração, bit rate e streams em uma representação
 normalizada. A operação é somente leitura e falha claramente se a dependência
 opcional estiver ausente ou a mídia não puder ser analisada.
+
+O comando `preflight` carrega um `EditPlan` persistido, inspeciona todos os
+sources declarados e recusa operações temporais sem source ou fora da duração
+real. O processo é somente leitura: não cria outputs e retorna código `1` quando
+o plano é válido como contrato, mas não está tecnicamente pronto para execução.
 
 ## Testes
 
@@ -75,6 +82,7 @@ docs/                           visão, arquitetura e linguagem audiovisual
 schemas/                        contratos JSON públicos v1
 src/video_generator/domain/     modelos e invariantes puros
 src/video_generator/adapters/   integrações locais, incluindo ffprobe
+src/video_generator/validation/ preflight técnico de planos persistidos
 src/video_generator/config.py   leitura de configuração local
 src/video_generator/doctor.py   diagnóstico somente leitura
 tests/                          testes automatizados

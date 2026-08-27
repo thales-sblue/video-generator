@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from video_generator.adapters import MediaProbe, ProbeError, probe_media
 from video_generator.config import ConfigurationError, load_config
 from video_generator.doctor import format_report, run_doctor
+from video_generator.domain import ContractError, EditPlan
+from video_generator.validation import PreflightReport, preflight_edit_plan
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,6 +27,9 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = subparsers.add_parser("inspect", help="inspect one local media file with ffprobe")
     inspect.add_argument("source", help="path to an immutable local media source")
     inspect.add_argument("--json", action="store_true", help="print a machine-readable report")
+    preflight = subparsers.add_parser("preflight", help="validate a persisted edit plan against its media")
+    preflight.add_argument("plan", help="path to an EditPlan JSON file")
+    preflight.add_argument("--json", action="store_true", help="print a machine-readable report")
     return parser
 
 
@@ -47,6 +54,30 @@ def _format_probe(probe: MediaProbe) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _format_preflight(report: PreflightReport) -> str:
+    lines = [
+        f"Plan: {report.plan_id}",
+        f"Preflight: {'valid' if report.valid else 'INVALID'}",
+        f"Sources inspected: {len(report.sources)}",
+    ]
+    for issue in report.issues:
+        context = [item for item in (issue.source, issue.operation_id) if item]
+        suffix = f" ({', '.join(context)})" if context else ""
+        lines.append(f"  [{issue.code}] {issue.message}{suffix}")
+    return "\n".join(lines) + "\n"
+
+
+def _load_edit_plan(path: str) -> EditPlan:
+    plan_path = Path(path).expanduser().resolve()
+    try:
+        payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ContractError(f"cannot read edit plan: {plan_path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ContractError(f"edit plan is not valid JSON: {plan_path}") from exc
+    return EditPlan.from_dict(payload)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "doctor":
@@ -66,4 +97,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(probe.to_json() if args.json else _format_probe(probe), end="")
         return 0
+    if args.command == "preflight":
+        try:
+            plan = _load_edit_plan(args.plan)
+            report = preflight_edit_plan(plan)
+        except ContractError as exc:
+            print(f"Plan error: {exc}", file=sys.stderr)
+            return 2
+        print(report.to_json() if args.json else _format_preflight(report), end="")
+        return 0 if report.valid else 1
     return 2
