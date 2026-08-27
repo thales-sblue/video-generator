@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+config/local.toml
+*.key
+*.pem
+
+# Immutable source media and generated artifacts
+inputs/*
+!inputs/.gitkeep
+assets/*
+!assets/.gitkeep
+projects/*
+!projects/.gitkeep
+output/*
+!output/.gitkeep
+
+# Common media, models and render intermediates anywhere else
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.mp3
+*.wav
+*.flac
+*.aac
+*.m4a
+*.srt
+*.vtt
+*.ckpt
+*.safetensors
+*.onnx
+*.pt
+*.pth
+*.bin
+*.part
+*.tmp

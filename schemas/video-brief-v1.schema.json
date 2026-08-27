@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/thales-sblue/video-generator/schemas/video-brief-v1.schema.json",
+  "title": "VideoBrief v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "brief_id", "request_id", "objective", "platform", "workflow"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "brief_id": {"type": "string", "minLength": 1},
+    "request_id": {"type": "string", "minLength": 1},
+    "objective": {"type": "string", "minLength": 1},
+    "platform": {"type": "string", "minLength": 1},
+    "workflow": {"type": "string", "minLength": 1},
+    "audience": {"type": ["string", "null"], "minLength": 1},
+    "aspect_ratio": {"type": ["string", "null"], "minLength": 1},
+    "target_duration_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
+    "editorial_notes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/thales-sblue/video-generator/schemas/video-request-v1.schema.json",
+  "title": "VideoRequest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_id", "intent", "sources"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "request_id": {"type": "string", "minLength": 1},
+    "intent": {"type": "string", "minLength": 1},
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "platform": {"type": ["string", "null"], "minLength": 1},
+    "workflow": {"type": ["string", "null"], "minLength": 1}
+  }
+}

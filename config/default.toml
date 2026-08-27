@@ -1,0 +1,10 @@
+[processing]
+local_only = true
+allow_external_services = false
+preserve_sources = true
+
+[paths]
+inputs = "inputs"
+assets = "assets"
+projects = "projects"
+output = "output"
