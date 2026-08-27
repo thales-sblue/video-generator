@@ -47,7 +47,9 @@ natural e não escondem decisões editoriais.
 
 ### Adapters e renderers
 
-Adapters encapsularão subprocessos locais com argumentos estruturados:
+Adapters encapsulam subprocessos locais com argumentos estruturados. O adapter
+de ffprobe já oferece inspeção técnica somente leitura e saída normalizada; os
+demais entram conforme casos funcionais exigirem:
 
 - ffprobe para inspeção técnica;
 - FFmpeg para cortes, concatenação, áudio, codecs e transformações;
@@ -83,12 +85,12 @@ A interface deve evoluir gradualmente para:
 
 ```text
 video-generator doctor
-video-generator inspect
+video-generator inspect <source> [--json]
 video-generator transcribe
 video-generator plan
 video-generator render
 video-generator validate
 ```
 
-Somente `doctor` existe agora. Novos comandos entram quando houver uma operação
-reutilizável e testada por trás deles.
+`doctor` e `inspect` existem agora. Novos comandos entram quando houver uma
+operação reutilizável e testada por trás deles.

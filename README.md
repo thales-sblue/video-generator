@@ -4,12 +4,12 @@ Fundação de um agente local de produção audiovisual controlado pelo Codex. O
 projeto transforma intenção e referências de mídia em contratos persistentes:
 
 ```text
-VideoRequest -> VideoBrief -> EditPlan -> execução local (futura)
+VideoRequest -> VideoBrief -> EditPlan -> execução local incremental
 ```
 
-Este primeiro incremento não edita nem renderiza vídeo. Ele estabelece o
-domínio, os schemas, a política local-only e um diagnóstico do ambiente para que
-as capacidades audiovisuais sejam adicionadas incrementalmente e com testes.
+O projeto já inspeciona mídia local com `ffprobe`, sem alterar o source. Edição e
+renderização ainda não estão implementadas. O domínio, os schemas, a política
+local-only e o diagnóstico do ambiente sustentam a evolução incremental.
 
 ## Princípios
 
@@ -46,10 +46,17 @@ Também é possível executar sem instalar o pacote:
 $env:PYTHONPATH = "src"
 python -m video_generator doctor
 python -m video_generator doctor --json
+python -m video_generator inspect inputs\clip.mp4
+python -m video_generator inspect inputs\clip.mp4 --json
 ```
 
 O diagnóstico apenas inspeciona o computador. Ele não instala ferramentas, não
 altera configurações globais e não acessa serviços remotos.
+
+O comando `inspect` exige `ffprobe` no `PATH`, valida que o source seja um
+arquivo local e retorna formato, duração, bit rate e streams em uma representação
+normalizada. A operação é somente leitura e falha claramente se a dependência
+opcional estiver ausente ou a mídia não puder ser analisada.
 
 ## Testes
 
@@ -67,6 +74,7 @@ config/                         configuração segura padrão
 docs/                           visão, arquitetura e linguagem audiovisual
 schemas/                        contratos JSON públicos v1
 src/video_generator/domain/     modelos e invariantes puros
+src/video_generator/adapters/   integrações locais, incluindo ffprobe
 src/video_generator/config.py   leitura de configuração local
 src/video_generator/doctor.py   diagnóstico somente leitura
 tests/                          testes automatizados
