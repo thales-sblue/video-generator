@@ -3,15 +3,32 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
+build/
+dist/
 .venv/
 venv/
+
+# Node and renderer caches
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+coverage/
+*.tsbuildinfo
+.hyperframes/
+render-cache/
+renders/
+proxies/
 
 # Editors and OS
 .idea/
 .vscode/
 *.swp
+*.log
 .DS_Store
 Thumbs.db
 
@@ -22,6 +39,8 @@ Thumbs.db
 config/local.toml
 *.key
 *.pem
+*.p12
+*.pfx
 
 # Immutable source media and generated artifacts
 inputs/*
@@ -34,23 +53,39 @@ output/*
 !output/.gitkeep
 
 # Common media, models and render intermediates anywhere else
-*.mp4
-*.mov
-*.mkv
-*.avi
-*.webm
-*.mp3
-*.wav
-*.flac
-*.aac
-*.m4a
-*.srt
-*.vtt
-*.ckpt
-*.safetensors
-*.onnx
-*.pt
-*.pth
-*.bin
+*.[mM][pP]4
+*.[mM][oO][vV]
+*.[mM][kK][vV]
+*.[aA][vV][iI]
+*.[wW][eE][bB][mM]
+*.[mM][xX][fF]
+*.[mM][tT][sS]
+*.[mM]2[tT][sS]
+*.[mM][pP]3
+*.[wW][aA][vV]
+*.[fF][lL][aA][cC]
+*.[aA][aA][cC]
+*.[mM]4[aA]
+*.[aA][iI][fF][fF]
+*.[oO][gG][gG]
+*.[oO][pP][uU][sS]
+*.[pP][nN][gG]
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[gG][iI][fF]
+*.[wW][eE][bB][pP]
+*.[bB][mM][pP]
+*.[tT][iI][fF]
+*.[tT][iI][fF][fF]
+*.[hH][eE][iI][cC]
+*.[sS][rR][tT]
+*.[vV][tT][tT]
+*.[aA][sS][sS]
+*.[cC][kK][pP][tT]
+*.[sS][aA][fF][eE][tT][eE][nN][sS][oO][rR][sS]
+*.[oO][nN][nN][xX]
+*.[pP][tT]
+*.[pP][tT][hH]
+*.[bB][iI][nN]
 *.part
 *.tmp
