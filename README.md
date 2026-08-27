@@ -7,9 +7,11 @@ projeto transforma intenção e referências de mídia em contratos persistentes
 VideoRequest -> VideoBrief -> EditPlan -> execução local incremental
 ```
 
-O projeto já inspeciona mídia local com `ffprobe`, sem alterar o source. Edição e
-renderização ainda não estão implementadas. O domínio, os schemas, a política
-local-only e o diagnóstico do ambiente sustentam a evolução incremental.
+O projeto já inspeciona mídia local com `ffprobe` e possui uma operação interna
+de extração de segmentos por stream copy com FFmpeg, sempre criando um novo
+artifact. Workflows e renderização final ainda não estão implementados. O
+domínio, os schemas, a política local-only e o diagnóstico do ambiente sustentam
+a evolução incremental.
 
 ## Princípios
 
@@ -24,8 +26,9 @@ local-only e o diagnóstico do ambiente sustentam a evolução incremental.
 
 - Python 3.11 ou superior;
 - Git para desenvolvimento;
-- Node, FFmpeg, ffprobe e HyperFrames são detectados pelo `doctor`, mas ainda são
-  opcionais neste incremento.
+- Node, FFmpeg, ffprobe e HyperFrames são detectados pelo `doctor`; FFmpeg é
+  necessário apenas para extração de segmentos e ffprobe apenas para inspeção e
+  preflight.
 
 Nenhuma dependência Python de runtime é necessária.
 
@@ -64,6 +67,13 @@ O comando `preflight` carrega um `EditPlan` persistido, inspeciona todos os
 sources declarados e recusa operações temporais sem source ou fora da duração
 real. O processo é somente leitura: não cria outputs e retorna código `1` quando
 o plano é válido como contrato, mas não está tecnicamente pronto para execução.
+
+O adapter `extract_segment` é a primeira operação audiovisual de baixo nível.
+Ele copia streams de um intervalo temporal para um novo arquivo, recusa outputs
+existentes ou iguais ao source e remove artifacts parciais quando FFmpeg falha.
+Por usar stream copy, o início efetivo pode ser ajustado ao keyframe anterior;
+essa limitação deve ser considerada por futuros renderers. A operação ainda não
+é exposta como workflow ou render final e não implica revisão visual/auditiva.
 
 ## Testes
 

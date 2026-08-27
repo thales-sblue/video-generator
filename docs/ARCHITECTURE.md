@@ -48,8 +48,10 @@ natural e não escondem decisões editoriais.
 ### Adapters e renderers
 
 Adapters encapsulam subprocessos locais com argumentos estruturados. O adapter
-de ffprobe já oferece inspeção técnica somente leitura e saída normalizada; os
-demais entram conforme casos funcionais exigirem:
+de ffprobe oferece inspeção técnica somente leitura e saída normalizada. O
+adapter de FFmpeg oferece extração temporal por stream copy para um arquivo novo,
+com publicação sem overwrite e limpeza de artifacts parciais; os demais entram
+conforme casos funcionais exigirem:
 
 - ffprobe para inspeção técnica;
 - FFmpeg para cortes, concatenação, áudio, codecs e transformações;
@@ -83,6 +85,10 @@ apenas arquivos sentinela.
 Antes de execução, o sistema deverá resolver paths e recusar output igual a
 qualquer input. Futuro `RenderManifest` registrará tool versions, inputs,
 checksums, plano aplicado, outputs e resultados de validação.
+
+A extração de segmento existente é uma capacidade interna de baixo nível, não a
+execução completa de um `EditPlan`. A integração com renderer, validação do
+artifact e `RenderManifest` permanece necessária antes de expor um render final.
 
 ## Direção da CLI
 
