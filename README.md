@@ -53,6 +53,7 @@ python -m video_generator inspect inputs\clip.mp4
 python -m video_generator inspect inputs\clip.mp4 --json
 python -m video_generator preflight projects\example\edit-plan.json
 python -m video_generator preflight projects\example\edit-plan.json --json
+python -m video_generator validate-segment output\segment.mp4 --source inputs\clip.mp4 --start-seconds 0 --end-seconds 5 --file-size-bytes 123456 --json
 ```
 
 O diagnóstico apenas inspeciona o computador. Ele não instala ferramentas, não
@@ -80,6 +81,12 @@ Ela recusa outputs indisponíveis, alterados, sem streams, sem duração ou cuja
 duração diverge do intervalo solicitado além da tolerância explícita. Essa etapa
 torna detectável a imprecisão de keyframes do stream copy; aprovação editorial
 continua sendo uma avaliação humana separada.
+
+O mesmo comportamento está disponível em `validate-segment`. Informe o caminho
+do artifact e os valores registrados por `extract_segment` (`source`, intervalo e
+`file-size-bytes`); o comando não modifica mídia e retorna código `1` para um
+artifact tecnicamente inválido, ou `2` para argumentos inválidos. `ffprobe` é
+necessário para a inspeção técnica.
 
 ## Testes
 

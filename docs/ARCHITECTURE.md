@@ -80,6 +80,11 @@ solicitado, incluindo path, tamanho, presença de streams e duração dentro de 
 tolerância explícita. Assim, desvios causados por alinhamento de keyframes não
 são promovidos silenciosamente a sucesso técnico.
 
+Essa validação também é uma fronteira de CLI (`validate-segment`): ela recebe os
+metadados imutáveis registrados logo após a extração, executa apenas ffprobe no
+artifact publicado e retorna um relatório técnico. Não publica arquivos nem
+substitui aprovação editorial humana.
+
 ## Persistência e segurança
 
 Inputs em `inputs/` e `assets/` são referências imutáveis. Estado reproduzível de

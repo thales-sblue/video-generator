@@ -1,9 +1,13 @@
+import contextlib
+import io
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from video_generator.adapters import MediaProbe, ProbeError, SegmentArtifact, StreamProbe
 from video_generator.validation import validate_segment_artifact
+from video_generator.cli import main
 
 
 def artifact() -> SegmentArtifact:
@@ -77,6 +81,73 @@ class SegmentValidationTests(unittest.TestCase):
             validate_segment_artifact(artifact(), duration_tolerance_seconds=float("nan"), probe=probe)
 
         self.assertFalse(called)
+
+    def test_cli_reports_normalized_validation_result(self):
+        report = validate_segment_artifact(artifact(), probe=lambda path: media_probe(duration=1))
+        stdout = io.StringIO()
+        with patch("video_generator.cli.validate_segment_artifact", return_value=report) as validate, contextlib.redirect_stdout(stdout):
+            exit_code = main(
+                [
+                    "validate-segment",
+                    artifact().output_path,
+                    "--source",
+                    artifact().source_path,
+                    "--start-seconds",
+                    "0.5",
+                    "--end-seconds",
+                    "1.5",
+                    "--file-size-bytes",
+                    "100",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["valid"])
+        self.assertEqual(validate.call_args.kwargs["duration_tolerance_seconds"], 0.1)
+
+    def test_cli_rejects_invalid_time_range(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            exit_code = main(
+                [
+                    "validate-segment",
+                    "output/segment.mp4",
+                    "--source",
+                    "inputs/source.mp4",
+                    "--start-seconds",
+                    "2",
+                    "--end-seconds",
+                    "1",
+                    "--file-size-bytes",
+                    "100",
+                ]
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("end_seconds must be greater", stderr.getvalue())
+
+    def test_cli_rejects_source_as_artifact_output(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            exit_code = main(
+                [
+                    "validate-segment",
+                    "inputs/source.mp4",
+                    "--source",
+                    "inputs/source.mp4",
+                    "--start-seconds",
+                    "0",
+                    "--end-seconds",
+                    "1",
+                    "--file-size-bytes",
+                    "100",
+                ]
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("must not be the source", stderr.getvalue())
 
 
 if __name__ == "__main__":

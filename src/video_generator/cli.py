@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from video_generator.adapters import MediaProbe, ProbeError, probe_media
+from video_generator.adapters import MediaProbe, ProbeError, SegmentArtifact, probe_media
 from video_generator.config import ConfigurationError, load_config
 from video_generator.doctor import format_report, run_doctor
 from video_generator.domain import ContractError, EditPlan
-from video_generator.validation import PreflightReport, preflight_edit_plan
+from video_generator.validation import (
+    PreflightReport,
+    SegmentValidationReport,
+    preflight_edit_plan,
+    validate_segment_artifact,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,6 +37,27 @@ def build_parser() -> argparse.ArgumentParser:
     preflight = subparsers.add_parser("preflight", help="validate a persisted edit plan against its media")
     preflight.add_argument("plan", help="path to an EditPlan JSON file")
     preflight.add_argument("--json", action="store_true", help="print a machine-readable report")
+    validate_segment = subparsers.add_parser(
+        "validate-segment",
+        help="verify one extracted segment artifact with ffprobe",
+    )
+    validate_segment.add_argument("output", help="path to the extracted segment artifact")
+    validate_segment.add_argument("--source", required=True, help="immutable source path used for extraction")
+    validate_segment.add_argument("--start-seconds", type=float, required=True, help="requested segment start")
+    validate_segment.add_argument("--end-seconds", type=float, required=True, help="requested segment end")
+    validate_segment.add_argument(
+        "--file-size-bytes",
+        type=int,
+        required=True,
+        help="artifact size recorded immediately after extraction",
+    )
+    validate_segment.add_argument(
+        "--duration-tolerance-seconds",
+        type=float,
+        default=0.1,
+        help="maximum accepted duration difference (default: 0.1)",
+    )
+    validate_segment.add_argument("--json", action="store_true", help="print a machine-readable report")
     return parser
 
 
@@ -67,6 +95,21 @@ def _format_preflight(report: PreflightReport) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _format_segment_validation(report: SegmentValidationReport) -> str:
+    lines = [
+        f"Artifact: {report.artifact.output_path}",
+        f"Segment validation: {'valid' if report.valid else 'INVALID'}",
+        f"Expected duration: {report.expected_duration_seconds} seconds",
+        (
+            "Actual duration: "
+            f"{report.actual_duration_seconds if report.actual_duration_seconds is not None else 'unknown'} seconds"
+        ),
+    ]
+    for issue in report.issues:
+        lines.append(f"  [{issue.code}] {issue.message}")
+    return "\n".join(lines) + "\n"
+
+
 def _load_edit_plan(path: str) -> EditPlan:
     plan_path = Path(path).expanduser().resolve()
     try:
@@ -76,6 +119,27 @@ def _load_edit_plan(path: str) -> EditPlan:
     except json.JSONDecodeError as exc:
         raise ContractError(f"edit plan is not valid JSON: {plan_path}") from exc
     return EditPlan.from_dict(payload)
+
+
+def _segment_artifact_from_args(args: argparse.Namespace) -> SegmentArtifact:
+    numeric_values = (args.start_seconds, args.end_seconds)
+    if any(not math.isfinite(value) or value < 0 for value in numeric_values):
+        raise ValueError("start_seconds and end_seconds must be finite non-negative numbers")
+    if args.end_seconds <= args.start_seconds:
+        raise ValueError("end_seconds must be greater than start_seconds")
+    if args.file_size_bytes < 0:
+        raise ValueError("file_size_bytes must be non-negative")
+    source_path = str(Path(args.source).expanduser().resolve())
+    output_path = str(Path(args.output).expanduser().resolve())
+    if os.path.normcase(source_path) == os.path.normcase(output_path):
+        raise ValueError("output must not be the source path")
+    return SegmentArtifact(
+        source_path=source_path,
+        output_path=output_path,
+        start_seconds=args.start_seconds,
+        end_seconds=args.end_seconds,
+        file_size_bytes=args.file_size_bytes,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -105,5 +169,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Plan error: {exc}", file=sys.stderr)
             return 2
         print(report.to_json() if args.json else _format_preflight(report), end="")
+        return 0 if report.valid else 1
+    if args.command == "validate-segment":
+        try:
+            artifact = _segment_artifact_from_args(args)
+            report = validate_segment_artifact(
+                artifact,
+                duration_tolerance_seconds=args.duration_tolerance_seconds,
+            )
+        except (TypeError, ValueError) as exc:
+            print(f"Segment validation error: {exc}", file=sys.stderr)
+            return 2
+        print(report.to_json() if args.json else _format_segment_validation(report), end="")
         return 0 if report.valid else 1
     return 2
