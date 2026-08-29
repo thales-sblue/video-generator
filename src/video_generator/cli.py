@@ -70,12 +70,18 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--json", action="store_true", help="print a machine-readable report")
     extract = subparsers.add_parser(
         "extract-segment",
-        help="copy one time range from local media into a new artifact",
+        help="extract one time range from local media into a new artifact",
     )
     extract.add_argument("source", help="path to an immutable local media source")
     extract.add_argument("output", help="new media artifact path; existing files are refused")
     extract.add_argument("--start-seconds", type=float, required=True, help="segment start in seconds")
     extract.add_argument("--end-seconds", type=float, required=True, help="segment end in seconds")
+    extract.add_argument(
+        "--mode",
+        choices=("copy", "precise"),
+        default="copy",
+        help="stream copy or precise H.264/AAC reencode (default: copy)",
+    )
     extract.add_argument(
         "--timeout-seconds",
         type=float,
@@ -209,6 +215,7 @@ def _format_segment_artifact(artifact: SegmentArtifact) -> str:
             f"Source: {artifact.source_path}",
             f"Artifact: {artifact.output_path}",
             f"Range: {artifact.start_seconds} to {artifact.end_seconds} seconds",
+            f"Mode: {artifact.mode}",
             f"Size: {artifact.file_size_bytes} bytes",
         ]
     ) + "\n"
@@ -373,6 +380,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 start_seconds=args.start_seconds,
                 end_seconds=args.end_seconds,
                 timeout_seconds=args.timeout_seconds,
+                mode=args.mode,
             )
         except FFmpegError as exc:
             print(f"Extraction error: {exc}", file=sys.stderr)

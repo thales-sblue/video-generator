@@ -70,8 +70,16 @@ def _supported_operation(plan: EditPlan) -> EditOperation:
         raise SegmentWorkflowError("extract_segment must use the plan's only source")
     if operation.start_seconds is None or operation.end_seconds is None:
         raise SegmentWorkflowError("extract_segment requires start_seconds and end_seconds")
-    if operation.parameters:
-        raise SegmentWorkflowError("extract_segment does not accept parameters in schema v1")
+    parameters = dict(operation.parameters)
+    if set(parameters) - {"mode"}:
+        raise SegmentWorkflowError("extract_segment accepts only the mode parameter")
+    mode = parameters.get("mode", "copy")
+    if not isinstance(mode, str) or mode not in {"copy", "precise"}:
+        raise SegmentWorkflowError("extract_segment mode must be 'copy' or 'precise'")
+    if parameters.get("mode") == "copy":
+        raise SegmentWorkflowError("copy mode must be omitted for canonical plans")
+    if mode == "precise" and Path(plan.output_path).suffix.lower() != ".mp4":
+        raise SegmentWorkflowError("extract_segment precise mode requires an .mp4 output_path")
     return operation
 
 
@@ -144,6 +152,7 @@ def run_segment_workflow(
         before_extract(plan)
 
     create_artifact = extract or extract_segment
+    mode = operation.parameters.get("mode", "copy")
     try:
         artifact = create_artifact(
             operation.source,
@@ -151,12 +160,15 @@ def run_segment_workflow(
             start_seconds=operation.start_seconds,
             end_seconds=operation.end_seconds,
             timeout_seconds=timeout,
+            mode=mode,
         )
     except FFmpegError as exc:
         raise SegmentWorkflowError(f"segment extraction failed: {exc}") from exc
     if not isinstance(artifact, SegmentArtifact):
         raise TypeError("extract must return a SegmentArtifact")
     _verify_artifact(artifact, plan, operation)
+    if artifact.mode != mode:
+        raise SegmentWorkflowError("extract returned an artifact with an unexpected mode")
 
     inspect_artifact = validate or validate_segment_artifact
     validation = inspect_artifact(

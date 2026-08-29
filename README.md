@@ -65,6 +65,7 @@ python -m video_generator inspect inputs\clip.mp4 --json
 python -m video_generator preflight projects\example\edit-plan.json
 python -m video_generator preflight projects\example\edit-plan.json --json
 python -m video_generator extract-segment inputs\clip.mp4 output\segment.mp4 --start-seconds 0 --end-seconds 5 --json
+python -m video_generator extract-segment inputs\clip.mp4 output\precise.mp4 --start-seconds 0.25 --end-seconds 5.25 --mode precise --json
 python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 python -m video_generator validate-segment output\segment.mp4 --source inputs\clip.mp4 --start-seconds 0 --end-seconds 5 --file-size-bytes 123456 --json
 python -m video_generator validate-manifest projects\example\render-manifest.json --plan projects\example\edit-plan.json --json
@@ -85,10 +86,13 @@ real. O processo é somente leitura: não cria outputs e retorna código `1` qua
 o plano é válido como contrato, mas não está tecnicamente pronto para execução.
 
 O adapter `extract_segment` é a primeira operação audiovisual de baixo nível.
-Ele copia streams de um intervalo temporal para um novo arquivo, recusa outputs
-existentes ou iguais ao source e remove artifacts parciais quando FFmpeg falha.
-Por usar stream copy, o início efetivo pode ser ajustado ao keyframe anterior;
-essa limitação deve ser considerada por futuros renderers. O comando
+Por padrão, ele copia streams de um intervalo temporal para um novo arquivo;
+com `mode=precise`, decodifica o intervalo e produz MP4 com H.264 por
+`libopenh264` e áudio AAC. O modo preciso posiciona o seek após a leitura do
+input, evitando o ajuste do início ao keyframe anterior, mas custa mais tempo e
+recodifica apenas o primeiro stream de vídeo e de áudio. Ambos os modos recusam
+outputs existentes ou iguais ao source e removem artifacts parciais quando
+FFmpeg falha. O comando
 `extract-segment` expõe essa capacidade e retorna metadata do artifact, incluindo
 paths absolutos, intervalo e tamanho do arquivo, em texto ou JSON. A operação
 ainda não é um workflow nem um render final e não implica revisão
@@ -126,7 +130,9 @@ inválidos. `ffprobe` é necessário para a inspeção técnica.
 
 `execute-segment-plan` é o primeiro workflow operacional. Ele aceita somente um
 `EditPlan` com um source e uma operação `extract_segment`, com `start_seconds` e
-`end_seconds`, sem parâmetros adicionais. O workflow executa preflight, extração
+`end_seconds`. `parameters` vazio usa stream copy; `{"mode": "precise"}`
+seleciona o reencode preciso e exige output `.mp4`. Outros parâmetros são
+recusados. O workflow executa preflight, extração
 e validação nessa ordem; qualquer preflight inválido impede a criação do output.
 Retorna código `0` quando o artifact passa na validação técnica, `1` quando o
 artifact foi criado mas não passou e `2` quando o plano não pode ser executado.

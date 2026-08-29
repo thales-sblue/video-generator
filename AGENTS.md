@@ -134,6 +134,10 @@ Ao receber apenas uma instrução curta para continuar:
 13. crie um commit coeso;
 14. confirme `origin`, branch e ausência de mídia/secrets;
 15. envie para `origin/main` somente quando o estado estiver válido.
+16. ao encerrar, informe uma estimativa percentual de quanto o projeto avançou
+    naquele prompt e de quanto ainda falta para atingir a visão do produto,
+    deixando claro que os valores são aproximações baseadas nas capacidades
+    implementadas e nos gaps conhecidos.
 
 Não implemente vários workflows de uma vez e não prolongue infraestrutura sem
 ganho audiovisual concreto.

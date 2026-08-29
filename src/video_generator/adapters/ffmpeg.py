@@ -24,6 +24,7 @@ class SegmentArtifact:
     start_seconds: float
     end_seconds: float
     file_size_bytes: int
+    mode: str = "copy"
 
 
 def _time(value: object, name: str) -> float:
@@ -49,14 +50,17 @@ def extract_segment(
     start_seconds: float,
     end_seconds: float,
     timeout_seconds: float = 300,
+    mode: str = "copy",
 ) -> SegmentArtifact:
-    """Copy one time range into a new artifact without modifying the source."""
+    """Extract one time range into a new artifact without modifying the source."""
 
     source = Path(source_path).expanduser().resolve()
     output = Path(output_path).expanduser().resolve()
     start = _time(start_seconds, "start_seconds")
     end = _time(end_seconds, "end_seconds")
     timeout = _time(timeout_seconds, "timeout_seconds")
+    if not isinstance(mode, str) or mode not in {"copy", "precise"}:
+        raise FFmpegError("mode must be 'copy' or 'precise'")
     if end <= start:
         raise FFmpegError("end_seconds must be greater than start_seconds")
     if timeout == 0:
@@ -71,6 +75,8 @@ def extract_segment(
         raise FFmpegError(f"output already exists: {output}")
     if not output.suffix:
         raise FFmpegError("output_path must include a media file extension")
+    if mode == "precise" and output.suffix.lower() != ".mp4":
+        raise FFmpegError("precise mode requires an .mp4 output_path")
 
     try:
         executable = resolve_media_tool("ffmpeg", path_lookup=shutil.which)
@@ -97,18 +103,50 @@ def extract_segment(
         "error",
         "-nostdin",
         "-y",
-        "-ss",
-        format(start, ".15g"),
-        "-i",
-        str(source),
-        "-t",
-        format(duration, ".15g"),
-        "-map",
-        "0",
-        "-c",
-        "copy",
-        str(temporary),
     ]
+    if mode == "copy":
+        command.extend(
+            [
+                "-ss",
+                format(start, ".15g"),
+                "-i",
+                str(source),
+                "-t",
+                format(duration, ".15g"),
+                "-map",
+                "0",
+                "-c",
+                "copy",
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "-i",
+                str(source),
+                "-ss",
+                format(start, ".15g"),
+                "-t",
+                format(duration, ".15g"),
+                "-map",
+                "0:v:0?",
+                "-map",
+                "0:a:0?",
+                "-sn",
+                "-dn",
+                "-c:v",
+                "libopenh264",
+                "-b:v",
+                "5M",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-movflags",
+                "+faststart",
+            ]
+        )
+    command.append(str(temporary))
     try:
         completed = subprocess.run(
             command,
@@ -143,4 +181,4 @@ def extract_segment(
         size = output.stat().st_size
     except OSError as exc:
         raise FFmpegError(f"could not inspect published output: {output}") from exc
-    return SegmentArtifact(str(source), str(output), start, end, size)
+    return SegmentArtifact(str(source), str(output), start, end, size, mode)

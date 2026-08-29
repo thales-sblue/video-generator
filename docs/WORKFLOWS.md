@@ -14,9 +14,13 @@ EditPlan persistido -> preflight -> FFmpeg stream copy -> ffprobe -> RenderManif
 ```
 
 O plano deve declarar exatamente um source e uma operação `extract_segment` com
-início e fim. `parameters` deve permanecer vazio na schema v1 e `output_path`
-deve apontar para um arquivo novo. Planos com múltiplas operações, sources extras
-ou kinds desconhecidos são recusados antes de qualquer escrita.
+início e fim. `parameters` vazio preserva os streams por cópia rápida. Para um
+recorte temporal preciso, `parameters` pode ser `{"mode": "precise"}` e o
+`output_path` deve terminar em `.mp4`; esse modo reencoda o primeiro vídeo em
+H.264 (`libopenh264`) e o primeiro áudio em AAC. Declarar `mode=copy` é recusado
+para manter a representação canônica como objeto vazio. Planos com outros
+parâmetros, múltiplas operações, sources extras ou kinds desconhecidos são
+recusados antes de qualquer escrita.
 
 O resultado separa execução de aprovação: um artifact que falha na validação
 técnica permanece disponível para diagnóstico, mas o relatório é inválido. O

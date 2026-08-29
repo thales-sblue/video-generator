@@ -44,6 +44,7 @@ class SegmentExtractionCliTests(unittest.TestCase):
                 "start_seconds": 1.25,
                 "end_seconds": 4.5,
                 "file_size_bytes": 12345,
+                "mode": "copy",
             },
         )
         extract.assert_called_once_with(
@@ -52,7 +53,33 @@ class SegmentExtractionCliTests(unittest.TestCase):
             start_seconds=1.25,
             end_seconds=4.5,
             timeout_seconds=30,
+            mode="copy",
         )
+
+    def test_forwards_precise_mode(self):
+        artifact = SegmentArtifact("source.mov", "segment.mp4", 0, 1, 100, "precise")
+        stdout = io.StringIO()
+        with patch(
+            "video_generator.cli.extract_segment",
+            return_value=artifact,
+        ) as extract, contextlib.redirect_stdout(stdout):
+            exit_code = main(
+                [
+                    "extract-segment",
+                    "source.mov",
+                    "segment.mp4",
+                    "--start-seconds",
+                    "0",
+                    "--end-seconds",
+                    "1",
+                    "--mode",
+                    "precise",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(extract.call_args.kwargs["mode"], "precise")
 
     def test_reports_adapter_failure_without_claiming_an_artifact(self):
         stdout = io.StringIO()

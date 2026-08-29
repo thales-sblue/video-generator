@@ -98,6 +98,7 @@ class SegmentWorkflowTests(unittest.TestCase):
             self.assertEqual(kwargs["start_seconds"], 2)
             self.assertEqual(kwargs["end_seconds"], 5)
             self.assertEqual(kwargs["timeout_seconds"], 30)
+            self.assertEqual(kwargs["mode"], "copy")
             return artifact
 
         def validate(*args, **kwargs):
@@ -136,15 +137,63 @@ class SegmentWorkflowTests(unittest.TestCase):
                 preflight=preflight,
                 extract=extract,
             )
-        with self.assertRaisesRegex(SegmentWorkflowError, "does not accept parameters"):
+        with self.assertRaisesRegex(SegmentWorkflowError, "accepts only"):
             run_segment_workflow(
                 segment_plan(parameters={"codec": "h264"}),
+                preflight=preflight,
+                extract=extract,
+            )
+        with self.assertRaisesRegex(SegmentWorkflowError, "mode must"):
+            run_segment_workflow(
+                segment_plan(parameters={"mode": "lossless"}),
+                preflight=preflight,
+                extract=extract,
+            )
+        with self.assertRaisesRegex(SegmentWorkflowError, "mode must"):
+            run_segment_workflow(
+                segment_plan(parameters={"mode": ["precise"]}),
+                preflight=preflight,
+                extract=extract,
+            )
+        with self.assertRaisesRegex(SegmentWorkflowError, "must be omitted"):
+            run_segment_workflow(
+                segment_plan(parameters={"mode": "copy"}),
+                preflight=preflight,
+                extract=extract,
+            )
+        with self.assertRaisesRegex(SegmentWorkflowError, "requires an .mp4"):
+            plan = segment_plan(parameters={"mode": "precise"})
+            invalid_output = EditPlan(
+                plan.plan_id,
+                plan.brief_id,
+                plan.sources,
+                str(Path("output/segment.mkv").resolve()),
+                plan.operations,
+            )
+            run_segment_workflow(
+                invalid_output,
                 preflight=preflight,
                 extract=extract,
             )
 
         preflight.assert_not_called()
         extract.assert_not_called()
+
+    def test_forwards_persisted_precise_mode(self):
+        plan = segment_plan(parameters={"mode": "precise"})
+        artifact = SegmentArtifact(plan.sources[0], plan.output_path, 2, 5, 500, "precise")
+        extract = Mock(return_value=artifact)
+
+        report = run_segment_workflow(
+            plan,
+            preflight=valid_preflight,
+            extract=extract,
+            validate=lambda *args, **kwargs: validation_for(artifact),
+        )
+
+        self.assertTrue(report.valid)
+        self.assertEqual(extract.call_args.kwargs["mode"], "precise")
+        self.assertEqual(report.artifact.mode, "precise")
 
     def test_rejects_invalid_runtime_values_before_preflight_or_writes(self):
         preflight = Mock()

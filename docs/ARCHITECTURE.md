@@ -53,8 +53,10 @@ antes de escrever mídia.
 
 Adapters encapsulam subprocessos locais com argumentos estruturados. O adapter
 de ffprobe oferece inspeção técnica somente leitura e saída normalizada. O
-adapter de FFmpeg oferece extração temporal por stream copy para um arquivo novo,
-com publicação sem overwrite e limpeza de artifacts parciais; os demais entram
+adapter de FFmpeg oferece extração temporal por stream copy ou, quando a decisão
+está persistida como `mode=precise`, reencode MP4 H.264/AAC com seek após o input.
+Ambas as variantes publicam um arquivo novo sem overwrite e limpam artifacts
+parciais; os demais entram
 conforme casos funcionais exigirem:
 
 - ffprobe para inspeção técnica;
@@ -126,7 +128,8 @@ exclusivamente e nunca substitui estado existente. O fingerprint de cada source
 vez antes da publicação para detectar alterações concorrentes.
 
 A extração de segmento isolada continua sendo uma capacidade de baixo nível. O
-`segment-extract` coordena essa operação a partir de um `EditPlan`, valida o
+`segment-extract` coordena essa operação a partir de um `EditPlan`, escolhe entre
+cópia e recorte preciso somente pelo parâmetro persistido, valida o
 artifact e publica o `RenderManifest`, mas não promove o recorte a render final.
 Composição por renderer e avaliação editorial ainda permanecem necessárias antes
 de expor um render final.
