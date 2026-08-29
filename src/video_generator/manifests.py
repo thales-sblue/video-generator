@@ -6,11 +6,13 @@ import hashlib
 import os
 import tempfile
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from video_generator.doctor import DoctorReport
 from video_generator.domain import EditPlan, FileFingerprint, RenderManifest, ToolRecord
-from video_generator.workflows import SegmentWorkflowReport
+
+if TYPE_CHECKING:
+    from video_generator.workflows import SegmentWorkflowReport
 
 
 class ManifestError(RuntimeError):
@@ -60,6 +62,12 @@ def fingerprint_file(path: str | Path) -> FileFingerprint:
     return FileFingerprint(str(source), digest.hexdigest(), after.st_size)
 
 
+def fingerprint_plan(plan: EditPlan) -> str:
+    if not isinstance(plan, EditPlan):
+        raise TypeError("plan must be an EditPlan")
+    return hashlib.sha256(plan.to_json(indent=None).encode("utf-8")).hexdigest()
+
+
 def build_segment_render_manifest(
     plan: EditPlan,
     report: SegmentWorkflowReport,
@@ -93,13 +101,12 @@ def build_segment_render_manifest(
         if status is None or not status.available or not status.path:
             raise ManifestError(f"required tool metadata is unavailable: {name}")
         tool_records.append(ToolRecord(name, status.path, status.version))
-    plan_digest = hashlib.sha256(plan.to_json(indent=None).encode("utf-8")).hexdigest()
     return RenderManifest(
         manifest_id=f"manifest-{plan.plan_id}",
         plan_id=plan.plan_id,
         brief_id=plan.brief_id,
         workflow="segment-extract",
-        plan_sha256=plan_digest,
+        plan_sha256=fingerprint_plan(plan),
         sources=source_fingerprints,
         outputs=(fingerprint_file(report.artifact.output_path),),
         tools=tuple(tool_records),

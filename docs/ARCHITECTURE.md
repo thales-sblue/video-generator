@@ -89,6 +89,12 @@ metadados imutáveis registrados logo após a extração, executa apenas ffprobe
 artifact publicado e retorna um relatório técnico. Não publica arquivos nem
 substitui aprovação editorial humana.
 
+`validate-manifest` oferece uma segunda verificação read-only que não depende de
+FFmpeg/ffprobe. Ela recarrega `RenderManifest` e `EditPlan`, confere IDs e o hash
+canônico do plano e recalcula os fingerprints de sources e outputs. Integridade,
+validação técnica registrada e revisão editorial permanecem campos separados; o
+comando relata apenas `technically_ready`.
+
 ## Persistência e segurança
 
 Inputs em `inputs/` e `assets/` são referências imutáveis. Estado reproduzível de
@@ -120,12 +126,13 @@ video-generator inspect <source> [--json]
 video-generator preflight <edit-plan.json> [--json]
 video-generator extract-segment <source> <output> --start-seconds N --end-seconds N [--json]
 video-generator execute-segment-plan <edit-plan.json> [--json]
+video-generator validate-manifest <render-manifest.json> --plan <edit-plan.json> [--json]
 video-generator transcribe
 video-generator plan
 video-generator render
 video-generator validate
 ```
 
-`doctor`, `inspect`, `preflight`, `extract-segment`, `execute-segment-plan` e
-`validate-segment` existem agora. Novos comandos entram quando houver uma
-operação reutilizável e testada por trás deles.
+`doctor`, `inspect`, `preflight`, `extract-segment`, `execute-segment-plan`,
+`validate-segment` e `validate-manifest` existem agora. Novos comandos entram
+quando houver uma operação reutilizável e testada por trás deles.

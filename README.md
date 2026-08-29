@@ -56,6 +56,7 @@ python -m video_generator preflight projects\example\edit-plan.json --json
 python -m video_generator extract-segment inputs\clip.mp4 output\segment.mp4 --start-seconds 0 --end-seconds 5 --json
 python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 python -m video_generator validate-segment output\segment.mp4 --source inputs\clip.mp4 --start-seconds 0 --end-seconds 5 --file-size-bytes 123456 --json
+python -m video_generator validate-manifest projects\example\render-manifest.json --plan projects\example\edit-plan.json --json
 ```
 
 O diagnóstico apenas inspeciona o computador. Ele não instala ferramentas, não
@@ -80,6 +81,14 @@ essa limitação deve ser considerada por futuros renderers. O comando
 paths absolutos, intervalo e tamanho do arquivo, em texto ou JSON. A operação
 ainda não é um workflow nem um render final e não implica revisão
 visual/auditiva.
+
+`validate-manifest` verifica posteriormente, sem escrever arquivos, se o plano,
+sources e outputs ainda correspondem aos IDs e fingerprints registrados. O
+comando não exige FFmpeg/ffprobe: retorna `0` somente quando a integridade atual e
+a validação técnica registrada são válidas, `1` quando há divergência ou falha
+técnica registrada e `2` para contratos inválidos. A saída usa
+`technically_ready` e mantém `editorial_review` separado; sucesso nunca significa
+aprovação visual ou auditiva.
 
 `validate_segment_artifact` executa a verificação técnica posterior com ffprobe.
 Ela recusa outputs indisponíveis, alterados, sem streams, sem duração ou cuja

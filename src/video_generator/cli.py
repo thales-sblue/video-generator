@@ -21,7 +21,7 @@ from video_generator.adapters import (
 )
 from video_generator.config import ConfigurationError, load_config
 from video_generator.doctor import format_report, run_doctor
-from video_generator.domain import ContractError, EditPlan
+from video_generator.domain import ContractError, EditPlan, RenderManifest
 from video_generator.manifests import (
     ManifestError,
     build_segment_render_manifest,
@@ -31,9 +31,11 @@ from video_generator.manifests import (
     validate_manifest_target,
 )
 from video_generator.validation import (
+    ManifestValidationReport,
     PreflightReport,
     SegmentValidationReport,
     preflight_edit_plan,
+    validate_render_manifest,
     validate_segment_artifact,
 )
 from video_generator.workflows import (
@@ -114,6 +116,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum accepted duration difference (default: 0.1)",
     )
     validate_segment.add_argument("--json", action="store_true", help="print a machine-readable report")
+    validate_manifest = subparsers.add_parser(
+        "validate-manifest",
+        help="verify a RenderManifest against its plan and current local files",
+    )
+    validate_manifest.add_argument(
+        "manifest",
+        help="path to a persisted RenderManifest JSON file",
+    )
+    validate_manifest.add_argument(
+        "--plan",
+        required=True,
+        help="path to the corresponding EditPlan JSON file",
+    )
+    validate_manifest.add_argument(
+        "--json",
+        action="store_true",
+        help="print a machine-readable report",
+    )
     return parser
 
 
@@ -191,6 +211,25 @@ def _format_segment_workflow(report: SegmentWorkflowReport, manifest_path: Path)
     ) + "\n"
 
 
+def _format_manifest_validation(report: ManifestValidationReport) -> str:
+    lines = [
+        f"RenderManifest: {report.manifest_id}",
+        f"Integrity: {'valid' if report.integrity_valid else 'INVALID'}",
+        (
+            "Recorded technical validation: "
+            f"{'valid' if report.technical_validation_valid else 'INVALID'}"
+        ),
+        f"Technically ready: {'yes' if report.technically_ready else 'NO'}",
+        f"Editorial review: {report.editorial_review}",
+    ]
+    for issue in report.issues:
+        suffix = f" ({issue.path})" if issue.path else ""
+        lines.append(f"  [{issue.code}] {issue.message}{suffix}")
+    for code in report.recorded_technical_issues:
+        lines.append(f"  [recorded:{code}] technical validation issue recorded during execution")
+    return "\n".join(lines) + "\n"
+
+
 def _load_edit_plan(path: str) -> EditPlan:
     plan_path = Path(path).expanduser().resolve()
     try:
@@ -200,6 +239,17 @@ def _load_edit_plan(path: str) -> EditPlan:
     except json.JSONDecodeError as exc:
         raise ContractError(f"edit plan is not valid JSON: {plan_path}") from exc
     return EditPlan.from_dict(payload)
+
+
+def _load_render_manifest(path: str) -> RenderManifest:
+    manifest_path = Path(path).expanduser().resolve()
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ContractError(f"cannot read render manifest: {manifest_path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ContractError(f"render manifest is not valid JSON: {manifest_path}") from exc
+    return RenderManifest.from_dict(payload)
 
 
 def _segment_artifact_from_args(args: argparse.Namespace) -> SegmentArtifact:
@@ -318,4 +368,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(report.to_json() if args.json else _format_segment_validation(report), end="")
         return 0 if report.valid else 1
+    if args.command == "validate-manifest":
+        try:
+            manifest = _load_render_manifest(args.manifest)
+            plan = _load_edit_plan(args.plan)
+            report = validate_render_manifest(manifest, plan)
+        except ContractError as exc:
+            print(f"Manifest validation error: {exc}", file=sys.stderr)
+            return 2
+        print(report.to_json() if args.json else _format_manifest_validation(report), end="")
+        return 0 if report.technically_ready else 1
     return 2
