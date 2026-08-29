@@ -96,9 +96,11 @@ Antes de execução, o sistema deverá resolver paths e recusar output igual a
 qualquer input. Futuro `RenderManifest` registrará tool versions, inputs,
 checksums, plano aplicado, outputs e resultados de validação.
 
-A extração de segmento existente é uma capacidade interna de baixo nível, não a
-execução completa de um `EditPlan`. A integração com renderer, validação do
-artifact e `RenderManifest` permanece necessária antes de expor um render final.
+A extração de segmento existente é uma capacidade de baixo nível exposta pela
+CLI com metadata reproduzível, não a execução completa de um `EditPlan`. Ela
+preserva o source, recusa overwrite e não promove o artifact a render final. A
+integração com workflow/renderer, validação coordenada e `RenderManifest`
+permanece necessária antes de expor um render final.
 
 ## Direção da CLI
 
@@ -108,11 +110,13 @@ A interface deve evoluir gradualmente para:
 video-generator doctor
 video-generator inspect <source> [--json]
 video-generator preflight <edit-plan.json> [--json]
+video-generator extract-segment <source> <output> --start-seconds N --end-seconds N [--json]
 video-generator transcribe
 video-generator plan
 video-generator render
 video-generator validate
 ```
 
-`doctor`, `inspect` e `preflight` existem agora. Novos comandos entram quando
-houver uma operação reutilizável e testada por trás deles.
+`doctor`, `inspect`, `preflight`, `extract-segment` e `validate-segment` existem
+agora. Novos comandos entram quando houver uma operação reutilizável e testada
+por trás deles.

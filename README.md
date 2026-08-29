@@ -53,6 +53,7 @@ python -m video_generator inspect inputs\clip.mp4
 python -m video_generator inspect inputs\clip.mp4 --json
 python -m video_generator preflight projects\example\edit-plan.json
 python -m video_generator preflight projects\example\edit-plan.json --json
+python -m video_generator extract-segment inputs\clip.mp4 output\segment.mp4 --start-seconds 0 --end-seconds 5 --json
 python -m video_generator validate-segment output\segment.mp4 --source inputs\clip.mp4 --start-seconds 0 --end-seconds 5 --file-size-bytes 123456 --json
 ```
 
@@ -73,8 +74,11 @@ O adapter `extract_segment` é a primeira operação audiovisual de baixo nível
 Ele copia streams de um intervalo temporal para um novo arquivo, recusa outputs
 existentes ou iguais ao source e remove artifacts parciais quando FFmpeg falha.
 Por usar stream copy, o início efetivo pode ser ajustado ao keyframe anterior;
-essa limitação deve ser considerada por futuros renderers. A operação ainda não
-é exposta como workflow ou render final e não implica revisão visual/auditiva.
+essa limitação deve ser considerada por futuros renderers. O comando
+`extract-segment` expõe essa capacidade e retorna metadata do artifact, incluindo
+paths absolutos, intervalo e tamanho do arquivo, em texto ou JSON. A operação
+ainda não é um workflow nem um render final e não implica revisão
+visual/auditiva.
 
 `validate_segment_artifact` executa a verificação técnica posterior com ffprobe.
 Ela recusa outputs indisponíveis, alterados, sem streams, sem duração ou cuja
@@ -84,9 +88,10 @@ continua sendo uma avaliação humana separada.
 
 O mesmo comportamento está disponível em `validate-segment`. Informe o caminho
 do artifact e os valores registrados por `extract_segment` (`source`, intervalo e
-`file-size-bytes`); o comando não modifica mídia e retorna código `1` para um
-artifact tecnicamente inválido, ou `2` para argumentos inválidos. `ffprobe` é
-necessário para a inspeção técnica.
+`file-size-bytes`); a saída JSON de `extract-segment` fornece esses valores sem
+reinspecionar ou inferir o artifact. O comando de validação não modifica mídia e
+retorna código `1` para um artifact tecnicamente inválido, ou `2` para argumentos
+inválidos. `ffprobe` é necessário para a inspeção técnica.
 
 ## Testes
 

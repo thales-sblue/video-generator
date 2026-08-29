@@ -8,9 +8,17 @@ import math
 import os
 import sys
 from collections.abc import Sequence
+from dataclasses import asdict
 from pathlib import Path
 
-from video_generator.adapters import MediaProbe, ProbeError, SegmentArtifact, probe_media
+from video_generator.adapters import (
+    FFmpegError,
+    MediaProbe,
+    ProbeError,
+    SegmentArtifact,
+    extract_segment,
+    probe_media,
+)
 from video_generator.config import ConfigurationError, load_config
 from video_generator.doctor import format_report, run_doctor
 from video_generator.domain import ContractError, EditPlan
@@ -37,6 +45,21 @@ def build_parser() -> argparse.ArgumentParser:
     preflight = subparsers.add_parser("preflight", help="validate a persisted edit plan against its media")
     preflight.add_argument("plan", help="path to an EditPlan JSON file")
     preflight.add_argument("--json", action="store_true", help="print a machine-readable report")
+    extract = subparsers.add_parser(
+        "extract-segment",
+        help="copy one time range from local media into a new artifact",
+    )
+    extract.add_argument("source", help="path to an immutable local media source")
+    extract.add_argument("output", help="new media artifact path; existing files are refused")
+    extract.add_argument("--start-seconds", type=float, required=True, help="segment start in seconds")
+    extract.add_argument("--end-seconds", type=float, required=True, help="segment end in seconds")
+    extract.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=300,
+        help="maximum FFmpeg execution time (default: 300)",
+    )
+    extract.add_argument("--json", action="store_true", help="print artifact metadata as JSON")
     validate_segment = subparsers.add_parser(
         "validate-segment",
         help="verify one extracted segment artifact with ffprobe",
@@ -110,6 +133,17 @@ def _format_segment_validation(report: SegmentValidationReport) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _format_segment_artifact(artifact: SegmentArtifact) -> str:
+    return "\n".join(
+        [
+            f"Source: {artifact.source_path}",
+            f"Artifact: {artifact.output_path}",
+            f"Range: {artifact.start_seconds} to {artifact.end_seconds} seconds",
+            f"Size: {artifact.file_size_bytes} bytes",
+        ]
+    ) + "\n"
+
+
 def _load_edit_plan(path: str) -> EditPlan:
     plan_path = Path(path).expanduser().resolve()
     try:
@@ -170,6 +204,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(report.to_json() if args.json else _format_preflight(report), end="")
         return 0 if report.valid else 1
+    if args.command == "extract-segment":
+        try:
+            artifact = extract_segment(
+                args.source,
+                args.output,
+                start_seconds=args.start_seconds,
+                end_seconds=args.end_seconds,
+                timeout_seconds=args.timeout_seconds,
+            )
+        except FFmpegError as exc:
+            print(f"Extraction error: {exc}", file=sys.stderr)
+            return 2
+        output = json.dumps(asdict(artifact), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        print(output if args.json else _format_segment_artifact(artifact), end="")
+        return 0
     if args.command == "validate-segment":
         try:
             artifact = _segment_artifact_from_args(args)
