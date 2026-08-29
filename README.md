@@ -7,11 +7,11 @@ projeto transforma intenção e referências de mídia em contratos persistentes
 VideoRequest -> VideoBrief -> EditPlan -> execução local incremental
 ```
 
-O projeto já inspeciona mídia local com `ffprobe` e possui uma operação interna
-de extração de segmentos por stream copy com FFmpeg, sempre criando um novo
-artifact. Workflows e renderização final ainda não estão implementados. O
-domínio, os schemas, a política local-only e o diagnóstico do ambiente sustentam
-a evolução incremental.
+O projeto já inspeciona mídia local com `ffprobe`, extrai segmentos por stream
+copy com FFmpeg e executa um primeiro workflow estrito a partir de um `EditPlan`,
+sempre criando um novo artifact. Renderização composta e render final ainda não
+estão implementados. O domínio, os schemas, a política local-only e o diagnóstico
+do ambiente sustentam a evolução incremental.
 
 ## Princípios
 
@@ -54,6 +54,7 @@ python -m video_generator inspect inputs\clip.mp4 --json
 python -m video_generator preflight projects\example\edit-plan.json
 python -m video_generator preflight projects\example\edit-plan.json --json
 python -m video_generator extract-segment inputs\clip.mp4 output\segment.mp4 --start-seconds 0 --end-seconds 5 --json
+python -m video_generator execute-segment-plan projects\example\edit-plan.json --json
 python -m video_generator validate-segment output\segment.mp4 --source inputs\clip.mp4 --start-seconds 0 --end-seconds 5 --file-size-bytes 123456 --json
 ```
 
@@ -92,6 +93,16 @@ do artifact e os valores registrados por `extract_segment` (`source`, intervalo 
 reinspecionar ou inferir o artifact. O comando de validação não modifica mídia e
 retorna código `1` para um artifact tecnicamente inválido, ou `2` para argumentos
 inválidos. `ffprobe` é necessário para a inspeção técnica.
+
+`execute-segment-plan` é o primeiro workflow operacional. Ele aceita somente um
+`EditPlan` com um source e uma operação `extract_segment`, com `start_seconds` e
+`end_seconds`, sem parâmetros adicionais. O workflow executa preflight, extração
+e validação nessa ordem; qualquer preflight inválido impede a criação do output.
+Retorna código `0` quando o artifact passa na validação técnica, `1` quando o
+artifact foi criado mas não passou e `2` quando o plano não pode ser executado.
+Um artifact tecnicamente inválido é preservado para diagnóstico e nunca promovido
+a render final. O workflow ainda não produz `RenderManifest` nem representa
+aprovação visual/auditiva.
 
 ## Testes
 

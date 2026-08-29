@@ -43,7 +43,10 @@ explícitos, nunca por fallback.
 
 Workflows coordenarão capacidades para um objetivo audiovisual. Eles recebem
 contratos validados e chamam interfaces de execução; não interpretam linguagem
-natural e não escondem decisões editoriais.
+natural e não escondem decisões editoriais. `segment-extract` é o primeiro
+workflow operacional: exige um plano com um único recorte temporal, executa
+preflight, extração e validação técnica, e recusa qualquer shape não suportado
+antes de escrever mídia.
 
 ### Adapters e renderers
 
@@ -111,12 +114,13 @@ video-generator doctor
 video-generator inspect <source> [--json]
 video-generator preflight <edit-plan.json> [--json]
 video-generator extract-segment <source> <output> --start-seconds N --end-seconds N [--json]
+video-generator execute-segment-plan <edit-plan.json> [--json]
 video-generator transcribe
 video-generator plan
 video-generator render
 video-generator validate
 ```
 
-`doctor`, `inspect`, `preflight`, `extract-segment` e `validate-segment` existem
-agora. Novos comandos entram quando houver uma operação reutilizável e testada
-por trás deles.
+`doctor`, `inspect`, `preflight`, `extract-segment`, `execute-segment-plan` e
+`validate-segment` existem agora. Novos comandos entram quando houver uma
+operação reutilizável e testada por trás deles.

@@ -28,6 +28,11 @@ from video_generator.validation import (
     preflight_edit_plan,
     validate_segment_artifact,
 )
+from video_generator.workflows import (
+    SegmentWorkflowError,
+    SegmentWorkflowReport,
+    run_segment_workflow,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,6 +65,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum FFmpeg execution time (default: 300)",
     )
     extract.add_argument("--json", action="store_true", help="print artifact metadata as JSON")
+    execute_segment = subparsers.add_parser(
+        "execute-segment-plan",
+        help="execute one supported segment EditPlan through technical validation",
+    )
+    execute_segment.add_argument("plan", help="path to a persisted segment EditPlan JSON file")
+    execute_segment.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=300,
+        help="maximum FFmpeg execution time (default: 300)",
+    )
+    execute_segment.add_argument(
+        "--duration-tolerance-seconds",
+        type=float,
+        default=0.1,
+        help="maximum accepted artifact duration difference (default: 0.1)",
+    )
+    execute_segment.add_argument("--json", action="store_true", help="print a machine-readable report")
     validate_segment = subparsers.add_parser(
         "validate-segment",
         help="verify one extracted segment artifact with ffprobe",
@@ -144,6 +167,19 @@ def _format_segment_artifact(artifact: SegmentArtifact) -> str:
     ) + "\n"
 
 
+def _format_segment_workflow(report: SegmentWorkflowReport) -> str:
+    return "\n".join(
+        [
+            f"Plan: {report.plan_id}",
+            "Workflow: segment-extract",
+            f"Operation: {report.operation_id}",
+            f"Artifact: {report.artifact.output_path}",
+            f"Preflight: {'valid' if report.preflight.valid else 'INVALID'}",
+            f"Technical validation: {'valid' if report.validation.valid else 'INVALID'}",
+        ]
+    ) + "\n"
+
+
 def _load_edit_plan(path: str) -> EditPlan:
     plan_path = Path(path).expanduser().resolve()
     try:
@@ -219,6 +255,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         output = json.dumps(asdict(artifact), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         print(output if args.json else _format_segment_artifact(artifact), end="")
         return 0
+    if args.command == "execute-segment-plan":
+        try:
+            plan = _load_edit_plan(args.plan)
+            report = run_segment_workflow(
+                plan,
+                timeout_seconds=args.timeout_seconds,
+                duration_tolerance_seconds=args.duration_tolerance_seconds,
+            )
+        except (ContractError, SegmentWorkflowError) as exc:
+            print(f"Segment workflow error: {exc}", file=sys.stderr)
+            return 2
+        print(report.to_json() if args.json else _format_segment_workflow(report), end="")
+        return 0 if report.valid else 1
     if args.command == "validate-segment":
         try:
             artifact = _segment_artifact_from_args(args)
