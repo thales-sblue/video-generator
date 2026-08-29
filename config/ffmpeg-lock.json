@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "provider": "BtbN/FFmpeg-Builds",
+  "source_page": "https://github.com/BtbN/FFmpeg-Builds/releases",
+  "source_url": "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/assets/535259685",
+  "checksums_url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256",
+  "archive_name": "ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip",
+  "archive_sha256": "639f52d1b5627ee63ac2eac96b11a467c85f0253e81c5aa387605d096b8b2be8",
+  "version": "n8.1.2-50-g1a748fe2cd-20260829",
+  "architecture": "x86_64",
+  "variant": "lgpl-shared",
+  "install_directory": "ffmpeg-n8.1-latest-win64-lgpl-shared-8.1",
+  "bin_files": {
+    "avcodec-62.dll": {"size": 70869504, "sha256": "e91b39d9edc5b35c0a06bb5b15f712fae05073762c70f1ad1d8a539d22228970"},
+    "avdevice-62.dll": {"size": 3923968, "sha256": "b65e1727f36e24ca717f32b62e6fd42f92af376e7eab97a38e3ddf5677874833"},
+    "avfilter-11.dll": {"size": 30029312, "sha256": "c2fa41f4f6628952f344dd925e27428c006a9dc5125a2431f4a99e316148d858"},
+    "avformat-62.dll": {"size": 22107648, "sha256": "d6cc724130ccbd1c08f18329eb50ef164aa87f408eb2732042d857467c534e86"},
+    "avutil-60.dll": {"size": 2937344, "sha256": "eb38830bf135c29d90479b1248d00bea87fd6c75a2d1ef7ac2d749a69a77218b"},
+    "ffmpeg.exe": {"size": 541184, "sha256": "539f9e02bd1290aeb563cd9378dac37d5e0203c2d52be0c5e09280afd51f05d1"},
+    "ffplay.exe": {"size": 18095616, "sha256": "94aa102df298f22573ece2ad4713dc7cd0cae64d6354ffebe4b5d1639f2631ee"},
+    "ffprobe.exe": {"size": 225792, "sha256": "593184ffb50aeeb9b3c5d6d4832e3e8b0a42849baafcc98c3779e49c3243ede9"},
+    "swresample-6.dll": {"size": 722944, "sha256": "a5013df2d0f9f49a585c7bedf12b74560835789deb21efd5d188c56d74bfe682"},
+    "swscale-9.dll": {"size": 12759040, "sha256": "4e2b28a7e96827f276cf2fea28d1112b89f3c48e918bb6bcdf4df9b12ada0784"}
+  }
+}

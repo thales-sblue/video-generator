@@ -19,7 +19,7 @@ class FFmpegAdapterTests(unittest.TestCase):
                 Path(command[-1]).write_bytes(b"segment")
                 return subprocess.CompletedProcess(command, 0, "", "")
 
-            with patch("video_generator.adapters.ffmpeg.shutil.which", return_value="C:/tools/ffmpeg.exe"), patch(
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="C:/tools/ffmpeg.exe"), patch(
                 "video_generator.adapters.ffmpeg.subprocess.run", side_effect=run
             ) as execute:
                 artifact = extract_segment(source, output, start_seconds=1.5, end_seconds=4)
@@ -58,7 +58,7 @@ class FFmpegAdapterTests(unittest.TestCase):
             output = Path(directory) / "new" / "segment.mp4"
             source.write_bytes(b"source")
 
-            with patch("video_generator.adapters.ffmpeg.shutil.which", return_value=None):
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value=None):
                 with self.assertRaisesRegex(FFmpegError, "not available"):
                     extract_segment(source, output, start_seconds=0, end_seconds=1)
 
@@ -75,7 +75,7 @@ class FFmpegAdapterTests(unittest.TestCase):
                 Path(command[-1]).write_bytes(b"partial")
                 return subprocess.CompletedProcess(command, 1, "", "bad input")
 
-            with patch("video_generator.adapters.ffmpeg.shutil.which", return_value="ffmpeg"), patch(
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
                 "video_generator.adapters.ffmpeg.subprocess.run", side_effect=fail
             ):
                 with self.assertRaisesRegex(FFmpegError, "bad input"):
@@ -91,7 +91,7 @@ class FFmpegAdapterTests(unittest.TestCase):
             output = root / "output.mp4"
             source.write_bytes(b"source")
 
-            with patch("video_generator.adapters.ffmpeg.shutil.which", return_value="ffmpeg"), patch(
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
                 "video_generator.adapters.ffmpeg.subprocess.run",
                 return_value=subprocess.CompletedProcess([], 0, "", ""),
             ):
@@ -108,7 +108,7 @@ class FFmpegAdapterTests(unittest.TestCase):
             output = root / "output.mp4"
             source.write_bytes(b"source")
 
-            with patch("video_generator.adapters.ffmpeg.shutil.which", return_value="ffmpeg"), patch(
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
                 "video_generator.adapters.ffmpeg.subprocess.run",
                 side_effect=subprocess.TimeoutExpired(["ffmpeg"], 1),
             ):

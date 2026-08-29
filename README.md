@@ -27,8 +27,19 @@ política local-only e o diagnóstico do ambiente sustentam a evolução increme
 - Python 3.11 ou superior;
 - Git para desenvolvimento;
 - Node, FFmpeg, ffprobe e HyperFrames são detectados pelo `doctor`; FFmpeg é
-  necessário apenas para extração de segmentos e ffprobe apenas para inspeção e
-  preflight.
+  necessário apenas para operações de mídia e ffprobe para inspeção, preflight e
+  validação técnica.
+
+O Windows x64 deste ambiente usa o build `n8.1.2-50-g1a748fe2cd-20260829` do
+ramo estável 8.1, LGPL/shared, instalado somente em `.local-tools/` e ignorado
+pelo Git. A origem é o projeto
+[BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), um dos provedores
+de binários Windows indicados pela página oficial de
+[downloads do FFmpeg](https://ffmpeg.org/download.html). O arquivo
+`config/ffmpeg-lock.json` fixa a origem, versão, arquitetura, SHA-256 do ZIP e os
+hashes/tamanhos de todos os executáveis e DLLs. O projeto prefere essa instalação
+local, confere integralmente o lock uma vez por processo e falha fechado diante
+de arquivo ausente, adicional ou alterado; nada é adicionado ao `PATH` global.
 
 Nenhuma dependência Python de runtime é necessária.
 
@@ -140,6 +151,7 @@ A mesma suíte é executada pelo GitHub Actions em pushes e pull requests.
 
 ```text
 config/                         configuração segura padrão
+config/ffmpeg-lock.json         proveniência e integridade do FFmpeg local aprovado
 docs/                           visão, arquitetura e linguagem audiovisual
 schemas/                        contratos JSON públicos v1, incluindo RenderManifest
 src/video_generator/domain/     modelos e invariantes puros

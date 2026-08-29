@@ -64,6 +64,13 @@ conforme casos funcionais exigirem:
 - HyperFrames como compositor principal para timeline, layout, motion, captions
   e renderização.
 
+No Windows, `video_generator.tooling` resolve primeiro a instalação isolada em
+`.local-tools/ffmpeg`. Antes de devolver um executável, compara o conjunto exato
+de EXEs/DLLs, tamanhos e hashes SHA-256 com o lock versionado em
+`config/ffmpeg-lock.json`. Uma instalação local presente mas divergente é
+recusada; somente quando ela não existe o resolver consulta o `PATH`. Assim, uma
+dependência local corrompida ou adulterada não vira fallback silencioso.
+
 ComfyUI é uma possibilidade futura opcional e não pertence ao MVP. Dependências
 opcionais ausentes devem degradar capacidades específicas, não o núcleo.
 

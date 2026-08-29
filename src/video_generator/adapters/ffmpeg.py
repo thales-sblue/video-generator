@@ -10,6 +10,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from video_generator.tooling import ToolResolutionError, resolve_media_tool
+
 
 class FFmpegError(RuntimeError):
     """Raised when a local FFmpeg operation cannot produce its artifact."""
@@ -70,9 +72,12 @@ def extract_segment(
     if not output.suffix:
         raise FFmpegError("output_path must include a media file extension")
 
-    executable = shutil.which("ffmpeg")
+    try:
+        executable = resolve_media_tool("ffmpeg", path_lookup=shutil.which)
+    except ToolResolutionError as exc:
+        raise FFmpegError(str(exc)) from exc
     if executable is None:
-        raise FFmpegError("ffmpeg is not available on PATH; no installation was attempted")
+        raise FFmpegError("ffmpeg is not available locally or on PATH")
 
     try:
         output.parent.mkdir(parents=True, exist_ok=True)

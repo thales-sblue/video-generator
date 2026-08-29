@@ -45,7 +45,7 @@ class FFprobeAdapterTests(unittest.TestCase):
             completed = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout=json.dumps(FFPROBE_PAYLOAD), stderr=""
             )
-            with patch("video_generator.adapters.ffprobe.shutil.which", return_value="ffprobe"), patch(
+            with patch("video_generator.adapters.ffprobe.resolve_media_tool", return_value="ffprobe"), patch(
                 "video_generator.adapters.ffprobe.subprocess.run", return_value=completed
             ) as run:
                 result = probe_media(source)
@@ -72,12 +72,12 @@ class FFprobeAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "source.mp4"
             source.touch()
-            with patch("video_generator.adapters.ffprobe.shutil.which", return_value=None):
+            with patch("video_generator.adapters.ffprobe.resolve_media_tool", return_value=None):
                 with self.assertRaisesRegex(ProbeError, "not available"):
                     probe_media(source)
 
             completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="not-json", stderr="")
-            with patch("video_generator.adapters.ffprobe.shutil.which", return_value="ffprobe"), patch(
+            with patch("video_generator.adapters.ffprobe.resolve_media_tool", return_value="ffprobe"), patch(
                 "video_generator.adapters.ffprobe.subprocess.run", return_value=completed
             ):
                 with self.assertRaisesRegex(ProbeError, "invalid JSON"):
@@ -100,7 +100,7 @@ class FFprobeAdapterTests(unittest.TestCase):
                 args=[], returncode=0, stdout=json.dumps(FFPROBE_PAYLOAD), stderr=""
             )
             stdout = io.StringIO()
-            with patch("video_generator.adapters.ffprobe.shutil.which", return_value="ffprobe"), patch(
+            with patch("video_generator.adapters.ffprobe.resolve_media_tool", return_value="ffprobe"), patch(
                 "video_generator.adapters.ffprobe.subprocess.run", return_value=completed
             ), contextlib.redirect_stdout(stdout):
                 exit_code = main(["inspect", str(source), "--json"])

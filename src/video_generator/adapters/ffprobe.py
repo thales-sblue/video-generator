@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from video_generator.tooling import ToolResolutionError, resolve_media_tool
+
 
 class ProbeError(RuntimeError):
     """Raised when a local media source cannot be inspected."""
@@ -128,9 +130,12 @@ def probe_media(source_path: str | Path, *, timeout_seconds: float = 30) -> Medi
     ):
         raise ProbeError("timeout_seconds must be a positive finite number")
 
-    executable = shutil.which("ffprobe")
+    try:
+        executable = resolve_media_tool("ffprobe", path_lookup=shutil.which)
+    except ToolResolutionError as exc:
+        raise ProbeError(str(exc)) from exc
     if executable is None:
-        raise ProbeError("ffprobe is not available on PATH; no installation was attempted")
+        raise ProbeError("ffprobe is not available locally or on PATH")
     command = [
         executable,
         "-v",

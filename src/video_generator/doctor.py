@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from video_generator.config import AppConfig
+from video_generator.tooling import ToolResolutionError, resolve_media_tool
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +81,16 @@ def _python_status() -> ToolStatus:
     )
 
 
+def _media_tool_status(name: str, executable: str) -> ToolStatus:
+    try:
+        path = resolve_media_tool(executable, path_lookup=shutil.which)
+    except ToolResolutionError as exc:
+        return ToolStatus(name=name, available=False, note=f"local installation rejected: {exc}")
+    if path is None:
+        return ToolStatus(name=name, available=False, note="optional dependency not found")
+    return _command_status(name, path, ("-version",))
+
+
 def _hyperframes_status(node_status: ToolStatus) -> ToolStatus:
     command = shutil.which("hyperframes") or shutil.which("hyperframes.cmd")
     if command:
@@ -142,8 +153,8 @@ def run_doctor(config: AppConfig) -> DoctorReport:
     tools = (
         _python_status(),
         node,
-        _command_status("FFmpeg", "ffmpeg", ("-version",)),
-        _command_status("ffprobe", "ffprobe", ("-version",)),
+        _media_tool_status("FFmpeg", "ffmpeg"),
+        _media_tool_status("ffprobe", "ffprobe"),
         _command_status("Git", "git", ("--version",)),
         _hyperframes_status(node),
     )
