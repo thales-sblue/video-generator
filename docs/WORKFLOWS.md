@@ -10,7 +10,7 @@ recorte temporal já decidido; ele não toma decisões editoriais.
 Esse workflow oferece o menor caminho audiovisual completo disponível:
 
 ```text
-EditPlan persistido -> preflight -> FFmpeg stream copy -> ffprobe -> relatório
+EditPlan persistido -> preflight -> FFmpeg stream copy -> ffprobe -> RenderManifest
 ```
 
 O plano deve declarar exatamente um source e uma operação `extract_segment` com
@@ -20,8 +20,9 @@ ou kinds desconhecidos são recusados antes de qualquer escrita.
 
 O resultado separa execução de aprovação: um artifact que falha na validação
 técnica permanece disponível para diagnóstico, mas o relatório é inválido. O
-workflow não cria `RenderManifest`, não compõe timeline e não afirma revisão
-visual ou auditiva.
+workflow persiste um `RenderManifest` com checksums, ferramentas e falhas
+técnicas, mas não compõe timeline e registra a revisão visual/auditiva como não
+realizada.
 
 ## Catálogo planejado
 

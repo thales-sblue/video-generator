@@ -116,6 +116,7 @@ def run_segment_workflow(
     timeout_seconds: float = 300,
     duration_tolerance_seconds: float = 0.1,
     preflight: Callable[[EditPlan], PreflightReport] | None = None,
+    before_extract: Callable[[EditPlan], None] | None = None,
     extract: Callable[..., SegmentArtifact] | None = None,
     validate: Callable[..., SegmentValidationReport] | None = None,
 ) -> SegmentWorkflowReport:
@@ -139,6 +140,8 @@ def run_segment_workflow(
     if not preflight_report.valid:
         issue_codes = ", ".join(issue.code for issue in preflight_report.issues) or "unknown"
         raise SegmentWorkflowError(f"preflight rejected plan {plan.plan_id}: {issue_codes}")
+    if before_extract is not None:
+        before_extract(plan)
 
     create_artifact = extract or extract_segment
     try:

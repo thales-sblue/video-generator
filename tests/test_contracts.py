@@ -1,7 +1,16 @@
 import json
 import unittest
 
-from video_generator.domain import ContractError, EditOperation, EditPlan, VideoBrief, VideoRequest
+from video_generator.domain import (
+    ContractError,
+    EditOperation,
+    EditPlan,
+    FileFingerprint,
+    RenderManifest,
+    ToolRecord,
+    VideoBrief,
+    VideoRequest,
+)
 
 
 class VideoRequestTests(unittest.TestCase):
@@ -140,6 +149,55 @@ class EditPlanTests(unittest.TestCase):
             EditOperation("op-1", "trim", start_seconds=float("inf"))
         with self.assertRaises(ContractError):
             EditOperation("op-1", "custom", parameters={"invalid": object()})
+
+
+class RenderManifestTests(unittest.TestCase):
+    def make_manifest(self, **overrides):
+        values = {
+            "manifest_id": "manifest-plan-1",
+            "plan_id": "plan-1",
+            "brief_id": "brief-1",
+            "workflow": "segment-extract",
+            "plan_sha256": "a" * 64,
+            "sources": (FileFingerprint("inputs/source.mp4", "b" * 64, 1000),),
+            "outputs": (FileFingerprint("output/segment.mp4", "c" * 64, 500),),
+            "tools": (
+                ToolRecord("FFmpeg", "C:/tools/ffmpeg.exe", "ffmpeg version 7.1"),
+                ToolRecord("ffprobe", "C:/tools/ffprobe.exe", "ffprobe version 7.1"),
+            ),
+            "technical_validation_valid": True,
+        }
+        values.update(overrides)
+        return RenderManifest(**values)
+
+    def test_round_trip_preserves_reproducibility_and_review_boundary(self):
+        manifest = self.make_manifest()
+
+        restored = RenderManifest.from_dict(json.loads(manifest.to_json()))
+
+        self.assertEqual(restored, manifest)
+        self.assertTrue(restored.local_only)
+        self.assertEqual(restored.editorial_review, "not_performed")
+
+    def test_rejects_unsafe_or_internally_inconsistent_state(self):
+        with self.assertRaisesRegex(ContractError, "local_only"):
+            self.make_manifest(local_only=False)
+        with self.assertRaisesRegex(ContractError, "editorial_review"):
+            self.make_manifest(editorial_review="approved")
+        with self.assertRaisesRegex(ContractError, "must not contain issues"):
+            self.make_manifest(technical_validation_issues=("duration_mismatch",))
+        with self.assertRaisesRegex(ContractError, "must contain issues"):
+            self.make_manifest(technical_validation_valid=False)
+
+    def test_rejects_invalid_hashes_and_source_overwrite(self):
+        with self.assertRaisesRegex(ContractError, "SHA-256"):
+            FileFingerprint("inputs/source.mp4", "not-a-hash", 100)
+        with self.assertRaisesRegex(ContractError, "lowercase"):
+            FileFingerprint("inputs/source.mp4", "A" * 64, 100)
+        source = FileFingerprint("inputs/source.mp4", "b" * 64, 1000)
+        output = FileFingerprint("inputs/source.mp4", "b" * 64, 1000)
+        with self.assertRaisesRegex(ContractError, "must not overwrite"):
+            self.make_manifest(sources=(source,), outputs=(output,))
 
 
 if __name__ == "__main__":

@@ -22,6 +22,14 @@ from video_generator.adapters import (
 from video_generator.config import ConfigurationError, load_config
 from video_generator.doctor import format_report, run_doctor
 from video_generator.domain import ContractError, EditPlan
+from video_generator.manifests import (
+    ManifestError,
+    build_segment_render_manifest,
+    default_manifest_path,
+    fingerprint_file,
+    publish_render_manifest,
+    validate_manifest_target,
+)
 from video_generator.validation import (
     PreflightReport,
     SegmentValidationReport,
@@ -70,6 +78,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="execute one supported segment EditPlan through technical validation",
     )
     execute_segment.add_argument("plan", help="path to a persisted segment EditPlan JSON file")
+    execute_segment.add_argument("--manifest", help="new RenderManifest JSON path")
+    execute_segment.add_argument("--config", help="path to a fail-closed TOML configuration file")
     execute_segment.add_argument(
         "--timeout-seconds",
         type=float,
@@ -167,7 +177,7 @@ def _format_segment_artifact(artifact: SegmentArtifact) -> str:
     ) + "\n"
 
 
-def _format_segment_workflow(report: SegmentWorkflowReport) -> str:
+def _format_segment_workflow(report: SegmentWorkflowReport, manifest_path: Path) -> str:
     return "\n".join(
         [
             f"Plan: {report.plan_id}",
@@ -176,6 +186,7 @@ def _format_segment_workflow(report: SegmentWorkflowReport) -> str:
             f"Artifact: {report.artifact.output_path}",
             f"Preflight: {'valid' if report.preflight.valid else 'INVALID'}",
             f"Technical validation: {'valid' if report.validation.valid else 'INVALID'}",
+            f"RenderManifest: {manifest_path}",
         ]
     ) + "\n"
 
@@ -258,15 +269,42 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "execute-segment-plan":
         try:
             plan = _load_edit_plan(args.plan)
+            manifest_path = validate_manifest_target(
+                args.manifest or default_manifest_path(plan.output_path),
+                forbidden_paths=(*plan.sources, plan.output_path),
+            )
+            config = load_config(args.config)
+            doctor = run_doctor(config)
+            source_fingerprints = []
+
+            def capture_sources(execution_plan: EditPlan) -> None:
+                source_fingerprints.extend(
+                    fingerprint_file(source) for source in execution_plan.sources
+                )
+
             report = run_segment_workflow(
                 plan,
                 timeout_seconds=args.timeout_seconds,
                 duration_tolerance_seconds=args.duration_tolerance_seconds,
+                before_extract=capture_sources,
             )
-        except (ContractError, SegmentWorkflowError) as exc:
+            manifest = build_segment_render_manifest(
+                plan,
+                report,
+                doctor,
+                tuple(source_fingerprints),
+            )
+            published_manifest = publish_render_manifest(manifest, manifest_path)
+        except (ConfigurationError, ContractError, ManifestError, SegmentWorkflowError) as exc:
             print(f"Segment workflow error: {exc}", file=sys.stderr)
             return 2
-        print(report.to_json() if args.json else _format_segment_workflow(report), end="")
+        if args.json:
+            payload = report.to_dict()
+            payload["manifest_path"] = str(published_manifest)
+            payload["manifest"] = manifest.to_dict()
+            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print(_format_segment_workflow(report, published_manifest), end="")
         return 0 if report.valid else 1
     if args.command == "validate-segment":
         try:

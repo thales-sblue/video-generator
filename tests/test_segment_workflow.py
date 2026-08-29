@@ -106,16 +106,21 @@ class SegmentWorkflowTests(unittest.TestCase):
             self.assertEqual(kwargs["duration_tolerance_seconds"], 0.25)
             return validation_for(artifact)
 
+        def before_extract(value):
+            self.assertEqual(value, plan)
+            calls.append("fingerprint")
+
         report = run_segment_workflow(
             plan,
             timeout_seconds=30,
             duration_tolerance_seconds=0.25,
             preflight=preflight,
+            before_extract=before_extract,
             extract=extract,
             validate=validate,
         )
 
-        self.assertEqual(calls, ["preflight", "extract", "validate"])
+        self.assertEqual(calls, ["preflight", "fingerprint", "extract", "validate"])
         self.assertTrue(report.valid)
         payload = json.loads(report.to_json())
         self.assertEqual(payload["workflow"], "segment-extract")
@@ -223,15 +228,30 @@ class SegmentWorkflowCliTests(unittest.TestCase):
     def test_loads_persisted_plan_and_emits_workflow_report(self):
         plan = segment_plan()
         report = workflow_report(plan)
+        manifest = Mock()
+        manifest.to_dict.return_value = {"schema_version": 1, "manifest_id": "manifest-plan-1"}
         stdout = io.StringIO()
+
+        def execute_workflow(value, **kwargs):
+            kwargs["before_extract"](value)
+            return report
 
         with tempfile.TemporaryDirectory() as directory:
             plan_path = Path(directory) / "edit-plan.json"
             plan_path.write_text(plan.to_json(), encoding="utf-8")
             with patch(
                 "video_generator.cli.run_segment_workflow",
-                return_value=report,
-            ) as execute, contextlib.redirect_stdout(stdout):
+                side_effect=execute_workflow,
+            ) as execute, patch(
+                "video_generator.cli.fingerprint_file",
+                return_value=Mock(),
+            ), patch(
+                "video_generator.cli.build_segment_render_manifest",
+                return_value=manifest,
+            ) as build, patch(
+                "video_generator.cli.publish_render_manifest",
+                return_value=Path(plan.output_path + ".manifest.json"),
+            ) as publish, contextlib.redirect_stdout(stdout):
                 exit_code = main(
                     [
                         "execute-segment-plan",
@@ -245,23 +265,44 @@ class SegmentWorkflowCliTests(unittest.TestCase):
                 )
 
         self.assertEqual(exit_code, 0)
-        self.assertTrue(json.loads(stdout.getvalue())["valid"])
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload["valid"])
+        self.assertEqual(payload["manifest"]["manifest_id"], "manifest-plan-1")
         executed_plan = execute.call_args.args[0]
         self.assertEqual(executed_plan.to_dict(), plan.to_dict())
         self.assertEqual(execute.call_args.kwargs["timeout_seconds"], 30)
         self.assertEqual(execute.call_args.kwargs["duration_tolerance_seconds"], 0.25)
+        self.assertEqual(build.call_args.args[:2], (executed_plan, report))
+        self.assertEqual(publish.call_args.args[0], manifest)
 
     def test_returns_one_for_invalid_artifact_and_two_for_rejected_plan(self):
         plan = segment_plan()
         stdout = io.StringIO()
         stderr = io.StringIO()
+        manifest = Mock()
+        manifest.to_dict.return_value = {"schema_version": 1, "manifest_id": "manifest-plan-1"}
+
+        invalid_report = workflow_report(plan, valid=False)
+
+        def execute_invalid(value, **kwargs):
+            kwargs["before_extract"](value)
+            return invalid_report
 
         with tempfile.TemporaryDirectory() as directory:
             plan_path = Path(directory) / "edit-plan.json"
             plan_path.write_text(plan.to_json(), encoding="utf-8")
             with patch(
                 "video_generator.cli.run_segment_workflow",
-                return_value=workflow_report(plan, valid=False),
+                side_effect=execute_invalid,
+            ), patch(
+                "video_generator.cli.fingerprint_file",
+                return_value=Mock(),
+            ), patch(
+                "video_generator.cli.build_segment_render_manifest",
+                return_value=manifest,
+            ), patch(
+                "video_generator.cli.publish_render_manifest",
+                return_value=Path(plan.output_path + ".manifest.json"),
             ), contextlib.redirect_stdout(stdout):
                 invalid_exit = main(["execute-segment-plan", str(plan_path), "--json"])
             with patch(
@@ -274,6 +315,34 @@ class SegmentWorkflowCliTests(unittest.TestCase):
         self.assertFalse(json.loads(stdout.getvalue())["valid"])
         self.assertEqual(rejected_exit, 2)
         self.assertIn("Segment workflow error: unsupported operation", stderr.getvalue())
+
+    def test_refuses_existing_manifest_before_executing_media(self):
+        plan = segment_plan()
+        stderr = io.StringIO()
+        execute = Mock()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan_path = root / "edit-plan.json"
+            manifest_path = root / "render-manifest.json"
+            plan_path.write_text(plan.to_json(), encoding="utf-8")
+            manifest_path.write_text("existing", encoding="utf-8")
+            with patch(
+                "video_generator.cli.run_segment_workflow",
+                execute,
+            ), contextlib.redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "execute-segment-plan",
+                        str(plan_path),
+                        "--manifest",
+                        str(manifest_path),
+                    ]
+                )
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("manifest already exists", stderr.getvalue())
+        execute.assert_not_called()
 
 
 if __name__ == "__main__":

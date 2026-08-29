@@ -9,9 +9,9 @@ VideoRequest -> VideoBrief -> EditPlan -> execução local incremental
 
 O projeto já inspeciona mídia local com `ffprobe`, extrai segmentos por stream
 copy com FFmpeg e executa um primeiro workflow estrito a partir de um `EditPlan`,
-sempre criando um novo artifact. Renderização composta e render final ainda não
-estão implementados. O domínio, os schemas, a política local-only e o diagnóstico
-do ambiente sustentam a evolução incremental.
+sempre criando um novo artifact e um `RenderManifest` versionado. Renderização
+composta e render final ainda não estão implementados. O domínio, os schemas, a
+política local-only e o diagnóstico do ambiente sustentam a evolução incremental.
 
 ## Princípios
 
@@ -54,7 +54,7 @@ python -m video_generator inspect inputs\clip.mp4 --json
 python -m video_generator preflight projects\example\edit-plan.json
 python -m video_generator preflight projects\example\edit-plan.json --json
 python -m video_generator extract-segment inputs\clip.mp4 output\segment.mp4 --start-seconds 0 --end-seconds 5 --json
-python -m video_generator execute-segment-plan projects\example\edit-plan.json --json
+python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 python -m video_generator validate-segment output\segment.mp4 --source inputs\clip.mp4 --start-seconds 0 --end-seconds 5 --file-size-bytes 123456 --json
 ```
 
@@ -101,8 +101,12 @@ e validação nessa ordem; qualquer preflight inválido impede a criação do ou
 Retorna código `0` quando o artifact passa na validação técnica, `1` quando o
 artifact foi criado mas não passou e `2` quando o plano não pode ser executado.
 Um artifact tecnicamente inválido é preservado para diagnóstico e nunca promovido
-a render final. O workflow ainda não produz `RenderManifest` nem representa
-aprovação visual/auditiva.
+a render final. Tanto o sucesso quanto a falha técnica geram um `RenderManifest`
+com fingerprints SHA-256 do plano, source e output, versões/caminhos de FFmpeg e
+ffprobe e os códigos de validação. Sem `--manifest`, o destino padrão é
+`<output>.manifest.json`. O arquivo é publicado sem overwrite e registra
+`editorial_review` como `not_performed`; ele não representa aprovação
+visual/auditiva.
 
 ## Testes
 
@@ -118,7 +122,7 @@ A mesma suíte é executada pelo GitHub Actions em pushes e pull requests.
 ```text
 config/                         configuração segura padrão
 docs/                           visão, arquitetura e linguagem audiovisual
-schemas/                        contratos JSON públicos v1
+schemas/                        contratos JSON públicos v1, incluindo RenderManifest
 src/video_generator/domain/     modelos e invariantes puros
 src/video_generator/adapters/   integrações locais, incluindo ffprobe
 src/video_generator/validation/ preflight técnico de planos persistidos

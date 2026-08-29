@@ -26,7 +26,8 @@ execução, mas não importa código nem cria acoplamento entre os repositórios
 `video_generator.domain` define modelos imutáveis, serialização e invariantes.
 Ele usa apenas a biblioteca padrão. `VideoRequest` registra o pedido e os
 sources; `VideoBrief` traduz intenção em direção editorial; `EditPlan` descreve
-operações planejadas e um novo caminho de output.
+operações planejadas e um novo caminho de output; `RenderManifest` registra uma
+execução local e seus artifacts sem afirmar aprovação editorial.
 
 Os JSON Schemas em `schemas/` são a fronteira interoperável v1. Os modelos
 produzem JSON-safe dictionaries equivalentes, com chaves ordenadas na
@@ -95,15 +96,19 @@ uma produção ficará em `projects/<id>/`; artifacts novos ficarão em `output/
 no diretório do projeto. Esses diretórios são ignorados pelo Git, preservando
 apenas arquivos sentinela.
 
-Antes de execução, o sistema deverá resolver paths e recusar output igual a
-qualquer input. Futuro `RenderManifest` registrará tool versions, inputs,
-checksums, plano aplicado, outputs e resultados de validação.
+Antes de execução, o sistema resolve paths e recusa output igual a qualquer
+input. O `RenderManifest` v1 registra versões e caminhos das ferramentas,
+fingerprints SHA-256 de inputs, plano e outputs, além dos resultados de validação,
+`local_only = true` e `editorial_review = not_performed`. O manifest é publicado
+exclusivamente e nunca substitui estado existente. O fingerprint de cada source
+é capturado após o preflight, imediatamente antes da execução, e conferido outra
+vez antes da publicação para detectar alterações concorrentes.
 
-A extração de segmento existente é uma capacidade de baixo nível exposta pela
-CLI com metadata reproduzível, não a execução completa de um `EditPlan`. Ela
-preserva o source, recusa overwrite e não promove o artifact a render final. A
-integração com workflow/renderer, validação coordenada e `RenderManifest`
-permanece necessária antes de expor um render final.
+A extração de segmento isolada continua sendo uma capacidade de baixo nível. O
+`segment-extract` coordena essa operação a partir de um `EditPlan`, valida o
+artifact e publica o `RenderManifest`, mas não promove o recorte a render final.
+Composição por renderer e avaliação editorial ainda permanecem necessárias antes
+de expor um render final.
 
 ## Direção da CLI
 

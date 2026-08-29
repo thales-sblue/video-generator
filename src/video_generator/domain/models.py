@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 
 SCHEMA_VERSION = 1
+SHA256_HEX_LENGTH = 64
 
 
 class ContractError(ValueError):
@@ -44,6 +45,17 @@ def _schema_version(value: object) -> int:
     if value != SCHEMA_VERSION:
         raise ContractError(f"schema_version must be {SCHEMA_VERSION}")
     return SCHEMA_VERSION
+
+
+def _sha256(value: object, field_name: str) -> str:
+    result = _text(value, field_name)
+    if (
+        result != result.lower()
+        or len(result) != SHA256_HEX_LENGTH
+        or any(character not in "0123456789abcdef" for character in result)
+    ):
+        raise ContractError(f"{field_name} must be a lowercase SHA-256 hex digest")
+    return result
 
 
 def _keys(data: Mapping[str, Any], *, required: set[str], optional: set[str]) -> None:
@@ -336,4 +348,185 @@ class EditPlan:
             sources=data["sources"],
             output_path=data["output_path"],
             operations=tuple(EditOperation.from_dict(item) for item in raw_operations),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FileFingerprint:
+    """A content-addressed local file reference used by a render manifest."""
+
+    path: str
+    sha256: str
+    file_size_bytes: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "path", _text(self.path, "path"))
+        object.__setattr__(self, "sha256", _sha256(self.sha256, "sha256"))
+        if isinstance(self.file_size_bytes, bool) or not isinstance(self.file_size_bytes, int):
+            raise ContractError("file_size_bytes must be an integer")
+        if self.file_size_bytes <= 0:
+            raise ContractError("file_size_bytes must be greater than zero")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "sha256": self.sha256,
+            "file_size_bytes": self.file_size_bytes,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> FileFingerprint:
+        _keys(data, required={"path", "sha256", "file_size_bytes"}, optional=set())
+        return cls(data["path"], data["sha256"], data["file_size_bytes"])
+
+
+@dataclass(frozen=True, slots=True)
+class ToolRecord:
+    """The detected local executable used by a render."""
+
+    name: str
+    path: str
+    version: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _text(self.name, "name"))
+        object.__setattr__(self, "path", _text(self.path, "path"))
+        object.__setattr__(self, "version", _optional_text(self.version, "version"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "path": self.path, "version": self.version}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ToolRecord:
+        _keys(data, required={"name", "path", "version"}, optional=set())
+        return cls(data["name"], data["path"], data["version"])
+
+
+@dataclass(frozen=True, slots=True)
+class RenderManifest:
+    """A deterministic record of one local workflow execution and its artifact."""
+
+    manifest_id: str
+    plan_id: str
+    brief_id: str
+    workflow: str
+    plan_sha256: str
+    sources: tuple[FileFingerprint, ...]
+    outputs: tuple[FileFingerprint, ...]
+    tools: tuple[ToolRecord, ...]
+    technical_validation_valid: bool
+    technical_validation_issues: tuple[str, ...] = ()
+    local_only: bool = True
+    editorial_review: str = "not_performed"
+    schema_version: int = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        for name in ("manifest_id", "plan_id", "brief_id", "workflow"):
+            object.__setattr__(self, name, _text(getattr(self, name), name))
+        object.__setattr__(self, "plan_sha256", _sha256(self.plan_sha256, "plan_sha256"))
+        collections = (
+            ("sources", FileFingerprint),
+            ("outputs", FileFingerprint),
+            ("tools", ToolRecord),
+        )
+        for name, expected_type in collections:
+            values = getattr(self, name)
+            if not isinstance(values, (list, tuple)) or not values:
+                raise ContractError(f"{name} must contain at least one item")
+            normalized = tuple(values)
+            if not all(isinstance(value, expected_type) for value in normalized):
+                raise ContractError(f"{name} contains an invalid item")
+            object.__setattr__(self, name, normalized)
+        if len({item.path for item in self.sources}) != len(self.sources):
+            raise ContractError("source paths must be unique")
+        if len({item.path for item in self.outputs}) != len(self.outputs):
+            raise ContractError("output paths must be unique")
+        if len({item.name for item in self.tools}) != len(self.tools):
+            raise ContractError("tool names must be unique")
+        source_paths = {
+            os.path.normcase(os.path.realpath(os.path.abspath(item.path)))
+            for item in self.sources
+        }
+        output_paths = {
+            os.path.normcase(os.path.realpath(os.path.abspath(item.path)))
+            for item in self.outputs
+        }
+        if source_paths & output_paths:
+            raise ContractError("manifest outputs must not overwrite sources")
+        if not isinstance(self.technical_validation_valid, bool):
+            raise ContractError("technical_validation_valid must be a boolean")
+        object.__setattr__(
+            self,
+            "technical_validation_issues",
+            _text_tuple(
+                self.technical_validation_issues,
+                "technical_validation_issues",
+                allow_empty=True,
+            ),
+        )
+        if self.technical_validation_valid and self.technical_validation_issues:
+            raise ContractError("valid technical validation must not contain issues")
+        if not self.technical_validation_valid and not self.technical_validation_issues:
+            raise ContractError("invalid technical validation must contain issues")
+        if self.local_only is not True:
+            raise ContractError("local_only must be true")
+        if self.editorial_review != "not_performed":
+            raise ContractError("editorial_review must be not_performed in schema v1")
+        _schema_version(self.schema_version)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "manifest_id": self.manifest_id,
+            "plan_id": self.plan_id,
+            "brief_id": self.brief_id,
+            "workflow": self.workflow,
+            "local_only": self.local_only,
+            "editorial_review": self.editorial_review,
+            "plan_sha256": self.plan_sha256,
+            "sources": [item.to_dict() for item in self.sources],
+            "outputs": [item.to_dict() for item in self.outputs],
+            "tools": [item.to_dict() for item in self.tools],
+            "technical_validation_valid": self.technical_validation_valid,
+            "technical_validation_issues": list(self.technical_validation_issues),
+        }
+
+    def to_json(self, *, indent: int | None = 2) -> str:
+        return _to_json(self.to_dict(), indent=indent)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> RenderManifest:
+        required = {
+            "schema_version",
+            "manifest_id",
+            "plan_id",
+            "brief_id",
+            "workflow",
+            "local_only",
+            "editorial_review",
+            "plan_sha256",
+            "sources",
+            "outputs",
+            "tools",
+            "technical_validation_valid",
+            "technical_validation_issues",
+        }
+        _keys(data, required=required, optional=set())
+        for name in ("sources", "outputs", "tools", "technical_validation_issues"):
+            if not isinstance(data[name], (list, tuple)):
+                raise ContractError(f"{name} must be an array")
+        return cls(
+            schema_version=data["schema_version"],
+            manifest_id=data["manifest_id"],
+            plan_id=data["plan_id"],
+            brief_id=data["brief_id"],
+            workflow=data["workflow"],
+            local_only=data["local_only"],
+            editorial_review=data["editorial_review"],
+            plan_sha256=data["plan_sha256"],
+            sources=tuple(FileFingerprint.from_dict(item) for item in data["sources"]),
+            outputs=tuple(FileFingerprint.from_dict(item) for item in data["outputs"]),
+            tools=tuple(ToolRecord.from_dict(item) for item in data["tools"]),
+            technical_validation_valid=data["technical_validation_valid"],
+            technical_validation_issues=tuple(data["technical_validation_issues"]),
         )
