@@ -4,7 +4,7 @@ Fundação de um agente local de produção audiovisual controlado pelo Codex. O
 projeto transforma intenção e referências de mídia em contratos persistentes:
 
 ```text
-VideoRequest -> VideoBrief -> EditPlan -> execução local incremental
+VideoRequest -> VideoBrief -> EditPlan -> execução local -> RenderManifest
 ```
 
 O projeto já inspeciona mídia local com `ffprobe`, extrai segmentos por stream
@@ -57,6 +57,7 @@ python -m video_generator extract-segment inputs\clip.mp4 output\segment.mp4 --s
 python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 python -m video_generator validate-segment output\segment.mp4 --source inputs\clip.mp4 --start-seconds 0 --end-seconds 5 --file-size-bytes 123456 --json
 python -m video_generator validate-manifest projects\example\render-manifest.json --plan projects\example\edit-plan.json --json
+python -m video_generator validate-project --request projects\example\video-request.json --brief projects\example\video-brief.json --plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 ```
 
 O diagnóstico apenas inspeciona o computador. Ele não instala ferramentas, não
@@ -89,6 +90,15 @@ a validação técnica registrada são válidas, `1` quando há divergência ou 
 técnica registrada e `2` para contratos inválidos. A saída usa
 `technically_ready` e mantém `editorial_review` separado; sucesso nunca significa
 aprovação visual ou auditiva.
+
+`validate-project` amplia essa verificação para a cadeia persistida completa:
+`VideoRequest -> VideoBrief -> EditPlan -> RenderManifest`. Sem modificar mídia
+ou contratos e sem exigir ferramentas externas, ele confere os vínculos por ID,
+a plataforma e o workflow editorial quando declarados no request, e se todos os
+sources do plano vieram do pedido. O workflow operacional do manifest permanece
+separado do workflow editorial do brief. O comando retorna `0` apenas quando a
+rastreabilidade, a integridade atual e a validação técnica registrada são
+válidas; `editorial_review` continua explícito e independente.
 
 `validate_segment_artifact` executa a verificação técnica posterior com ffprobe.
 Ela recusa outputs indisponíveis, alterados, sem streams, sem duração ou cuja
@@ -134,7 +144,7 @@ docs/                           visão, arquitetura e linguagem audiovisual
 schemas/                        contratos JSON públicos v1, incluindo RenderManifest
 src/video_generator/domain/     modelos e invariantes puros
 src/video_generator/adapters/   integrações locais, incluindo ffprobe
-src/video_generator/validation/ preflight técnico de planos persistidos
+src/video_generator/validation/ preflight, integridade e rastreabilidade read-only
 src/video_generator/config.py   leitura de configuração local
 src/video_generator/doctor.py   diagnóstico somente leitura
 tests/                          testes automatizados

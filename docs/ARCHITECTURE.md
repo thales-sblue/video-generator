@@ -95,6 +95,14 @@ canônico do plano e recalcula os fingerprints de sources e outputs. Integridade
 validação técnica registrada e revisão editorial permanecem campos separados; o
 comando relata apenas `technically_ready`.
 
+`validate-project` compõe essa verificação com a rastreabilidade dos quatro
+contratos persistidos. Ele valida os IDs entre request, brief, plano e manifest,
+a direção editorial solicitada e a proveniência dos sources do plano. O workflow
+editorial de `VideoBrief` não é comparado ao workflow operacional do manifest:
+por exemplo, um brief `music-teaser` pode ser executado pela capacidade
+`segment-extract`. O relatório mantém `trace_valid`, integridade do manifest,
+resultado técnico registrado e `editorial_review` como dimensões distintas.
+
 ## Persistência e segurança
 
 Inputs em `inputs/` e `assets/` são referências imutáveis. Estado reproduzível de
@@ -127,6 +135,7 @@ video-generator preflight <edit-plan.json> [--json]
 video-generator extract-segment <source> <output> --start-seconds N --end-seconds N [--json]
 video-generator execute-segment-plan <edit-plan.json> [--json]
 video-generator validate-manifest <render-manifest.json> --plan <edit-plan.json> [--json]
+video-generator validate-project --request <video-request.json> --brief <video-brief.json> --plan <edit-plan.json> --manifest <render-manifest.json> [--json]
 video-generator transcribe
 video-generator plan
 video-generator render
@@ -134,5 +143,5 @@ video-generator validate
 ```
 
 `doctor`, `inspect`, `preflight`, `extract-segment`, `execute-segment-plan`,
-`validate-segment` e `validate-manifest` existem agora. Novos comandos entram
-quando houver uma operação reutilizável e testada por trás deles.
+`validate-segment`, `validate-manifest` e `validate-project` existem agora. Novos
+comandos entram quando houver uma operação reutilizável e testada por trás deles.
