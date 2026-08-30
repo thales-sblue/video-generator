@@ -1,4 +1,6 @@
 [processing]
+# Media processing remains local. Internet research and authorized asset
+# acquisition are orchestrator concerns, not remote processing fallbacks.
 local_only = true
 allow_external_services = false
 preserve_sources = true

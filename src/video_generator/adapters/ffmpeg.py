@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 from video_generator.tooling import ToolResolutionError, resolve_media_tool
 
@@ -33,6 +34,21 @@ class AudioArtifact:
     output_path: str
     sample_rate_hz: int
     channels: int
+    file_size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceClip:
+    source_path: str
+    start_seconds: float
+    end_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceArtifact:
+    source_paths: tuple[str, ...]
+    output_path: str
+    duration_seconds: float
     file_size_bytes: int
 
 
@@ -294,3 +310,135 @@ def extract_audio(
     except OSError as exc:
         raise FFmpegError(f"could not inspect published output: {output}") from exc
     return AudioArtifact(str(source), str(output), 48000, 2, size)
+
+
+def compose_video_sequence(
+    clips: Sequence[SequenceClip],
+    output_path: str | Path,
+    *,
+    timeout_seconds: float = 300,
+) -> SequenceArtifact:
+    """Trim and concatenate video clips into one silent H.264 MP4 timeline."""
+
+    if isinstance(clips, (str, bytes)) or not isinstance(clips, Sequence):
+        raise FFmpegError("clips must be a sequence of SequenceClip values")
+    normalized_clips = tuple(clips)
+    if len(normalized_clips) < 2:
+        raise FFmpegError("video sequence requires at least two clips")
+    if not all(isinstance(clip, SequenceClip) for clip in normalized_clips):
+        raise FFmpegError("clips must contain only SequenceClip values")
+
+    output = Path(output_path).expanduser().resolve()
+    timeout = _time(timeout_seconds, "timeout_seconds")
+    if timeout == 0:
+        raise FFmpegError("timeout_seconds must be greater than zero")
+    if output.suffix.lower() != ".mp4":
+        raise FFmpegError("video sequence requires an .mp4 output_path")
+
+    resolved_clips: list[tuple[Path, float, float]] = []
+    for clip in normalized_clips:
+        source = Path(clip.source_path).expanduser().resolve()
+        start = _time(clip.start_seconds, "start_seconds")
+        end = _time(clip.end_seconds, "end_seconds")
+        if end <= start:
+            raise FFmpegError("end_seconds must be greater than start_seconds")
+        if not source.exists() or not source.is_file():
+            raise FFmpegError(f"source does not exist or is not a file: {source}")
+        if os.path.normcase(str(source)) == os.path.normcase(str(output)):
+            raise FFmpegError("output_path must not overwrite a source")
+        resolved_clips.append((source, start, end))
+    if output.exists():
+        raise FFmpegError(f"output already exists: {output}")
+
+    try:
+        executable = resolve_media_tool("ffmpeg", path_lookup=shutil.which)
+    except ToolResolutionError as exc:
+        raise FFmpegError(str(exc)) from exc
+    if executable is None:
+        raise FFmpegError("ffmpeg is not available locally or on PATH")
+
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{output.stem}-",
+            suffix=output.suffix,
+            dir=output.parent,
+            delete=False,
+        ) as reserved:
+            temporary = Path(reserved.name)
+    except OSError as exc:
+        raise FFmpegError(f"could not prepare output path: {output}") from exc
+
+    command = [executable, "-v", "error", "-nostdin", "-y"]
+    for source, _, _ in resolved_clips:
+        command.extend(["-i", str(source)])
+    filters = []
+    labels = []
+    for index, (_, start, end) in enumerate(resolved_clips):
+        label = f"v{index}"
+        filters.append(
+            f"[{index}:v:0]trim=start={format(start, '.15g')}:end={format(end, '.15g')},"
+            f"setpts=PTS-STARTPTS[{label}]"
+        )
+        labels.append(f"[{label}]")
+    filters.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[outv]")
+    command.extend(
+        [
+            "-filter_complex",
+            ";".join(filters),
+            "-map",
+            "[outv]",
+            "-an",
+            "-sn",
+            "-dn",
+            "-c:v",
+            "libopenh264",
+            "-b:v",
+            "5M",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(temporary),
+        ]
+    )
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _cleanup(temporary)
+        raise FFmpegError("ffmpeg timed out while composing the video sequence") from exc
+    except OSError as exc:
+        _cleanup(temporary)
+        raise FFmpegError(f"ffmpeg could not compose the video sequence: {type(exc).__name__}") from exc
+
+    if completed.returncode != 0:
+        _cleanup(temporary)
+        detail = (completed.stderr or completed.stdout).strip()
+        suffix = f": {detail}" if detail else ""
+        raise FFmpegError(f"ffmpeg exited with {completed.returncode}{suffix}")
+    if not temporary.is_file() or temporary.stat().st_size == 0:
+        _cleanup(temporary)
+        raise FFmpegError("ffmpeg reported success without creating a non-empty sequence")
+    try:
+        os.link(temporary, output)
+    except OSError as exc:
+        _cleanup(temporary)
+        raise FFmpegError(f"could not publish output without overwriting: {output}") from exc
+    _cleanup(temporary)
+    try:
+        size = output.stat().st_size
+    except OSError as exc:
+        raise FFmpegError(f"could not inspect published output: {output}") from exc
+    return SequenceArtifact(
+        source_paths=tuple(str(source) for source, _, _ in resolved_clips),
+        output_path=str(output),
+        duration_seconds=sum(end - start for _, start, end in resolved_clips),
+        file_size_bytes=size,
+    )

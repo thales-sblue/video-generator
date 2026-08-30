@@ -99,18 +99,30 @@ def validate_render_manifest(
                 "plan content no longer matches the manifest",
             )
         )
-    if manifest.workflow != "segment-extract":
+    if manifest.workflow not in {"segment-extract", "video-sequence"}:
         issues.append(
             ManifestValidationIssue(
                 "unsupported_workflow",
                 f"manifest workflow is not supported: {manifest.workflow}",
             )
         )
-    elif len(plan.operations) != 1 or plan.operations[0].kind != "extract_segment":
+    elif manifest.workflow == "segment-extract" and (
+        len(plan.operations) != 1 or plan.operations[0].kind != "extract_segment"
+    ):
         issues.append(
             ManifestValidationIssue(
                 "workflow_plan_mismatch",
                 "segment-extract manifest requires one extract_segment operation",
+            )
+        )
+    elif manifest.workflow == "video-sequence" and (
+        len(plan.operations) < 2
+        or any(operation.kind != "sequence_clip" for operation in plan.operations)
+    ):
+        issues.append(
+            ManifestValidationIssue(
+                "workflow_plan_mismatch",
+                "video-sequence manifest requires at least two sequence_clip operations",
             )
         )
 
@@ -119,7 +131,7 @@ def validate_render_manifest(
     if recorded_sources != expected_sources:
         issues.append(ManifestValidationIssue("source_set_mismatch", "manifest sources do not match the plan"))
     recorded_outputs = {_normalized(output.path) for output in manifest.outputs}
-    if manifest.workflow == "segment-extract" and recorded_outputs != {
+    if manifest.workflow in {"segment-extract", "video-sequence"} and recorded_outputs != {
         _normalized(plan.output_path)
     }:
         issues.append(

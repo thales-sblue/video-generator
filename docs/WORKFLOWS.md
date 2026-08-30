@@ -5,6 +5,10 @@ editorial anterior pertence ao Codex/orquestrador, que traduz `VideoRequest` e
 `VideoBrief` em um plano persistido. O primeiro workflow implementado executa um
 recorte temporal já decidido; ele não toma decisões editoriais.
 
+A prioridade é um único caminho incremental para `dark-video`. Workflows de
+creator/talking-head, Shorts derivados de gravações e outros casos não devem ser
+construídos antes de `dark-video` v1.
+
 ## `segment-extract`
 
 Esse workflow oferece o menor caminho audiovisual completo disponível:
@@ -28,18 +32,42 @@ workflow persiste um `RenderManifest` com checksums, ferramentas e falhas
 técnicas, mas não compõe timeline e registra a revisão visual/auditiva como não
 realizada.
 
-## Catálogo planejado
+## `video-sequence`
 
-- `reel`, `tiktok` e `short`: peças verticais curtas com hook, pacing e safe
-  areas específicos da plataforma;
-- `youtube`: edição horizontal ou vertical orientada à intenção e duração;
-- `talking-head`: edição de fala preservando significado e pausas intencionais;
-- `long-form-to-shorts`: transcrição, seleção semântica e múltiplos recortes;
-- `music-video`: montagem guiada pela faixa e linguagem visual;
-- `music-teaser`: trecho curto que apresenta uma música com propósito;
-- `visualizer`: composição visual temporalmente ligada ao áudio;
-- `lyric-video`: lyrics sincronizadas com legibilidade e hierarquia;
-- `embedded-captions`: captions queimadas respeitando conteúdo e safe areas.
+Esse é o primeiro workflow que transforma múltiplas decisões temporais em uma
+timeline renderizada:
+
+```text
+EditPlan com sequence_clip ordenados -> preflight -> FFmpeg concat filter
+                                      -> ffprobe -> RenderManifest -> MP4
+```
+
+O plano deve declarar pelo menos dois `sequence_clip`, cada um com source,
+início e fim. A ordem das operações é a ordem da timeline. Todos os sources
+declarados devem ser usados; parâmetros e outputs diferentes de MP4 são
+recusados. A v1 exige um stream de vídeo e dimensões iguais entre sources.
+
+FFmpeg recorta, zera os timestamps, concatena e reencoda o resultado em H.264. O
+artifact é propositalmente silencioso: áudio dos sources não é carregado para a
+timeline. A validação exige um único stream de vídeo, nenhum stream adicional,
+tamanho inalterado e duração igual à soma dos trechos dentro da tolerância.
+
+Esse escopo prova `EditPlan -> timeline -> composição -> MP4` sem substituir
+HyperFrames, que permanece o compositor planejado para imagens, layout, motion,
+captions e composição visual mais rica. O próximo gap deve ampliar este caminho
+rumo a um vídeo dark completo, não criar outro workflow.
+
+## Evolução planejada do `dark-video`
+
+- aceitar imagens com duração explícita na timeline;
+- receber ou gerar narração local e sincronizá-la à sequência;
+- gerar e queimar captions legíveis;
+- adicionar música opcional e mixar volumes básicos;
+- promover o render validado a `final.mp4` com QA técnico.
+
+Pesquisa, roteiro, storyboard e assets automáticos vêm depois do primeiro vídeo
+completo. O workflow de creator/talking-head permanece futuro e deverá reutilizar
+o mesmo motor.
 
 ## Contrato de workflows
 
@@ -57,6 +85,6 @@ opcionais, formato de output, validações e limitações. Ele deve:
 
 ## Sequência de implementação
 
-O próximo workflow deve ser escolhido por um caso real e implementado de ponta
-a ponta em escopo pequeno. Abstrações comuns devem surgir apenas quando o
-`segment-extract` e outro caso concreto demonstrarem a mesma necessidade.
+O próximo incremento deve ser escolhido pela pergunta: “qual é o menor
+incremento funcional que mais nos aproxima do primeiro vídeo dark completo?”.
+Não criar novos workflows quando ampliar `video-sequence` resolve o gargalo.

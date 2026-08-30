@@ -16,6 +16,11 @@ workflows
 validation -> RenderManifest -> artifacts
 ```
 
+A direção madura pode inserir `Script`, `Storyboard` e `AssetPlan` entre brief e
+plano, mas esses contratos não serão criados antes de haver necessidade concreta
+de checkpoint ou invariantes. A prioridade arquitetural atual é atravessar
+`EditPlan -> timeline -> composição -> MP4` para `dark-video`.
+
 O fluxo herda do `midi-generator` a separação entre intenção, plano, integração e
 execução, mas não importa código nem cria acoplamento entre os repositórios.
 
@@ -35,10 +40,12 @@ serialização textual.
 
 ### Configuração
 
-`config/default.toml` declara `local_only = true` e desabilita serviços externos.
-A configuração falha fechada: valores inseguros ou ausentes não são aceitos. Uma
-integração futura só poderá relaxar essa política por autorização e desenho
-explícitos, nunca por fallback.
+`config/default.toml` declara que processamento e render são locais e desabilita
+serviços externos no runtime de mídia. A configuração falha fechada: valores
+inseguros ou ausentes não são aceitos. Internet gratuita pode ser usada pelo
+orquestrador para pesquisa e aquisição autorizada de assets sem mudar o caráter
+local do render; qualquer integração que receba dados requer autorização e
+adapter explícitos. APIs pagas de geração não são dependências operacionais.
 
 ### Workflows
 
@@ -48,6 +55,13 @@ natural e não escondem decisões editoriais. `segment-extract` é o primeiro
 workflow operacional: exige um plano com um único recorte temporal, executa
 preflight, extração e validação técnica, e recusa qualquer shape não suportado
 antes de escrever mídia.
+
+`video-sequence` é o primeiro passo de composição temporal: exige ao menos dois
+`sequence_clip` ordenados no `EditPlan`, executa preflight, recorta e concatena
+os vídeos em um MP4 H.264 silencioso, valida duração e streams e registra o
+manifest. A v1 exige dimensões iguais e não aceita parâmetros, imagens,
+transitions ou áudio. Essa restrição torna a timeline mínima reproduzível sem
+antecipar o compositor visual completo.
 
 ### Adapters e renderers
 
@@ -67,6 +81,10 @@ conforme casos funcionais exigirem:
 - Kokoro local para TTS;
 - HyperFrames como compositor principal para timeline, layout, motion, captions
   e renderização.
+
+FFmpeg pode executar montagem sequencial e normalização de baixo nível quando o
+caso é estrito. Isso não substitui HyperFrames como compositor principal para
+layout, motion, captions e composição visual de `dark-video`.
 
 No Windows, `video_generator.tooling` resolve primeiro a instalação isolada em
 `.local-tools/ffmpeg`. Antes de devolver um executável, compara o conjunto exato
@@ -136,6 +154,10 @@ artifact e publica o `RenderManifest`, mas não promove o recorte a render final
 Composição por renderer e avaliação editorial ainda permanecem necessárias antes
 de expor um render final.
 
+O workflow `video-sequence` já produz um MP4 composto a partir de múltiplos
+trechos, mas ainda é um render intermediário silencioso: não satisfaz
+`dark-video` v1 sem narração, imagens, captions, mixagem de áudio e revisão.
+
 ## Direção da CLI
 
 A interface deve evoluir gradualmente para:
@@ -147,6 +169,7 @@ video-generator preflight <edit-plan.json> [--json]
 video-generator extract-segment <source> <output> --start-seconds N --end-seconds N [--json]
 video-generator extract-audio <source> <output.wav> [--json]
 video-generator execute-segment-plan <edit-plan.json> [--json]
+video-generator execute-sequence-plan <edit-plan.json> [--json]
 video-generator validate-manifest <render-manifest.json> --plan <edit-plan.json> [--json]
 video-generator validate-project --request <video-request.json> --brief <video-brief.json> --plan <edit-plan.json> --manifest <render-manifest.json> [--json]
 video-generator transcribe
@@ -156,6 +179,6 @@ video-generator validate
 ```
 
 `doctor`, `inspect`, `preflight`, `extract-segment`, `extract-audio`,
-`execute-segment-plan`,
+`execute-segment-plan`, `execute-sequence-plan`,
 `validate-segment`, `validate-manifest` e `validate-project` existem agora. Novos
 comandos entram quando houver uma operação reutilizável e testada por trás deles.

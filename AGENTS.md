@@ -2,10 +2,10 @@
 
 ## Direção do produto
 
-`video-generator` é o motor local de produção audiovisual controlado pelo Codex.
-O usuário descreve uma intenção e fornece mídia; o Codex interpreta o pedido,
-analisa o material e persiste decisões editoriais antes de delegar operações
-repetíveis ao projeto. A evolução desejada é:
+`video-generator` é o motor de produção audiovisual local-first controlado pelo
+Codex. O Codex interpreta o pedido, pesquisa quando autorizado, analisa o
+material e persiste decisões editoriais antes de delegar operações repetíveis
+ao projeto. A evolução desejada é:
 
 ```text
 User intent -> Codex -> VideoRequest -> VideoBrief -> EditPlan
@@ -14,6 +14,13 @@ User intent -> Codex -> VideoRequest -> VideoBrief -> EditPlan
 
 Cada incremento deve entregar a menor capacidade audiovisual funcional e
 testável. Infraestrutura só deve ser adicionada quando sustentar um caso real.
+
+A prioridade absoluta é `dark-video`: primeiro produzir um vídeo dark completo,
+assistível e reproduzível; depois amadurecer esse workflow. Edição automática de
+creator/talking-head é um segundo grande workflow futuro que deverá reutilizar o
+mesmo motor, mas não deve ser implementado agora. A pergunta de priorização é:
+**qual é o menor incremento funcional que mais nos aproxima do primeiro vídeo
+dark completo?**
 
 ## Fronteiras arquiteturais
 
@@ -28,8 +35,8 @@ testável. Infraestrutura só deve ser adicionada quando sustentar um caso real.
 - **Renderers:** transformam `EditPlan` validado em composição e artifacts. O
   HyperFrames é o compositor principal planejado; FFmpeg executa operações de
   mídia de baixo nível.
-- **Workflows:** coordenam capacidades reutilizáveis para objetivos como Reel,
-  Short ou visualizer. Não escondem decisões editoriais em efeitos colaterais.
+- **Workflows:** coordenam capacidades reutilizáveis, começando por
+  `dark-video`. Não escondem decisões editoriais em efeitos colaterais.
 - **Validation:** verifica contratos, probes, artifacts e renders sem confundir
   sucesso técnico com aprovação editorial humana.
 
@@ -37,14 +44,17 @@ As dependências apontam para dentro: adapters e renderers podem depender do
 domínio; o domínio nunca depende deles. `midi-generator` é referência
 conceitual, não dependência nem módulo compartilhado.
 
-## Política local-only e dependências
+## Política local-first, internet e dependências
 
 - Processamento audiovisual é local por padrão e `local_only` deve permanecer
-  explícito na configuração e nos manifests.
-- Nunca envie mídia, transcrição ou metadata do usuário a terceiros.
-- Não introduza serviços pagos ou APIs remotas (incluindo OpenAI API separada,
-  HeyGen, ElevenLabs, fal.ai, Replicate, Runway ou equivalentes) como dependência
-  operacional.
+  explícito nos manifests para registrar que aquela execução de mídia foi local.
+- Internet gratuita é permitida para pesquisa, referências, download autorizado
+  de assets, fontes públicas, publicação e análise futura de métricas.
+- Nunca envie mídia, transcrição ou metadata do usuário a terceiros sem
+  autorização explícita.
+- Não introduza APIs pagas de geração (incluindo OpenAI API separada, HeyGen,
+  ElevenLabs, fal.ai, Replicate, Runway, Veo, Kling ou equivalentes) como
+  dependência operacional.
 - Integrações externas futuras exigem autorização explícita, configuração
   opt-in e fronteira de adapter; não podem ser fallback silencioso.
 - Dependências opcionais ausentes não devem impedir contratos, planejamento,
@@ -70,8 +80,11 @@ conceitual, não dependência nem módulo compartilhado.
 
 ## Contratos e evolução
 
-O fluxo mínimo é `VideoRequest -> VideoBrief -> EditPlan`. `RenderManifest` será
-adicionado quando houver execução real. Contratos publicados devem:
+O fluxo mínimo publicado é `VideoRequest -> VideoBrief -> EditPlan ->
+RenderManifest`. `Script`, `Storyboard` e `AssetPlan` são candidatos futuros,
+não contratos obrigatórios: só devem existir separadamente quando um caso real
+exigir invariantes ou checkpoints que a representação atual não preserve.
+Contratos publicados devem:
 
 - ter versão explícita e representação JSON determinística;
 - recusar campos ou estados inválidos cedo;
@@ -102,9 +115,9 @@ Quando houver capacidade suficiente para atender um pedido real:
 
 1. identificar os arquivos relevantes e preservar os originals;
 2. executar inspeção técnica com ferramentas locais;
-3. transcrever localmente quando fala for relevante;
-4. entender intenção, audiência e plataforma;
-5. escolher um workflow suportado;
+3. entender roteiro, intenção, audiência e plataforma;
+4. escolher o workflow `dark-video` suportado e o menor escopo executável;
+5. transcrever ou narrar localmente quando fala for relevante;
 6. persistir `VideoRequest`, `VideoBrief` e `EditPlan`;
 7. validar o plano, inclusive conflitos entre inputs e outputs;
 8. executar operações reutilizáveis por adapters/renderers;
@@ -122,22 +135,24 @@ Ao receber apenas uma instrução curta para continuar:
 1. leia este `AGENTS.md` e a documentação relevante;
 2. inspecione árvore, estado do Git, commits recentes e diff do `HEAD`;
 3. execute a suíte completa antes de alterar código;
-4. confirme as capacidades existentes para não reimplementá-las;
-5. identifique o próximo gap audiovisual real;
-6. escolha **um** incremento pequeno, coeso e útil;
-7. prefira capacidade funcional a infraestrutura especulativa;
-8. implemente na camada correta;
-9. crie ou atualize testes;
-10. execute novamente toda a suíte;
-11. revise o próprio diff, incluindo segurança e não destruição;
-12. atualize documentação correspondente;
-13. crie um commit coeso;
-14. confirme `origin`, branch e ausência de mídia/secrets;
-15. envie para `origin/main` somente quando o estado estiver válido.
-16. ao encerrar, informe uma estimativa percentual de quanto o projeto avançou
-    naquele prompt e de quanto ainda falta para atingir a visão do produto,
-    deixando claro que os valores são aproximações baseadas nas capacidades
-    implementadas e nos gaps conhecidos.
+4. descubra nos commits, diff e documentos onde o último ciclo parou;
+5. confirme as capacidades existentes para não reimplementá-las;
+6. identifique o próximo gargalo real para `dark-video` v1;
+7. escolha **um** incremento coeso usando a pergunta: “qual é o menor
+   incremento funcional que mais nos aproxima do primeiro vídeo dark completo?”;
+8. prefira capacidade funcional a infraestrutura especulativa;
+9. implemente na camada correta;
+10. crie ou atualize testes e faça validações manuais relevantes;
+11. execute novamente toda a suíte;
+12. revise o próprio diff, incluindo segurança e não destruição;
+13. atualize documentação correspondente;
+14. crie um commit coeso;
+15. confirme `origin`, branch e ausência de mídia/secrets;
+16. envie para `origin/main` somente quando o estado estiver válido;
+17. informe o que foi implementado, por que foi escolhido, testes, validações
+    manuais, limitações, próximo gargalo e percentuais aproximados de progresso
+    até `dark-video` v1 e até a visão madura do agente produtor.
 
-Não implemente vários workflows de uma vez e não prolongue infraestrutura sem
-ganho audiovisual concreto.
+Não use `continue` para implementar vários workflows, refatorar por estética,
+antecipar integrações distantes, prolongar infraestrutura sem ganho audiovisual
+concreto ou adicionar geração de vídeo por IA antes da composição básica.

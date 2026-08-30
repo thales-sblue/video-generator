@@ -4,6 +4,9 @@ from video_generator.adapters.ffmpeg import (
     AudioArtifact,
     FFmpegError,
     SegmentArtifact,
+    SequenceArtifact,
+    SequenceClip,
+    compose_video_sequence,
     extract_audio,
     extract_segment,
 )
@@ -15,8 +18,11 @@ __all__ = [
     "MediaProbe",
     "ProbeError",
     "SegmentArtifact",
+    "SequenceArtifact",
+    "SequenceClip",
     "StreamProbe",
     "extract_audio",
     "extract_segment",
+    "compose_video_sequence",
     "probe_media",
 ]

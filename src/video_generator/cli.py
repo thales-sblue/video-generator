@@ -33,17 +33,20 @@ from video_generator.domain import (
 from video_generator.manifests import (
     ManifestError,
     build_segment_render_manifest,
+    build_sequence_render_manifest,
     default_manifest_path,
     fingerprint_file,
     publish_render_manifest,
     validate_manifest_target,
 )
 from video_generator.validation import (
+    AudioValidationReport,
     ManifestValidationReport,
     PreflightReport,
     ProjectValidationReport,
     SegmentValidationReport,
     preflight_edit_plan,
+    validate_audio_artifact,
     validate_render_manifest,
     validate_project_chain,
     validate_segment_artifact,
@@ -51,14 +54,17 @@ from video_generator.validation import (
 from video_generator.workflows import (
     SegmentWorkflowError,
     SegmentWorkflowReport,
+    SequenceWorkflowError,
+    SequenceWorkflowReport,
     run_segment_workflow,
+    run_sequence_workflow,
 )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="video-generator",
-        description="Local-only audiovisual production foundation",
+        description="Local-first audiovisual production engine",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     doctor = subparsers.add_parser("doctor", help="inspect local dependencies without changing the system")
@@ -124,6 +130,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum accepted artifact duration difference (default: 0.1)",
     )
     execute_segment.add_argument("--json", action="store_true", help="print a machine-readable report")
+    execute_sequence = subparsers.add_parser(
+        "execute-sequence-plan",
+        help="compose an ordered sequence_clip EditPlan into one silent MP4",
+    )
+    execute_sequence.add_argument("plan", help="path to a persisted sequence EditPlan JSON file")
+    execute_sequence.add_argument("--manifest", help="new RenderManifest JSON path")
+    execute_sequence.add_argument("--config", help="path to a fail-closed TOML configuration file")
+    execute_sequence.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=300,
+        help="maximum FFmpeg execution time (default: 300)",
+    )
+    execute_sequence.add_argument(
+        "--duration-tolerance-seconds",
+        type=float,
+        default=0.15,
+        help="maximum accepted artifact duration difference (default: 0.15)",
+    )
+    execute_sequence.add_argument("--json", action="store_true", help="print a machine-readable report")
     validate_segment = subparsers.add_parser(
         "validate-segment",
         help="verify one extracted segment artifact with ffprobe",
@@ -145,6 +171,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum accepted duration difference (default: 0.1)",
     )
     validate_segment.add_argument("--json", action="store_true", help="print a machine-readable report")
+    validate_audio = subparsers.add_parser(
+        "validate-audio",
+        help="verify one extracted PCM WAV artifact with ffprobe",
+    )
+    validate_audio.add_argument("output", help="path to the extracted WAV artifact")
+    validate_audio.add_argument(
+        "--source",
+        required=True,
+        help="immutable source path used for extraction",
+    )
+    validate_audio.add_argument(
+        "--file-size-bytes",
+        type=int,
+        required=True,
+        help="artifact size recorded immediately after extraction",
+    )
+    validate_audio.add_argument("--json", action="store_true", help="print a machine-readable report")
     validate_manifest = subparsers.add_parser(
         "validate-manifest",
         help="verify a RenderManifest against its plan and current local files",
@@ -248,6 +291,18 @@ def _format_audio_artifact(artifact: AudioArtifact) -> str:
     ) + "\n"
 
 
+def _format_audio_validation(report: AudioValidationReport) -> str:
+    lines = [
+        f"Artifact: {report.artifact.output_path}",
+        f"Audio validation: {'valid' if report.valid else 'INVALID'}",
+        f"Expected audio: pcm_s16le; {report.artifact.sample_rate_hz} Hz; "
+        f"{report.artifact.channels} channels",
+    ]
+    for issue in report.issues:
+        lines.append(f"  [{issue.code}] {issue.message}")
+    return "\n".join(lines) + "\n"
+
+
 def _format_segment_workflow(report: SegmentWorkflowReport, manifest_path: Path) -> str:
     return "\n".join(
         [
@@ -255,6 +310,21 @@ def _format_segment_workflow(report: SegmentWorkflowReport, manifest_path: Path)
             "Workflow: segment-extract",
             f"Operation: {report.operation_id}",
             f"Artifact: {report.artifact.output_path}",
+            f"Preflight: {'valid' if report.preflight.valid else 'INVALID'}",
+            f"Technical validation: {'valid' if report.validation.valid else 'INVALID'}",
+            f"RenderManifest: {manifest_path}",
+        ]
+    ) + "\n"
+
+
+def _format_sequence_workflow(report: SequenceWorkflowReport, manifest_path: Path) -> str:
+    return "\n".join(
+        [
+            f"Plan: {report.plan_id}",
+            "Workflow: video-sequence",
+            f"Clips: {len(report.operation_ids)}",
+            f"Artifact: {report.artifact.output_path}",
+            f"Duration: {report.artifact.duration_seconds} seconds",
             f"Preflight: {'valid' if report.preflight.valid else 'INVALID'}",
             f"Technical validation: {'valid' if report.validation.valid else 'INVALID'}",
             f"RenderManifest: {manifest_path}",
@@ -371,6 +441,24 @@ def _segment_artifact_from_args(args: argparse.Namespace) -> SegmentArtifact:
     )
 
 
+def _audio_artifact_from_args(args: argparse.Namespace) -> AudioArtifact:
+    if args.file_size_bytes <= 0:
+        raise ValueError("file_size_bytes must be positive")
+    source_path = str(Path(args.source).expanduser().resolve())
+    output_path = str(Path(args.output).expanduser().resolve())
+    if os.path.normcase(source_path) == os.path.normcase(output_path):
+        raise ValueError("output must not be the source path")
+    if Path(output_path).suffix.lower() != ".wav":
+        raise ValueError("output must use the .wav extension")
+    return AudioArtifact(
+        source_path=source_path,
+        output_path=output_path,
+        sample_rate_hz=48000,
+        channels=2,
+        file_size_bytes=args.file_size_bytes,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "doctor":
@@ -468,6 +556,46 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(_format_segment_workflow(report, published_manifest), end="")
         return 0 if report.valid else 1
+    if args.command == "execute-sequence-plan":
+        try:
+            plan = _load_edit_plan(args.plan)
+            manifest_path = validate_manifest_target(
+                args.manifest or default_manifest_path(plan.output_path),
+                forbidden_paths=(*plan.sources, plan.output_path),
+            )
+            config = load_config(args.config)
+            doctor = run_doctor(config)
+            source_fingerprints = []
+
+            def capture_sequence_sources(execution_plan: EditPlan) -> None:
+                source_fingerprints.extend(
+                    fingerprint_file(source) for source in execution_plan.sources
+                )
+
+            report = run_sequence_workflow(
+                plan,
+                timeout_seconds=args.timeout_seconds,
+                duration_tolerance_seconds=args.duration_tolerance_seconds,
+                before_compose=capture_sequence_sources,
+            )
+            manifest = build_sequence_render_manifest(
+                plan,
+                report,
+                doctor,
+                tuple(source_fingerprints),
+            )
+            published_manifest = publish_render_manifest(manifest, manifest_path)
+        except (ConfigurationError, ContractError, ManifestError, SequenceWorkflowError) as exc:
+            print(f"Sequence workflow error: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            payload = report.to_dict()
+            payload["manifest_path"] = str(published_manifest)
+            payload["manifest"] = manifest.to_dict()
+            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print(_format_sequence_workflow(report, published_manifest), end="")
+        return 0 if report.valid else 1
     if args.command == "validate-segment":
         try:
             artifact = _segment_artifact_from_args(args)
@@ -479,6 +607,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Segment validation error: {exc}", file=sys.stderr)
             return 2
         print(report.to_json() if args.json else _format_segment_validation(report), end="")
+        return 0 if report.valid else 1
+    if args.command == "validate-audio":
+        try:
+            artifact = _audio_artifact_from_args(args)
+            report = validate_audio_artifact(artifact)
+        except (TypeError, ValueError) as exc:
+            print(f"Audio validation error: {exc}", file=sys.stderr)
+            return 2
+        print(report.to_json() if args.json else _format_audio_validation(report), end="")
         return 0 if report.valid else 1
     if args.command == "validate-manifest":
         try:

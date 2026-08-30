@@ -4,10 +4,72 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from video_generator.adapters import FFmpegError, extract_audio, extract_segment
+from video_generator.adapters import (
+    FFmpegError,
+    SequenceClip,
+    compose_video_sequence,
+    extract_audio,
+    extract_segment,
+)
 
 
 class FFmpegAdapterTests(unittest.TestCase):
+    def test_composes_an_ordered_silent_video_sequence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            output = root / "timeline.mp4"
+            first.write_bytes(b"first source")
+            second.write_bytes(b"second source")
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"composed sequence")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            clips = (SequenceClip(str(first), 1, 2.5), SequenceClip(str(second), 0, 2))
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                artifact = compose_video_sequence(clips, output, timeout_seconds=20)
+
+            command = execute.call_args.args[0]
+            self.assertEqual(command.count("-i"), 2)
+            self.assertLess(command.index(str(first.resolve())), command.index(str(second.resolve())))
+            filter_graph = command[command.index("-filter_complex") + 1]
+            self.assertIn("[0:v:0]trim=start=1:end=2.5,setpts=PTS-STARTPTS[v0]", filter_graph)
+            self.assertIn("[v0][v1]concat=n=2:v=1:a=0[outv]", filter_graph)
+            self.assertEqual(command[command.index("-c:v") + 1], "libopenh264")
+            self.assertIn("-an", command)
+            self.assertFalse(execute.call_args.kwargs["shell"])
+            self.assertEqual(first.read_bytes(), b"first source")
+            self.assertEqual(second.read_bytes(), b"second source")
+            self.assertEqual(artifact.duration_seconds, 3.5)
+            self.assertEqual(artifact.source_paths, (str(first.resolve()), str(second.resolve())))
+            self.assertEqual(output.read_bytes(), b"composed sequence")
+
+    def test_sequence_rejects_unsafe_or_incomplete_inputs_before_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            other = root / "other.mp4"
+            source.write_bytes(b"source")
+            other.write_bytes(b"other")
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool") as resolve:
+                with self.assertRaisesRegex(FFmpegError, "at least two"):
+                    compose_video_sequence((SequenceClip(str(source), 0, 1),), root / "out.mp4")
+                with self.assertRaisesRegex(FFmpegError, "must not overwrite"):
+                    compose_video_sequence(
+                        (SequenceClip(str(source), 0, 1), SequenceClip(str(other), 0, 1)),
+                        source,
+                    )
+                with self.assertRaisesRegex(FFmpegError, "greater than"):
+                    compose_video_sequence(
+                        (SequenceClip(str(source), 1, 1), SequenceClip(str(other), 0, 1)),
+                        root / "out.mp4",
+                    )
+            resolve.assert_not_called()
+
     def test_extracts_first_audio_stream_as_deterministic_pcm_wav(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -1,23 +1,26 @@
 # video-generator
 
-Fundação de um agente local de produção audiovisual controlado pelo Codex. O
-projeto transforma intenção e referências de mídia em contratos persistentes:
+Motor local-first de um agente produtor audiovisual controlado pelo Codex. A
+prioridade atual é `dark-video`: construir incrementalmente o menor produtor
+capaz de gerar um vídeo dark completo, assistível e reproduzível. O projeto
+transforma intenção e referências de mídia em contratos persistentes:
 
 ```text
 VideoRequest -> VideoBrief -> EditPlan -> execução local -> RenderManifest
 ```
 
-O projeto já inspeciona mídia local com `ffprobe`, extrai segmentos por stream
-copy com FFmpeg e executa um primeiro workflow estrito a partir de um `EditPlan`,
-sempre criando um novo artifact e um `RenderManifest` versionado. Renderização
-composta e render final ainda não estão implementados. O domínio, os schemas, a
-política local-only e o diagnóstico do ambiente sustentam a evolução incremental.
+O projeto já inspeciona mídia com `ffprobe`, extrai segmentos e áudio com FFmpeg
+e executa workflows estritos a partir de `EditPlan`. `video-sequence` é a
+primeira composição temporal real: monta múltiplos trechos de vídeo em ordem,
+produz um MP4 silencioso, valida-o e registra um `RenderManifest`. Narração,
+imagens, captions, mixagem e render final completo ainda não estão implementados.
 
 ## Princípios
 
 - inputs nunca são sobrescritos ou apagados;
 - decisões editoriais são persistidas em contratos versionados;
-- processamento é local por padrão e não depende de APIs pagas;
+- processamento é local-first; internet gratuita é permitida para pesquisa e
+  assets autorizados, sem dependência de APIs pagas de geração;
 - o domínio não depende de renderers nem ferramentas externas;
 - FFmpeg/ffprobe cuidam de mídia de baixo nível e HyperFrames será o compositor
   principal quando a renderização for implementada.
@@ -68,13 +71,19 @@ python -m video_generator extract-segment inputs\clip.mp4 output\segment.mp4 --s
 python -m video_generator extract-segment inputs\clip.mp4 output\precise.mp4 --start-seconds 0.25 --end-seconds 5.25 --mode precise --json
 python -m video_generator extract-audio inputs\clip.mp4 output\audio.wav --json
 python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
+python -m video_generator execute-sequence-plan projects\example\sequence-plan.json --manifest projects\example\sequence-manifest.json --json
 python -m video_generator validate-segment output\segment.mp4 --source inputs\clip.mp4 --start-seconds 0 --end-seconds 5 --file-size-bytes 123456 --json
+python -m video_generator validate-audio output\audio.wav --source inputs\clip.mp4 --file-size-bytes 123456 --json
 python -m video_generator validate-manifest projects\example\render-manifest.json --plan projects\example\edit-plan.json --json
 python -m video_generator validate-project --request projects\example\video-request.json --brief projects\example\video-brief.json --plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 ```
 
 O diagnóstico apenas inspeciona o computador. Ele não instala ferramentas, não
 altera configurações globais e não acessa serviços remotos.
+
+Internet não é proibida pelo produto: o Codex pode pesquisar e obter referências
+ou assets gratuitos quando autorizado. O runtime de mídia permanece local e
+falha fechado para serviços externos; nenhuma API paga de geração é dependência.
 
 O comando `inspect` exige `ffprobe` no `PATH`, valida que o source seja um
 arquivo local e retorna formato, duração, bit rate e streams em uma representação
@@ -106,6 +115,18 @@ recusa outputs existentes ou fora de `.wav`, remove arquivos parciais em caso de
 falha e retorna paths absolutos, formato e tamanho em texto ou JSON. Ele ainda é
 uma operação de baixo nível, sem `EditPlan`, `RenderManifest` ou afirmação de
 revisão auditiva.
+
+`validate-audio` verifica posteriormente se o WAV ainda tem o tamanho registrado,
+container WAV, um único stream PCM 16-bit, 48 kHz, dois canais e duração positiva.
+A validação é somente leitura e não representa aprovação auditiva.
+
+`execute-sequence-plan` é o primeiro workflow de timeline. Ele aceita ao menos
+dois `sequence_clip` ordenados, com source, início e fim, exige vídeos com as
+mesmas dimensões e produz um MP4 H.264 silencioso. A ordem das operações é a
+ordem da montagem. Preflight, fingerprints, validação de duração/streams e
+`RenderManifest` fazem parte da mesma execução. Áudio, imagens, transitions,
+captions e layout ainda ficam fora desse escopo; HyperFrames continua planejado
+para a composição visual completa.
 
 `validate-manifest` verifica posteriormente, sem escrever arquivos, se o plano,
 sources e outputs ainda correspondem aos IDs e fingerprints registrados. O
@@ -170,8 +191,9 @@ config/ffmpeg-lock.json         proveniência e integridade do FFmpeg local apro
 docs/                           visão, arquitetura e linguagem audiovisual
 schemas/                        contratos JSON públicos v1, incluindo RenderManifest
 src/video_generator/domain/     modelos e invariantes puros
-src/video_generator/adapters/   integrações locais, incluindo ffprobe
-src/video_generator/validation/ preflight, integridade e rastreabilidade read-only
+src/video_generator/adapters/   integrações locais, incluindo ffprobe e FFmpeg
+src/video_generator/workflows/  recorte e primeira timeline sequencial
+src/video_generator/validation/ preflight, mídia, integridade e rastreabilidade read-only
 src/video_generator/config.py   leitura de configuração local
 src/video_generator/doctor.py   diagnóstico somente leitura
 tests/                          testes automatizados

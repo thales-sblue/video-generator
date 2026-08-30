@@ -13,6 +13,7 @@ from video_generator.domain import EditPlan, FileFingerprint, RenderManifest, To
 
 if TYPE_CHECKING:
     from video_generator.workflows import SegmentWorkflowReport
+    from video_generator.workflows import SequenceWorkflowReport
 
 
 class ManifestError(RuntimeError):
@@ -106,6 +107,48 @@ def build_segment_render_manifest(
         plan_id=plan.plan_id,
         brief_id=plan.brief_id,
         workflow="segment-extract",
+        plan_sha256=fingerprint_plan(plan),
+        sources=source_fingerprints,
+        outputs=(fingerprint_file(report.artifact.output_path),),
+        tools=tuple(tool_records),
+        technical_validation_valid=report.validation.valid,
+        technical_validation_issues=tuple(issue.code for issue in report.validation.issues),
+    )
+
+
+def build_sequence_render_manifest(
+    plan: EditPlan,
+    report: SequenceWorkflowReport,
+    doctor: DoctorReport,
+    source_fingerprints: tuple[FileFingerprint, ...],
+) -> RenderManifest:
+    if report.plan_id != plan.plan_id:
+        raise ManifestError("workflow report does not match the plan")
+    if report.operation_ids != tuple(operation.operation_id for operation in plan.operations):
+        raise ManifestError("workflow report operations do not match the plan")
+    if _normalized(report.artifact.output_path) != _normalized(plan.output_path):
+        raise ManifestError("workflow artifact output does not match the plan")
+    if not doctor.local_only or doctor.external_services_allowed or not doctor.preserve_sources:
+        raise ManifestError("unsafe runtime configuration cannot produce a manifest")
+    if len(source_fingerprints) != len(plan.sources):
+        raise ManifestError("source fingerprints do not match the plan")
+    for source, fingerprint in zip(plan.sources, source_fingerprints, strict=True):
+        if _normalized(source) != _normalized(fingerprint.path):
+            raise ManifestError("source fingerprint path does not match the plan")
+        if fingerprint_file(source) != fingerprint:
+            raise ManifestError(f"source changed during workflow execution: {source}")
+    statuses = {tool.name: tool for tool in doctor.tools}
+    tool_records = []
+    for name in ("FFmpeg", "ffprobe"):
+        status = statuses.get(name)
+        if status is None or not status.available or not status.path:
+            raise ManifestError(f"required tool metadata is unavailable: {name}")
+        tool_records.append(ToolRecord(name, status.path, status.version))
+    return RenderManifest(
+        manifest_id=f"manifest-{plan.plan_id}",
+        plan_id=plan.plan_id,
+        brief_id=plan.brief_id,
+        workflow="video-sequence",
         plan_sha256=fingerprint_plan(plan),
         sources=source_fingerprints,
         outputs=(fingerprint_file(report.artifact.output_path),),
