@@ -12,10 +12,11 @@ VideoRequest -> VideoBrief -> EditPlan -> execução local -> RenderManifest
 
 O projeto já inspeciona mídia com `ffprobe`, extrai segmentos e áudio com FFmpeg
 e executa workflows estritos a partir de `EditPlan`. `video-sequence` monta
-múltiplos trechos de vídeo em ordem, pode queimar captions e incorporar uma
-narração e música local, produzindo H.264/AAC validado e registrado em
-`RenderManifest`. Um modo final separado publica `final.mp4` somente após QA
-técnico; imagens ainda não estão implementadas.
+trechos de vídeo e imagens locais com duração fixa em ordem, pode queimar
+captions e incorporar uma narração e música local, produzindo H.264/AAC validado
+e registrado em `RenderManifest`. Um modo final separado publica `final.mp4`
+somente após QA técnico. Imagens exigem dimensões iguais às dos clipes; scale/pad
+e movimento ainda não estão implementados.
 
 ## Princípios
 
@@ -124,8 +125,11 @@ revisão auditiva.
 container WAV, um único stream PCM 16-bit, 48 kHz, dois canais e duração positiva.
 A validação é somente leitura e não representa aprovação auditiva.
 
-`execute-sequence-plan` aceita ao menos dois `sequence_clip` ordenados, com
-source, início e fim, e exige vídeos com as mesmas dimensões. Após os clipes, uma
+`execute-sequence-plan` aceita ao menos dois segmentos de timeline ordenados, com
+ao menos um `sequence_clip` (source, início e fim). Um `image_clip` mostra uma
+imagem local por `duration_seconds` (até 600 s) sem início ou fim. Todos os
+sources, imagens incluídas, precisam ter as mesmas dimensões; havendo qualquer
+imagem, os segmentos são normalizados para 30 fps. Após os segmentos, uma
 operação opcional `captions` pode persistir uma faixa com estilo fixo
 `bottom_box` e itens de texto, início e fim relativos à timeline. Os itens devem
 estar ordenados, não podem se sobrepor, duram ao menos 1 ms, usam no máximo 160

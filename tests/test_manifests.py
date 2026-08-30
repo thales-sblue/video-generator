@@ -119,6 +119,69 @@ class ManifestTests(unittest.TestCase):
                     tuple(fingerprint_file(source) for source in plan.sources),
                 )
 
+    def test_sequence_manifest_accounts_for_image_clip_segments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clip = root / "clip.mp4"
+            still = root / "card.png"
+            output = root / "timeline.mp4"
+            for path in (clip, still, output):
+                path.write_bytes(path.stem.encode("utf-8"))
+            plan = EditPlan(
+                "plan-image",
+                "brief-dark",
+                (str(clip), str(still)),
+                str(output),
+                (
+                    EditOperation("clip-1", "sequence_clip", str(clip), 0, 1.5),
+                    EditOperation(
+                        "image-1", "image_clip", str(still), parameters={"duration_seconds": 2}
+                    ),
+                ),
+            )
+            artifact = SequenceArtifact(
+                (str(clip.resolve()), str(still.resolve())),
+                str(output.resolve()),
+                3.5,
+                output.stat().st_size,
+                image_count=1,
+            )
+            validation = SequenceValidationReport(True, artifact, 3.5, 0.15, (), None)
+            report = SequenceWorkflowReport(
+                plan.plan_id,
+                ("clip-1", "image-1"),
+                PreflightReport(plan.plan_id, True, (), ()),
+                artifact,
+                validation,
+            )
+            fingerprints = tuple(fingerprint_file(source) for source in plan.sources)
+
+            manifest = build_sequence_render_manifest(plan, report, doctor_report(), fingerprints)
+            self.assertEqual(manifest.workflow, "video-sequence")
+
+            mismatched = SequenceWorkflowReport(
+                plan.plan_id,
+                ("clip-1", "image-1"),
+                report.preflight,
+                SequenceArtifact(
+                    artifact.source_paths, artifact.output_path, 3.5, artifact.file_size_bytes
+                ),
+                SequenceValidationReport(
+                    True,
+                    SequenceArtifact(
+                        artifact.source_paths, artifact.output_path, 3.5, artifact.file_size_bytes
+                    ),
+                    3.5,
+                    0.15,
+                    (),
+                    None,
+                ),
+            )
+            with self.assertRaisesRegex(ManifestError, "images do not match the plan"):
+                build_sequence_render_manifest(
+                    plan, mismatched, doctor_report(), fingerprints
+                )
+
     def test_fingerprints_files_and_builds_round_trippable_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             plan, report = execution(directory)

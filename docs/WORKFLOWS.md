@@ -38,19 +38,26 @@ Esse é o primeiro workflow que transforma múltiplas decisões temporais em uma
 timeline renderizada:
 
 ```text
-EditPlan com sequence_clip ordenados -> preflight -> FFmpeg concat filter
+EditPlan com sequence_clip / image_clip ordenados -> preflight -> FFmpeg concat filter
               + captions opcionais
               + music opcional
               + narration opcional   -> ffprobe -> RenderManifest -> MP4
 ```
 
-O plano deve declarar pelo menos dois `sequence_clip`, cada um com source,
-início e fim. A ordem das operações é a ordem da timeline. Todos os sources
-declarados devem ser usados; parâmetros e outputs diferentes de MP4 são
-recusados. A v1 exige um stream de vídeo e dimensões iguais entre sources.
+O plano deve declarar pelo menos dois segmentos de timeline e ao menos um
+`sequence_clip`. Um `sequence_clip` tem source, início e fim. Um `image_clip`
+tem source (imagem local) e `parameters={"duration_seconds": N}`, sem início ou
+fim: a imagem é exibida por `N` segundos (limite de 600 s). A ordem das operações
+é a ordem da timeline. Todos os sources declarados devem ser usados; parâmetros
+inesperados e outputs diferentes de MP4 são recusados. A v1 exige um stream de
+vídeo e dimensões iguais entre todos os sources, incluindo as imagens — sources
+que não batem são recusados antes de qualquer render (sem scale/pad automático).
 
-FFmpeg recorta, zera os timestamps, concatena e reencoda o resultado em H.264.
-O áudio original dos clipes não entra na timeline. Depois dos clipes, uma
+FFmpeg recorta os clipes, zera os timestamps, concatena e reencoda o resultado em
+H.264. Cada `image_clip` entra como um input `-loop 1 -t N` e, quando há qualquer
+imagem na timeline, todos os segmentos são normalizados para 30 fps e `yuv420p`
+para manter o concat determinístico. O áudio original dos clipes não entra na
+timeline. Depois dos segmentos, uma
 operação opcional `captions` representa uma faixa inteira sem source próprio:
 `parameters` contém `style=bottom_box` e de 1 a 500 itens com texto e tempos
 relativos à timeline. Cada texto tem até 160 caracteres; cues são ordenados,
@@ -99,10 +106,13 @@ explícito.
 
 Capacidades que ainda faltam para `dark-video` v1:
 
-- aceitar imagens com duração explícita na timeline;
 - gerar narração local a partir de texto fornecido;
 - derivar captions do timing da narração, não de timestamps manuais;
 - executar a primeira produção real completa e registrar sua revisão humana.
+
+Já disponível: `image_clip` insere imagens locais com duração explícita na
+timeline de `video-sequence`, desde que as dimensões batam com os clipes (sem
+scale/pad automático nesta v1).
 
 ### Ordem recomendada dos próximos incrementos
 
@@ -119,11 +129,12 @@ incremento; nada aqui autoriza pular testes ou camadas):
    Whisper local), respeitando `VIDEO_LANGUAGE.md` (timing por unidades de
    significado).
 4. **Primeiro adapter HyperFrames** — provar `EditPlan -> cena HTML -> MP4` com um
-   title card / camada de captions. Avaliar se **imagens na timeline** saem mais
-   baratas por HTML (fit ao canvas, Ken Burns) do que por `zoompan`/`tpad` no
-   FFmpeg; se sim, HyperFrames passa a ser o caminho de imagens e captions ricas.
-   HyperFrames exige Node e Chrome headless e deve receber um lock de proveniência
-   análogo a `config/ffmpeg-lock.json`.
+   title card / camada de captions. Avaliar se imagens com scale/pad, fit ao
+   canvas e Ken Burns saem mais baratas por HTML do que por `zoompan`/`tpad` no
+   FFmpeg; se sim, HyperFrames passa a ser o caminho de imagens ricas e captions
+   avançadas, deixando o `image_clip` atual para o caso simples. HyperFrames exige
+   Node e Chrome headless e deve receber um lock de proveniência análogo a
+   `config/ffmpeg-lock.json`.
 5. **Primeira produção real completa** com registro de revisão humana — fecha
    `dark-video` v1.
 

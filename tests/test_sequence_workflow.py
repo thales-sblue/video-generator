@@ -158,6 +158,49 @@ def music_preflight(plan: EditPlan, *, audio: bool = True) -> PreflightReport:
     return PreflightReport(plan.plan_id, True, (), (*base.sources, music_probe))
 
 
+def image_plan(*, image_parameters=None, image_kind: str = "image_clip", **operation_kwargs) -> EditPlan:
+    clip_source = str(Path("inputs/first.mp4").resolve())
+    image_source = str(Path("inputs/card.png").resolve())
+    return EditPlan(
+        "plan-image",
+        "brief-dark",
+        (clip_source, image_source),
+        str(Path("output/timeline.mp4").resolve()),
+        (
+            EditOperation("clip-1", "sequence_clip", clip_source, 1, 2.5),
+            EditOperation(
+                "image-1",
+                image_kind,
+                image_source,
+                parameters=(
+                    {"duration_seconds": 4} if image_parameters is None else image_parameters
+                ),
+                **operation_kwargs,
+            ),
+        ),
+    )
+
+
+def image_preflight(plan: EditPlan, *, image_width: int = 1280) -> PreflightReport:
+    clip_probe = MediaProbe(
+        plan.sources[0],
+        1000,
+        "mov,mp4",
+        10,
+        800000,
+        (StreamProbe(0, "video", "h264", 10, 1280, 720, None, None),),
+    )
+    image_probe = MediaProbe(
+        plan.sources[1],
+        5000,
+        "png_pipe",
+        None,
+        None,
+        (StreamProbe(0, "video", "png", None, image_width, 720, None, None),),
+    )
+    return PreflightReport(plan.plan_id, True, (), (clip_probe, image_probe))
+
+
 class SequenceWorkflowTests(unittest.TestCase):
     def test_stages_validates_and_exclusively_publishes_final_mp4(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -545,6 +588,99 @@ class SequenceWorkflowTests(unittest.TestCase):
                 plan,
                 preflight=lambda value: valid_preflight(value, second_width=1920),
                 compose=lambda *_args, **_kwargs: self.fail("must not compose"),
+            )
+
+    def test_accepts_a_still_image_segment_and_extends_the_timeline(self):
+        plan = image_plan()
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen["kinds"] = [type(clip).__name__ for clip in clips]
+            seen["sources"] = tuple(clip.source_path for clip in clips)
+            return SequenceArtifact(
+                tuple(clip.source_path for clip in clips),
+                plan.output_path,
+                5.5,
+                500,
+                image_count=1,
+            )
+
+        def validate(artifact, **_kwargs):
+            return SequenceValidationReport(True, artifact, 5.5, 0.15, (), None)
+
+        report = run_sequence_workflow(
+            plan, preflight=image_preflight, compose=compose, validate=validate
+        )
+
+        self.assertTrue(report.valid)
+        self.assertEqual(seen["kinds"], ["SequenceClip", "SequenceImage"])
+        self.assertEqual(seen["sources"], plan.sources)
+        # 1.5 s of clip + 4 s of still
+        self.assertEqual(report.artifact.duration_seconds, 5.5)
+        self.assertEqual(report.artifact.image_count, 1)
+
+    def test_rejects_an_image_clip_with_an_invalid_duration(self):
+        for parameters, message in (
+            ({}, "duration_seconds"),
+            ({"duration_seconds": 0}, "positive"),
+            ({"duration_seconds": -2}, "positive"),
+            ({"duration_seconds": 4, "loop": True}, "only a duration_seconds"),
+            ({"duration_seconds": 100000}, "must not exceed"),
+        ):
+            with self.subTest(parameters=parameters):
+                with self.assertRaisesRegex(SequenceWorkflowError, message):
+                    run_sequence_workflow(
+                        image_plan(image_parameters=parameters),
+                        preflight=lambda _: self.fail("must not preflight"),
+                        compose=lambda *_a, **_k: self.fail("must not compose"),
+                    )
+
+    def test_rejects_an_image_clip_that_declares_a_timeline_range(self):
+        with self.assertRaisesRegex(SequenceWorkflowError, "no timeline range"):
+            run_sequence_workflow(
+                image_plan(start_seconds=0, end_seconds=4),
+                preflight=lambda _: self.fail("must not preflight"),
+                compose=lambda *_a, **_k: self.fail("must not compose"),
+            )
+
+    def test_rejects_a_timeline_without_any_video_clip(self):
+        first_image = str(Path("inputs/card-a.png").resolve())
+        second_image = str(Path("inputs/card-b.png").resolve())
+        plan = EditPlan(
+            "plan-image-only",
+            "brief-dark",
+            (first_image, second_image),
+            str(Path("output/timeline.mp4").resolve()),
+            (
+                EditOperation("image-1", "image_clip", first_image, parameters={"duration_seconds": 3}),
+                EditOperation("image-2", "image_clip", second_image, parameters={"duration_seconds": 3}),
+            ),
+        )
+
+        with self.assertRaisesRegex(SequenceWorkflowError, "at least one sequence_clip"):
+            run_sequence_workflow(
+                plan,
+                preflight=lambda _: self.fail("must not preflight"),
+                compose=lambda *_a, **_k: self.fail("must not compose"),
+            )
+
+    def test_rejects_an_image_whose_dimensions_differ_from_the_clips(self):
+        with self.assertRaisesRegex(SequenceWorkflowError, "matching source dimensions"):
+            run_sequence_workflow(
+                image_plan(),
+                preflight=lambda value: image_preflight(value, image_width=1920),
+                compose=lambda *_a, **_k: self.fail("must not compose"),
+            )
+
+    def test_rejects_inconsistent_image_artifact_metadata(self):
+        plan = image_plan()
+        bad_artifact = SequenceArtifact(plan.sources, plan.output_path, 5.5, 500, image_count=0)
+
+        with self.assertRaisesRegex(SequenceWorkflowError, "unexpected image metadata"):
+            run_sequence_workflow(
+                plan,
+                preflight=image_preflight,
+                compose=lambda *_a, **_k: bad_artifact,
             )
 
     def test_rejects_inconsistent_artifact_metadata(self):

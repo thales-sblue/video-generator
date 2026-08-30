@@ -8,6 +8,7 @@ from video_generator.adapters import (
     CaptionCue,
     FFmpegError,
     SequenceClip,
+    SequenceImage,
     compose_video_sequence,
     extract_audio,
     extract_segment,
@@ -171,6 +172,88 @@ class FFmpegAdapterTests(unittest.TestCase):
             self.assertEqual(artifact.duration_seconds, 3.5)
             self.assertEqual(artifact.source_paths, (str(first.resolve()), str(second.resolve())))
             self.assertEqual(output.read_bytes(), b"composed sequence")
+
+    def test_composes_a_still_image_between_video_clips(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            still = root / "card.png"
+            second = root / "second.mp4"
+            output = root / "timeline.mp4"
+            for path in (first, still, second):
+                path.write_bytes(path.stem.encode("utf-8"))
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"composed sequence")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            timeline = (
+                SequenceClip(str(first), 0, 1.5),
+                SequenceImage(str(still), 4),
+                SequenceClip(str(second), 0, 2),
+            )
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                artifact = compose_video_sequence(timeline, output, timeout_seconds=20)
+
+            command = execute.call_args.args[0]
+            self.assertEqual(command.count("-i"), 3)
+            # the still is looped for exactly its declared duration
+            loop_index = command.index("-loop")
+            self.assertEqual(command[loop_index + 1], "1")
+            self.assertEqual(command[loop_index + 2], "-t")
+            self.assertEqual(command[loop_index + 3], "4")
+            self.assertEqual(command[loop_index + 4], "-i")
+            self.assertEqual(command[loop_index + 5], str(still.resolve()))
+            filter_graph = command[command.index("-filter_complex") + 1]
+            self.assertIn(
+                "[1:v:0]fps=30,setsar=1,format=yuv420p,trim=duration=4,setpts=PTS-STARTPTS[v1]",
+                filter_graph,
+            )
+            # video segments are normalised too so the concat is deterministic
+            self.assertIn(
+                "[0:v:0]trim=start=0:end=1.5,setpts=PTS-STARTPTS,fps=30,setsar=1,format=yuv420p[v0]",
+                filter_graph,
+            )
+            self.assertIn("[v0][v1][v2]concat=n=3:v=1:a=0[outv]", filter_graph)
+            self.assertEqual(artifact.duration_seconds, 7.5)
+            self.assertEqual(artifact.image_count, 1)
+            self.assertEqual(
+                artifact.source_paths,
+                (str(first.resolve()), str(still.resolve()), str(second.resolve())),
+            )
+
+    def test_sequence_requires_at_least_one_video_clip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            one = root / "one.png"
+            two = root / "two.png"
+            for path in (one, two):
+                path.write_bytes(path.stem.encode("utf-8"))
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool") as resolve:
+                with self.assertRaisesRegex(FFmpegError, "at least one video"):
+                    compose_video_sequence(
+                        (SequenceImage(str(one), 2), SequenceImage(str(two), 2)),
+                        root / "out.mp4",
+                    )
+            resolve.assert_not_called()
+
+    def test_sequence_rejects_a_non_positive_image_duration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clip = root / "clip.mp4"
+            still = root / "still.png"
+            for path in (clip, still):
+                path.write_bytes(path.stem.encode("utf-8"))
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool"):
+                with self.assertRaisesRegex(FFmpegError, "image duration_seconds"):
+                    compose_video_sequence(
+                        (SequenceClip(str(clip), 0, 1), SequenceImage(str(still), 0)),
+                        root / "out.mp4",
+                    )
 
     def test_sequence_rejects_unsafe_or_incomplete_inputs_before_execution(self):
         with tempfile.TemporaryDirectory() as directory:

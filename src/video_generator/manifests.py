@@ -130,13 +130,18 @@ def build_sequence_render_manifest(
         raise ManifestError("workflow report operations do not match the plan")
     if _normalized(report.artifact.output_path) != _normalized(plan.output_path):
         raise ManifestError("workflow artifact output does not match the plan")
-    clip_sources = tuple(
+    timeline_sources = tuple(
         _normalized(operation.source)
         for operation in plan.operations
-        if operation.kind == "sequence_clip" and operation.source is not None
+        if operation.kind in ("sequence_clip", "image_clip") and operation.source is not None
     )
-    if tuple(_normalized(source) for source in report.artifact.source_paths) != clip_sources:
+    if tuple(_normalized(source) for source in report.artifact.source_paths) != timeline_sources:
         raise ManifestError("workflow artifact clip sources do not match the plan")
+    expected_image_count = sum(
+        1 for operation in plan.operations if operation.kind == "image_clip"
+    )
+    if report.artifact.image_count != expected_image_count:
+        raise ManifestError("workflow artifact images do not match the plan")
     narration_sources = tuple(
         _normalized(operation.source)
         for operation in plan.operations

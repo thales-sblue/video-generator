@@ -17,6 +17,7 @@ from video_generator.adapters import (
     MediaProbe,
     SequenceArtifact,
     SequenceClip,
+    SequenceImage,
     compose_video_sequence,
 )
 from video_generator.domain import EditPlan
@@ -30,6 +31,8 @@ from video_generator.validation import (
 
 WORKFLOW_NAME = "video-sequence"
 OPERATION_KIND = "sequence_clip"
+IMAGE_KIND = "image_clip"
+IMAGE_MAX_DURATION_SECONDS = 600.0
 NARRATION_KIND = "narration"
 NARRATION_PARAMETERS = {"duration_policy": "match_timeline"}
 CAPTIONS_KIND = "captions"
@@ -167,10 +170,30 @@ def _music_gain(parameters: Mapping[str, object]) -> float:
     return float(gain)
 
 
+def _image_duration(parameters: Mapping[str, object]) -> float:
+    values = dict(parameters)
+    if set(values) != {"duration_seconds"}:
+        raise SequenceWorkflowError("image_clip requires only a duration_seconds parameter")
+    duration = _runtime_number(
+        values["duration_seconds"], "image_clip duration_seconds", allow_zero=False
+    )
+    if duration > IMAGE_MAX_DURATION_SECONDS:
+        raise SequenceWorkflowError(
+            f"image_clip duration_seconds must not exceed {IMAGE_MAX_DURATION_SECONDS} seconds"
+        )
+    return duration
+
+
+def _segment_duration(segment: SequenceClip | SequenceImage) -> float:
+    if isinstance(segment, SequenceImage):
+        return segment.duration_seconds
+    return segment.end_seconds - segment.start_seconds
+
+
 def _operations_from_plan(
     plan: EditPlan,
 ) -> tuple[
-    tuple[SequenceClip, ...],
+    tuple[SequenceClip | SequenceImage, ...],
     str | None,
     tuple[CaptionCue, ...],
     str | None,
@@ -180,7 +203,7 @@ def _operations_from_plan(
         raise SequenceWorkflowError("video-sequence requires at least two operations")
     if Path(plan.output_path).suffix.lower() != ".mp4":
         raise SequenceWorkflowError("video-sequence requires an .mp4 output_path")
-    clips = []
+    segments: list[SequenceClip | SequenceImage] = []
     used_sources = set()
     narration_path: str | None = None
     captions: tuple[CaptionCue, ...] = ()
@@ -207,8 +230,8 @@ def _operations_from_plan(
         if operation.kind == CAPTIONS_KIND:
             if captions_seen:
                 raise SequenceWorkflowError("video-sequence accepts at most one captions operation")
-            if len(clips) < 2:
-                raise SequenceWorkflowError("captions must follow all sequence_clip operations")
+            if len(segments) < 2:
+                raise SequenceWorkflowError("captions must follow all timeline segments")
             if music_path is not None:
                 raise SequenceWorkflowError("captions must precede music")
             if operation.source is not None:
@@ -221,8 +244,8 @@ def _operations_from_plan(
         if operation.kind == MUSIC_KIND:
             if music_path is not None:
                 raise SequenceWorkflowError("video-sequence accepts at most one music operation")
-            if len(clips) < 2:
-                raise SequenceWorkflowError("music must follow all sequence_clip operations")
+            if len(segments) < 2:
+                raise SequenceWorkflowError("music must follow all timeline segments")
             if operation.source is None:
                 raise SequenceWorkflowError("music must declare a source")
             if operation.start_seconds is not None or operation.end_seconds is not None:
@@ -231,13 +254,29 @@ def _operations_from_plan(
             music_path = operation.source
             used_sources.add(operation.source)
             continue
+        if operation.kind == IMAGE_KIND:
+            if captions_seen or music_path is not None:
+                raise SequenceWorkflowError(
+                    "all timeline segments must precede captions and music"
+                )
+            if operation.source is None:
+                raise SequenceWorkflowError("image_clip must declare a source")
+            if operation.start_seconds is not None or operation.end_seconds is not None:
+                raise SequenceWorkflowError(
+                    "image_clip has no timeline range; use a duration_seconds parameter"
+                )
+            segments.append(
+                SequenceImage(operation.source, _image_duration(operation.parameters))
+            )
+            used_sources.add(operation.source)
+            continue
         if operation.kind != OPERATION_KIND:
             raise SequenceWorkflowError(
                 f"video-sequence does not support operation kind: {operation.kind}"
             )
         if captions_seen or music_path is not None:
             raise SequenceWorkflowError(
-                "all sequence_clip operations must precede captions and music"
+                "all timeline segments must precede captions and music"
             )
         if operation.source is None:
             raise SequenceWorkflowError("sequence_clip must declare a source")
@@ -245,12 +284,14 @@ def _operations_from_plan(
             raise SequenceWorkflowError("sequence_clip requires start_seconds and end_seconds")
         if operation.parameters:
             raise SequenceWorkflowError("sequence_clip does not accept parameters in v1")
-        clips.append(
+        segments.append(
             SequenceClip(operation.source, operation.start_seconds, operation.end_seconds)
         )
         used_sources.add(operation.source)
-    if len(clips) < 2:
-        raise SequenceWorkflowError("video-sequence requires at least two sequence_clip operations")
+    if len(segments) < 2:
+        raise SequenceWorkflowError("video-sequence requires at least two timeline segments")
+    if not any(isinstance(segment, SequenceClip) for segment in segments):
+        raise SequenceWorkflowError("video-sequence requires at least one sequence_clip")
     if used_sources != set(plan.sources):
         raise SequenceWorkflowError("every declared source must be used by the sequence")
     if (
@@ -259,7 +300,7 @@ def _operations_from_plan(
         and _normalized(narration_path) == _normalized(music_path)
     ):
         raise SequenceWorkflowError("narration and music must use distinct sources")
-    return tuple(clips), narration_path, captions, music_path, music_gain_db
+    return tuple(segments), narration_path, captions, music_path, music_gain_db
 
 
 def _source_probes(report: PreflightReport, plan: EditPlan) -> dict[str, MediaProbe]:
@@ -269,7 +310,8 @@ def _source_probes(report: PreflightReport, plan: EditPlan) -> dict[str, MediaPr
 
 
 def _video_shape(
-    probes: dict[str, MediaProbe], clips: tuple[SequenceClip, ...]
+    probes: dict[str, MediaProbe],
+    clips: tuple[SequenceClip | SequenceImage, ...],
 ) -> tuple[int, int]:
     shapes = []
     for clip in clips:
@@ -353,8 +395,9 @@ def run_sequence_workflow(
         raise SequenceWorkflowError(
             "final.mp4 requires run_final_sequence_workflow"
         )
-    clips, narration_path, captions, music_path, music_gain_db = _operations_from_plan(plan)
-    expected_duration = sum(clip.end_seconds - clip.start_seconds for clip in clips)
+    segments, narration_path, captions, music_path, music_gain_db = _operations_from_plan(plan)
+    expected_duration = sum(_segment_duration(segment) for segment in segments)
+    expected_image_count = sum(1 for segment in segments if isinstance(segment, SequenceImage))
     if captions and captions[-1].end_seconds > expected_duration:
         raise SequenceWorkflowError(
             "caption end_seconds must not exceed the sequence duration"
@@ -369,7 +412,7 @@ def run_sequence_workflow(
         issue_codes = ", ".join(issue.code for issue in preflight_report.issues) or "unknown"
         raise SequenceWorkflowError(f"preflight rejected plan {plan.plan_id}: {issue_codes}")
     probes = _source_probes(preflight_report, plan)
-    _video_shape(probes, clips)
+    _video_shape(probes, segments)
     if narration_path is not None:
         _validate_narration(probes, narration_path, expected_duration, tolerance)
     if music_path is not None:
@@ -387,14 +430,14 @@ def run_sequence_workflow(
         if music_path is not None and music_gain_db is not None:
             compose_kwargs["music_path"] = music_path
             compose_kwargs["music_gain_db"] = music_gain_db
-        artifact = create_artifact(clips, plan.output_path, **compose_kwargs)
+        artifact = create_artifact(segments, plan.output_path, **compose_kwargs)
     except FFmpegError as exc:
         raise SequenceWorkflowError(f"video sequence composition failed: {exc}") from exc
     if not isinstance(artifact, SequenceArtifact):
         raise TypeError("compose must return a SequenceArtifact")
     if _normalized(artifact.output_path) != _normalized(plan.output_path):
         raise SequenceWorkflowError("compose returned an artifact at an unexpected output path")
-    expected_sources = tuple(_normalized(clip.source_path) for clip in clips)
+    expected_sources = tuple(_normalized(clip.source_path) for clip in segments)
     actual_sources = tuple(_normalized(source) for source in artifact.source_paths)
     if actual_sources != expected_sources:
         raise SequenceWorkflowError("compose returned an artifact for an unexpected clip order")
@@ -408,6 +451,8 @@ def run_sequence_workflow(
         raise SequenceWorkflowError("compose returned unexpected narration metadata")
     if artifact.caption_count != len(captions):
         raise SequenceWorkflowError("compose returned unexpected caption metadata")
+    if artifact.image_count != expected_image_count:
+        raise SequenceWorkflowError("compose returned unexpected image metadata")
     expected_music = _normalized(music_path) if music_path is not None else None
     actual_music = (
         _normalized(artifact.music_source_path)

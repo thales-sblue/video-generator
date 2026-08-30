@@ -45,6 +45,12 @@ class SequenceClip:
 
 
 @dataclass(frozen=True, slots=True)
+class SequenceImage:
+    source_path: str
+    duration_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
 class CaptionCue:
     text: str
     start_seconds: float
@@ -61,6 +67,10 @@ class SequenceArtifact:
     caption_count: int = 0
     music_source_path: str | None = None
     music_gain_db: float | None = None
+    image_count: int = 0
+
+
+IMAGE_TIMELINE_FPS = 30
 
 
 def _time(value: object, name: str) -> float:
@@ -348,15 +358,25 @@ def compose_video_sequence(
     music_gain_db: float | None = None,
     timeout_seconds: float = 300,
 ) -> SequenceArtifact:
-    """Compose clips with optional captions, narration, and looped music."""
+    """Compose video clips and still images with optional captions, narration, and music.
+
+    ``clips`` is an ordered timeline of ``SequenceClip`` (a trimmed range of a
+    local video) and ``SequenceImage`` (a local still shown for a fixed
+    duration). At least two segments and at least one ``SequenceClip`` are
+    required. When any image is present every segment is normalised to
+    ``IMAGE_TIMELINE_FPS`` and ``yuv420p`` so the concat is deterministic;
+    matching pixel dimensions across sources remain the caller's responsibility.
+    """
 
     if isinstance(clips, (str, bytes)) or not isinstance(clips, Sequence):
-        raise FFmpegError("clips must be a sequence of SequenceClip values")
+        raise FFmpegError("clips must be a sequence of SequenceClip or SequenceImage values")
     normalized_clips = tuple(clips)
     if len(normalized_clips) < 2:
-        raise FFmpegError("video sequence requires at least two clips")
-    if not all(isinstance(clip, SequenceClip) for clip in normalized_clips):
-        raise FFmpegError("clips must contain only SequenceClip values")
+        raise FFmpegError("video sequence requires at least two timeline segments")
+    if not all(isinstance(clip, (SequenceClip, SequenceImage)) for clip in normalized_clips):
+        raise FFmpegError("clips must contain only SequenceClip or SequenceImage values")
+    if not any(isinstance(clip, SequenceClip) for clip in normalized_clips):
+        raise FFmpegError("video sequence requires at least one video SequenceClip")
     if isinstance(captions, (str, bytes)) or not isinstance(captions, Sequence):
         raise FFmpegError("captions must be a sequence of CaptionCue values")
     normalized_captions = tuple(captions)
@@ -372,19 +392,27 @@ def compose_video_sequence(
     if output.suffix.lower() != ".mp4":
         raise FFmpegError("video sequence requires an .mp4 output_path")
 
-    resolved_clips: list[tuple[Path, float, float]] = []
+    resolved_clips: list[tuple[str, Path, float, float]] = []
     for clip in normalized_clips:
         source = Path(clip.source_path).expanduser().resolve()
-        start = _time(clip.start_seconds, "start_seconds")
-        end = _time(clip.end_seconds, "end_seconds")
-        if end <= start:
-            raise FFmpegError("end_seconds must be greater than start_seconds")
+        if isinstance(clip, SequenceImage):
+            span = _time(clip.duration_seconds, "image duration_seconds")
+            if span == 0:
+                raise FFmpegError("image duration_seconds must be greater than zero")
+            kind, start, end = "image", 0.0, span
+        else:
+            start = _time(clip.start_seconds, "start_seconds")
+            end = _time(clip.end_seconds, "end_seconds")
+            if end <= start:
+                raise FFmpegError("end_seconds must be greater than start_seconds")
+            kind = "clip"
         if not source.exists() or not source.is_file():
             raise FFmpegError(f"source does not exist or is not a file: {source}")
         if os.path.normcase(str(source)) == os.path.normcase(str(output)):
             raise FFmpegError("output_path must not overwrite a source")
-        resolved_clips.append((source, start, end))
-    duration = sum(end - start for _, start, end in resolved_clips)
+        resolved_clips.append((kind, source, start, end))
+    duration = sum(end - start for _, _, start, end in resolved_clips)
+    has_images = any(kind == "image" for kind, _, _, _ in resolved_clips)
     resolved_captions: list[tuple[str, float, float]] = []
     previous_end = 0.0
     for cue in normalized_captions:
@@ -477,20 +505,34 @@ def compose_video_sequence(
         raise FFmpegError(f"could not prepare output path: {output}") from exc
 
     command = [executable, "-v", "error", "-nostdin", "-y"]
-    for source, _, _ in resolved_clips:
-        command.extend(["-i", str(source)])
+    for kind, source, start, end in resolved_clips:
+        if kind == "image":
+            command.extend(
+                ["-loop", "1", "-t", format(end - start, ".15g"), "-i", str(source)]
+            )
+        else:
+            command.extend(["-i", str(source)])
     if narration is not None:
         command.extend(["-i", str(narration)])
     if music is not None:
         command.extend(["-stream_loop", "-1", "-i", str(music)])
     filters = []
     labels = []
-    for index, (_, start, end) in enumerate(resolved_clips):
+    for index, (kind, _, start, end) in enumerate(resolved_clips):
         label = f"v{index}"
-        filters.append(
-            f"[{index}:v:0]trim=start={format(start, '.15g')}:end={format(end, '.15g')},"
-            f"setpts=PTS-STARTPTS[{label}]"
-        )
+        if kind == "image":
+            filters.append(
+                f"[{index}:v:0]fps={IMAGE_TIMELINE_FPS},setsar=1,format=yuv420p,"
+                f"trim=duration={format(end - start, '.15g')},setpts=PTS-STARTPTS[{label}]"
+            )
+        else:
+            chain = (
+                f"[{index}:v:0]trim=start={format(start, '.15g')}:end={format(end, '.15g')},"
+                "setpts=PTS-STARTPTS"
+            )
+            if has_images:
+                chain += f",fps={IMAGE_TIMELINE_FPS},setsar=1,format=yuv420p"
+            filters.append(f"{chain}[{label}]")
         labels.append(f"[{label}]")
     video_output_label = "basev" if caption_file is not None else "outv"
     filters.append(
@@ -588,7 +630,7 @@ def compose_video_sequence(
     except OSError as exc:
         raise FFmpegError(f"could not inspect published output: {output}") from exc
     return SequenceArtifact(
-        source_paths=tuple(str(source) for source, _, _ in resolved_clips),
+        source_paths=tuple(str(source) for _, source, _, _ in resolved_clips),
         output_path=str(output),
         duration_seconds=duration,
         file_size_bytes=size,
@@ -596,4 +638,5 @@ def compose_video_sequence(
         caption_count=len(resolved_captions),
         music_source_path=str(music) if music is not None else None,
         music_gain_db=gain,
+        image_count=sum(1 for kind, _, _, _ in resolved_clips if kind == "image"),
     )
