@@ -39,7 +39,7 @@ timeline renderizada:
 
 ```text
 EditPlan com sequence_clip ordenados -> preflight -> FFmpeg concat filter
-                                      -> ffprobe -> RenderManifest -> MP4
+              + narration opcional   -> ffprobe -> RenderManifest -> MP4
 ```
 
 O plano deve declarar pelo menos dois `sequence_clip`, cada um com source,
@@ -47,10 +47,16 @@ início e fim. A ordem das operações é a ordem da timeline. Todos os sources
 declarados devem ser usados; parâmetros e outputs diferentes de MP4 são
 recusados. A v1 exige um stream de vídeo e dimensões iguais entre sources.
 
-FFmpeg recorta, zera os timestamps, concatena e reencoda o resultado em H.264. O
-artifact é propositalmente silencioso: áudio dos sources não é carregado para a
-timeline. A validação exige um único stream de vídeo, nenhum stream adicional,
-tamanho inalterado e duração igual à soma dos trechos dentro da tolerância.
+FFmpeg recorta, zera os timestamps, concatena e reencoda o resultado em H.264.
+O áudio original dos clipes não entra na timeline. Uma operação final opcional
+`narration`, sem tempos e com
+`parameters={"duration_policy":"match_timeline"}`, adiciona um source de áudio
+local a partir de `t=0`. Sua duração deve corresponder à soma dos trechos dentro
+da tolerância (150 ms por padrão); diferença maior falha antes da composição.
+Dentro da tolerância, a narração é normalizada para estéreo/48 kHz, recebe
+silêncio final ou trim até a duração visual e é codificada em AAC. A validação
+exige exatamente um stream H.264 e, no modo narrado, exatamente um stream AAC.
+Sem a operação, a timeline silenciosa anterior continua suportada.
 
 Esse escopo prova `EditPlan -> timeline -> composição -> MP4` sem substituir
 HyperFrames, que permanece o compositor planejado para imagens, layout, motion,
@@ -60,7 +66,7 @@ rumo a um vídeo dark completo, não criar outro workflow.
 ## Evolução planejada do `dark-video`
 
 - aceitar imagens com duração explícita na timeline;
-- receber ou gerar narração local e sincronizá-la à sequência;
+- gerar narração local a partir de texto fornecido;
 - gerar e queimar captions legíveis;
 - adicionar música opcional e mixar volumes básicos;
 - promover o render validado a `final.mp4` com QA técnico.

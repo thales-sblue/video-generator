@@ -1,4 +1,4 @@
-"""Compose a persisted ordered clip sequence into one silent MP4 timeline."""
+"""Compose a persisted clip sequence, optionally with matched narration."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Callable
 
 from video_generator.adapters import (
     FFmpegError,
+    MediaProbe,
     SequenceArtifact,
     SequenceClip,
     compose_video_sequence,
@@ -26,6 +27,8 @@ from video_generator.validation import (
 
 WORKFLOW_NAME = "video-sequence"
 OPERATION_KIND = "sequence_clip"
+NARRATION_KIND = "narration"
+NARRATION_PARAMETERS = {"duration_policy": "match_timeline"}
 
 
 class SequenceWorkflowError(RuntimeError):
@@ -72,14 +75,31 @@ def _runtime_number(value: object, name: str, *, allow_zero: bool) -> float:
     return float(value)
 
 
-def _clips_from_plan(plan: EditPlan) -> tuple[SequenceClip, ...]:
+def _operations_from_plan(plan: EditPlan) -> tuple[tuple[SequenceClip, ...], str | None]:
     if len(plan.operations) < 2:
         raise SequenceWorkflowError("video-sequence requires at least two operations")
     if Path(plan.output_path).suffix.lower() != ".mp4":
         raise SequenceWorkflowError("video-sequence requires an .mp4 output_path")
     clips = []
     used_sources = set()
-    for operation in plan.operations:
+    narration_path: str | None = None
+    for index, operation in enumerate(plan.operations):
+        if operation.kind == NARRATION_KIND:
+            if index != len(plan.operations) - 1:
+                raise SequenceWorkflowError("narration must be the final operation")
+            if narration_path is not None:
+                raise SequenceWorkflowError("video-sequence accepts at most one narration")
+            if operation.source is None:
+                raise SequenceWorkflowError("narration must declare a source")
+            if operation.start_seconds is not None or operation.end_seconds is not None:
+                raise SequenceWorkflowError("narration timing is fixed at zero in v1")
+            if dict(operation.parameters) != NARRATION_PARAMETERS:
+                raise SequenceWorkflowError(
+                    "narration requires duration_policy=match_timeline"
+                )
+            narration_path = operation.source
+            used_sources.add(operation.source)
+            continue
         if operation.kind != OPERATION_KIND:
             raise SequenceWorkflowError(
                 f"video-sequence does not support operation kind: {operation.kind}"
@@ -94,16 +114,27 @@ def _clips_from_plan(plan: EditPlan) -> tuple[SequenceClip, ...]:
             SequenceClip(operation.source, operation.start_seconds, operation.end_seconds)
         )
         used_sources.add(operation.source)
+    if len(clips) < 2:
+        raise SequenceWorkflowError("video-sequence requires at least two sequence_clip operations")
     if used_sources != set(plan.sources):
         raise SequenceWorkflowError("every declared source must be used by the sequence")
-    return tuple(clips)
+    return tuple(clips), narration_path
 
 
-def _video_shape(report: PreflightReport, expected_source_count: int) -> tuple[int, int]:
-    if len(report.sources) != expected_source_count:
+def _source_probes(report: PreflightReport, plan: EditPlan) -> dict[str, MediaProbe]:
+    if len(report.sources) != len(plan.sources):
         raise SequenceWorkflowError("preflight did not inspect every sequence source")
+    return {_normalized(source.source_path): source for source in report.sources}
+
+
+def _video_shape(
+    probes: dict[str, MediaProbe], clips: tuple[SequenceClip, ...]
+) -> tuple[int, int]:
     shapes = []
-    for source in report.sources:
+    for clip in clips:
+        source = probes.get(_normalized(clip.source_path))
+        if source is None:
+            raise SequenceWorkflowError(f"preflight omitted sequence source: {clip.source_path}")
         video_streams = tuple(stream for stream in source.streams if stream.codec_type == "video")
         if not video_streams:
             raise SequenceWorkflowError(f"sequence source has no video stream: {source.source_path}")
@@ -116,6 +147,27 @@ def _video_shape(report: PreflightReport, expected_source_count: int) -> tuple[i
     if len(set(shapes)) != 1:
         raise SequenceWorkflowError("video-sequence v1 requires matching source dimensions")
     return shapes[0]
+
+
+def _validate_narration(
+    probes: dict[str, MediaProbe], narration_path: str, expected_duration: float, tolerance: float
+) -> None:
+    source = probes.get(_normalized(narration_path))
+    if source is None:
+        raise SequenceWorkflowError("preflight omitted the narration source")
+    audio_streams = tuple(stream for stream in source.streams if stream.codec_type == "audio")
+    non_audio_streams = tuple(stream for stream in source.streams if stream.codec_type != "audio")
+    if len(audio_streams) != 1 or non_audio_streams:
+        raise SequenceWorkflowError(
+            "narration v1 requires exactly one audio stream and no other streams"
+        )
+    if source.duration_seconds is None or source.duration_seconds <= 0:
+        raise SequenceWorkflowError("narration duration is unavailable or invalid")
+    if abs(source.duration_seconds - expected_duration) > tolerance:
+        raise SequenceWorkflowError(
+            f"narration duration {source.duration_seconds} must match timeline duration "
+            f"{expected_duration} within {tolerance} seconds"
+        )
 
 
 def _normalized(value: str) -> str:
@@ -142,7 +194,7 @@ def run_sequence_workflow(
         "duration_tolerance_seconds",
         allow_zero=True,
     )
-    clips = _clips_from_plan(plan)
+    clips, narration_path = _operations_from_plan(plan)
     inspect_plan = preflight or preflight_edit_plan
     preflight_report = inspect_plan(plan)
     if not isinstance(preflight_report, PreflightReport):
@@ -152,13 +204,20 @@ def run_sequence_workflow(
     if not preflight_report.valid:
         issue_codes = ", ".join(issue.code for issue in preflight_report.issues) or "unknown"
         raise SequenceWorkflowError(f"preflight rejected plan {plan.plan_id}: {issue_codes}")
-    _video_shape(preflight_report, len(plan.sources))
+    probes = _source_probes(preflight_report, plan)
+    _video_shape(probes, clips)
+    expected_duration = sum(clip.end_seconds - clip.start_seconds for clip in clips)
+    if narration_path is not None:
+        _validate_narration(probes, narration_path, expected_duration, tolerance)
     if before_compose is not None:
         before_compose(plan)
 
     create_artifact = compose or compose_video_sequence
     try:
-        artifact = create_artifact(clips, plan.output_path, timeout_seconds=timeout)
+        compose_kwargs = {"timeout_seconds": timeout}
+        if narration_path is not None:
+            compose_kwargs["narration_path"] = narration_path
+        artifact = create_artifact(clips, plan.output_path, **compose_kwargs)
     except FFmpegError as exc:
         raise SequenceWorkflowError(f"video sequence composition failed: {exc}") from exc
     if not isinstance(artifact, SequenceArtifact):
@@ -169,7 +228,14 @@ def run_sequence_workflow(
     actual_sources = tuple(_normalized(source) for source in artifact.source_paths)
     if actual_sources != expected_sources:
         raise SequenceWorkflowError("compose returned an artifact for an unexpected clip order")
-    expected_duration = sum(clip.end_seconds - clip.start_seconds for clip in clips)
+    expected_narration = _normalized(narration_path) if narration_path is not None else None
+    actual_narration = (
+        _normalized(artifact.narration_source_path)
+        if artifact.narration_source_path is not None
+        else None
+    )
+    if actual_narration != expected_narration:
+        raise SequenceWorkflowError("compose returned unexpected narration metadata")
     if artifact.duration_seconds != expected_duration or artifact.file_size_bytes <= 0:
         raise SequenceWorkflowError("compose returned inconsistent artifact metadata")
 

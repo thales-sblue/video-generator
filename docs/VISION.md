@@ -42,6 +42,10 @@ funcionar. Não são requisitos do primeiro vídeo.
 
 O vídeo inicial precisa ser completo e assistível, não cinematográfico.
 
+O motor já recebe uma narração local com duração correspondente à sequência e
+produz H.264/AAC. Geração local de voz, imagens, captions e música/mixagem básica
+continuam sendo gaps do primeiro vídeo completo.
+
 ## Fluxo-alvo
 
 ```text

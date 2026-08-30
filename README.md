@@ -10,10 +10,10 @@ VideoRequest -> VideoBrief -> EditPlan -> execução local -> RenderManifest
 ```
 
 O projeto já inspeciona mídia com `ffprobe`, extrai segmentos e áudio com FFmpeg
-e executa workflows estritos a partir de `EditPlan`. `video-sequence` é a
-primeira composição temporal real: monta múltiplos trechos de vídeo em ordem,
-produz um MP4 silencioso, valida-o e registra um `RenderManifest`. Narração,
-imagens, captions, mixagem e render final completo ainda não estão implementados.
+e executa workflows estritos a partir de `EditPlan`. `video-sequence` monta
+múltiplos trechos de vídeo em ordem e pode incorporar uma narração local,
+produzindo H.264/AAC validado e registrado em `RenderManifest`. Imagens,
+captions, música, mixagem e render final completo ainda não estão implementados.
 
 ## Princípios
 
@@ -120,13 +120,18 @@ revisão auditiva.
 container WAV, um único stream PCM 16-bit, 48 kHz, dois canais e duração positiva.
 A validação é somente leitura e não representa aprovação auditiva.
 
-`execute-sequence-plan` é o primeiro workflow de timeline. Ele aceita ao menos
-dois `sequence_clip` ordenados, com source, início e fim, exige vídeos com as
-mesmas dimensões e produz um MP4 H.264 silencioso. A ordem das operações é a
-ordem da montagem. Preflight, fingerprints, validação de duração/streams e
-`RenderManifest` fazem parte da mesma execução. Áudio, imagens, transitions,
-captions e layout ainda ficam fora desse escopo; HyperFrames continua planejado
-para a composição visual completa.
+`execute-sequence-plan` aceita ao menos dois `sequence_clip` ordenados, com
+source, início e fim, e exige vídeos com as mesmas dimensões. Opcionalmente, a
+última operação pode ser uma `narration` com source local e
+`{"duration_policy": "match_timeline"}`. Ela começa em zero e deve ter duração
+igual à soma dos clipes dentro da tolerância configurada (150 ms por padrão);
+diferenças maiores são recusadas antes do render. Dentro da tolerância, a faixa
+é normalizada para estéreo/48 kHz, preenchida ou cortada exatamente até a
+timeline e codificada como AAC. Sem essa operação, o comportamento silencioso
+anterior é preservado. O MP4 final exige exatamente um stream H.264 e, quando
+narrado, exatamente um stream AAC. Preflight, fingerprints, validação e
+`RenderManifest` fazem parte da mesma execução; `editorial_review` permanece
+`not_performed`.
 
 `validate-manifest` verifica posteriormente, sem escrever arquivos, se o plano,
 sources e outputs ainda correspondem aos IDs e fingerprints registrados. O

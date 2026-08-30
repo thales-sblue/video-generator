@@ -47,7 +47,7 @@ def validate_sequence_artifact(
     duration_tolerance_seconds: float = 0.15,
     probe: Callable[[str | Path], MediaProbe] | None = None,
 ) -> SequenceValidationReport:
-    """Verify output identity, duration, and the single-video-stream shape."""
+    """Verify output identity, duration, and expected video/audio stream shape."""
 
     if not isinstance(artifact, SequenceArtifact):
         raise TypeError("artifact must be a SequenceArtifact")
@@ -86,7 +86,11 @@ def validate_sequence_artifact(
                 )
             )
         video_streams = tuple(stream for stream in media_probe.streams if stream.codec_type == "video")
-        non_video_streams = tuple(stream for stream in media_probe.streams if stream.codec_type != "video")
+        audio_streams = tuple(stream for stream in media_probe.streams if stream.codec_type == "audio")
+        other_streams = tuple(
+            stream for stream in media_probe.streams
+            if stream.codec_type not in {"video", "audio"}
+        )
         if len(video_streams) != 1:
             issues.append(
                 SequenceValidationIssue(
@@ -94,13 +98,60 @@ def validate_sequence_artifact(
                     f"expected exactly one video stream, found {len(video_streams)}",
                 )
             )
-        if non_video_streams:
+        elif video_streams[0].codec_name != "h264":
             issues.append(
                 SequenceValidationIssue(
-                    "unexpected_non_video_streams",
-                    f"expected a silent timeline, found {len(non_video_streams)} non-video stream(s)",
+                    "unexpected_video_codec",
+                    f"expected H.264 video, found {video_streams[0].codec_name or 'unknown'}",
                 )
             )
+        if artifact.narration_source_path is None:
+            if audio_streams or other_streams:
+                issues.append(
+                    SequenceValidationIssue(
+                        "unexpected_non_video_streams",
+                        "expected a silent timeline, found "
+                        f"{len(audio_streams) + len(other_streams)} non-video stream(s)",
+                    )
+                )
+        else:
+            if len(audio_streams) != 1:
+                issues.append(
+                    SequenceValidationIssue(
+                        "unexpected_audio_stream_count",
+                        f"expected exactly one audio stream, found {len(audio_streams)}",
+                    )
+                )
+            elif audio_streams[0].codec_name != "aac":
+                issues.append(
+                    SequenceValidationIssue(
+                        "unexpected_audio_codec",
+                        f"expected AAC audio, found {audio_streams[0].codec_name or 'unknown'}",
+                    )
+                )
+            else:
+                if audio_streams[0].sample_rate_hz != 48000:
+                    issues.append(
+                        SequenceValidationIssue(
+                            "unexpected_audio_sample_rate",
+                            "expected 48000 Hz audio, found "
+                            f"{audio_streams[0].sample_rate_hz or 'unknown'}",
+                        )
+                    )
+                if audio_streams[0].channels != 2:
+                    issues.append(
+                        SequenceValidationIssue(
+                            "unexpected_audio_channel_count",
+                            f"expected stereo audio, found {audio_streams[0].channels or 'unknown'} channels",
+                        )
+                    )
+            if other_streams:
+                issues.append(
+                    SequenceValidationIssue(
+                        "unexpected_other_streams",
+                        f"expected only video and audio, found {len(other_streams)} other stream(s)",
+                    )
+                )
         if media_probe.duration_seconds is None:
             issues.append(SequenceValidationIssue("output_duration_unknown", "output duration is unavailable"))
         elif abs(media_probe.duration_seconds - artifact.duration_seconds) > tolerance:

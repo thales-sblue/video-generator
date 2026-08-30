@@ -56,12 +56,12 @@ workflow operacional: exige um plano com um único recorte temporal, executa
 preflight, extração e validação técnica, e recusa qualquer shape não suportado
 antes de escrever mídia.
 
-`video-sequence` é o primeiro passo de composição temporal: exige ao menos dois
-`sequence_clip` ordenados no `EditPlan`, executa preflight, recorta e concatena
-os vídeos em um MP4 H.264 silencioso, valida duração e streams e registra o
-manifest. A v1 exige dimensões iguais e não aceita parâmetros, imagens,
-transitions ou áudio. Essa restrição torna a timeline mínima reproduzível sem
-antecipar o compositor visual completo.
+`video-sequence` compõe ao menos dois `sequence_clip` ordenados no `EditPlan` e
+pode receber uma operação final `narration`. O workflow executa preflight,
+confere dimensões e a política de duração persistida, recorta e concatena os
+vídeos, normaliza a voz e produz MP4 H.264/AAC. Sem narração, preserva o render
+silencioso anterior. Imagens, transitions, captions e mixagem continuam fora do
+escopo, mantendo a timeline mínima reproduzível sem antecipar o compositor rico.
 
 ### Adapters e renderers
 
@@ -155,8 +155,8 @@ Composição por renderer e avaliação editorial ainda permanecem necessárias 
 de expor um render final.
 
 O workflow `video-sequence` já produz um MP4 composto a partir de múltiplos
-trechos, mas ainda é um render intermediário silencioso: não satisfaz
-`dark-video` v1 sem narração, imagens, captions, mixagem de áudio e revisão.
+trechos e uma narração fornecida. Ele ainda não satisfaz `dark-video` v1 sem
+imagens estáticas, captions, música/mixagem básica e revisão.
 
 ## Direção da CLI
 

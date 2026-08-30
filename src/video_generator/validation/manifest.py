@@ -77,6 +77,25 @@ def _check_fingerprint(
         )
 
 
+def _sequence_plan_matches(plan: EditPlan) -> bool:
+    clips = tuple(operation for operation in plan.operations if operation.kind == "sequence_clip")
+    narrations = tuple(operation for operation in plan.operations if operation.kind == "narration")
+    if len(clips) < 2 or len(narrations) > 1:
+        return False
+    if len(clips) + len(narrations) != len(plan.operations):
+        return False
+    if not narrations:
+        return True
+    narration = narrations[0]
+    return (
+        plan.operations[-1] == narration
+        and narration.source is not None
+        and narration.start_seconds is None
+        and narration.end_seconds is None
+        and dict(narration.parameters) == {"duration_policy": "match_timeline"}
+    )
+
+
 def validate_render_manifest(
     manifest: RenderManifest,
     plan: EditPlan,
@@ -115,14 +134,12 @@ def validate_render_manifest(
                 "segment-extract manifest requires one extract_segment operation",
             )
         )
-    elif manifest.workflow == "video-sequence" and (
-        len(plan.operations) < 2
-        or any(operation.kind != "sequence_clip" for operation in plan.operations)
-    ):
+    elif manifest.workflow == "video-sequence" and not _sequence_plan_matches(plan):
         issues.append(
             ManifestValidationIssue(
                 "workflow_plan_mismatch",
-                "video-sequence manifest requires at least two sequence_clip operations",
+                "video-sequence manifest requires at least two sequence_clip operations "
+                "and at most one final match_timeline narration",
             )
         )
 

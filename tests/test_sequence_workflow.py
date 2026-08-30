@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from video_generator.adapters import MediaProbe, SequenceArtifact, StreamProbe
+from video_generator.adapters import FFmpegError, MediaProbe, SequenceArtifact, StreamProbe
 from video_generator.domain import EditOperation, EditPlan
 from video_generator.validation import PreflightReport, SequenceValidationReport
 from video_generator.workflows import SequenceWorkflowError, run_sequence_workflow
@@ -44,7 +44,107 @@ def valid_preflight(plan: EditPlan, *, second_width: int = 1280) -> PreflightRep
     return PreflightReport(plan.plan_id, True, (), probes)
 
 
+def narrated_plan(*, narration_parameters=None) -> EditPlan:
+    silent = sequence_plan()
+    narration = str(Path("inputs/narration.wav").resolve())
+    return EditPlan(
+        silent.plan_id,
+        silent.brief_id,
+        (*silent.sources, narration),
+        silent.output_path,
+        (
+            *silent.operations,
+            EditOperation(
+                "voice-1",
+                "narration",
+                narration,
+                parameters=(
+                    {"duration_policy": "match_timeline"}
+                    if narration_parameters is None
+                    else narration_parameters
+                ),
+            ),
+        ),
+    )
+
+
+def narrated_preflight(plan: EditPlan, *, duration: float = 3.5, audio: bool = True) -> PreflightReport:
+    video_probes = tuple(
+        MediaProbe(
+            source,
+            1000,
+            "mov,mp4",
+            10,
+            800000,
+            (StreamProbe(0, "video", "h264", 10, 1280, 720, None, None),),
+        )
+        for source in plan.sources[:2]
+    )
+    narration_streams = (
+        (StreamProbe(0, "audio", "pcm_s16le", duration, None, None, 48000, 2),)
+        if audio
+        else (StreamProbe(0, "video", "h264", duration, 1280, 720, None, None),)
+    )
+    narration_probe = MediaProbe(
+        plan.sources[2], 2000, "wav", duration, 1536000, narration_streams
+    )
+    return PreflightReport(plan.plan_id, True, (), (*video_probes, narration_probe))
+
+
 class SequenceWorkflowTests(unittest.TestCase):
+    def test_composes_valid_narration_and_preserves_persisted_policy(self):
+        plan = narrated_plan()
+
+        def compose(clips, output, **kwargs):
+            self.assertEqual(kwargs["narration_path"], plan.sources[2])
+            return SequenceArtifact(
+                plan.sources[:2], plan.output_path, 3.5, 700, plan.sources[2]
+            )
+
+        artifact = SequenceArtifact(
+            plan.sources[:2], plan.output_path, 3.5, 700, plan.sources[2]
+        )
+        report = run_sequence_workflow(
+            plan,
+            preflight=narrated_preflight,
+            compose=compose,
+            validate=lambda value, **_: SequenceValidationReport(
+                True, value, 3.5, 0.15, (), None
+            ),
+        )
+
+        self.assertTrue(report.valid)
+        self.assertEqual(report.artifact, artifact)
+        self.assertEqual(report.operation_ids[-1], "voice-1")
+
+    def test_rejects_invalid_narration_stream_policy_or_duration_before_composition(self):
+        cases = (
+            (narrated_plan(narration_parameters={}), None, "duration_policy"),
+            (narrated_plan(), narrated_preflight(narrated_plan(), audio=False), "one audio stream"),
+            (narrated_plan(), narrated_preflight(narrated_plan(), duration=4.0), "must match timeline"),
+        )
+        for plan, report, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(SequenceWorkflowError, message):
+                    run_sequence_workflow(
+                        plan,
+                        preflight=(lambda _: report) if report is not None else None,
+                        compose=lambda *_args, **_kwargs: self.fail("must not compose"),
+                    )
+
+    def test_wraps_ffmpeg_failure_without_claiming_a_report(self):
+        plan = narrated_plan()
+
+        def fail(*_args, **_kwargs):
+            raise FFmpegError("encoder failed")
+
+        with self.assertRaisesRegex(SequenceWorkflowError, "encoder failed"):
+            run_sequence_workflow(
+                plan,
+                preflight=narrated_preflight,
+                compose=fail,
+            )
+
     def test_runs_preflight_composition_and_validation_in_clip_order(self):
         plan = sequence_plan()
         calls = []
@@ -103,6 +203,23 @@ class SequenceWorkflowTests(unittest.TestCase):
             run_sequence_workflow(
                 plan,
                 preflight=lambda value: valid_preflight(value),
+                compose=lambda *_args, **_kwargs: bad_artifact,
+            )
+
+    def test_rejects_inconsistent_narration_artifact_metadata(self):
+        plan = narrated_plan()
+        bad_artifact = SequenceArtifact(
+            plan.sources[:2],
+            plan.output_path,
+            3.5,
+            500,
+            str(Path("inputs/other-narration.wav").resolve()),
+        )
+
+        with self.assertRaisesRegex(SequenceWorkflowError, "unexpected narration metadata"):
+            run_sequence_workflow(
+                plan,
+                preflight=narrated_preflight,
                 compose=lambda *_args, **_kwargs: bad_artifact,
             )
 

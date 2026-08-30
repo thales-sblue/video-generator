@@ -50,6 +50,7 @@ class SequenceArtifact:
     output_path: str
     duration_seconds: float
     file_size_bytes: int
+    narration_source_path: str | None = None
 
 
 def _time(value: object, name: str) -> float:
@@ -316,9 +317,10 @@ def compose_video_sequence(
     clips: Sequence[SequenceClip],
     output_path: str | Path,
     *,
+    narration_path: str | Path | None = None,
     timeout_seconds: float = 300,
 ) -> SequenceArtifact:
-    """Trim and concatenate video clips into one silent H.264 MP4 timeline."""
+    """Compose H.264 clips, optionally normalizing one narration to AAC."""
 
     if isinstance(clips, (str, bytes)) or not isinstance(clips, Sequence):
         raise FFmpegError("clips must be a sequence of SequenceClip values")
@@ -347,6 +349,13 @@ def compose_video_sequence(
         if os.path.normcase(str(source)) == os.path.normcase(str(output)):
             raise FFmpegError("output_path must not overwrite a source")
         resolved_clips.append((source, start, end))
+    narration: Path | None = None
+    if narration_path is not None:
+        narration = Path(narration_path).expanduser().resolve()
+        if not narration.exists() or not narration.is_file():
+            raise FFmpegError(f"narration does not exist or is not a file: {narration}")
+        if os.path.normcase(str(narration)) == os.path.normcase(str(output)):
+            raise FFmpegError("output_path must not overwrite the narration source")
     if output.exists():
         raise FFmpegError(f"output already exists: {output}")
 
@@ -372,6 +381,8 @@ def compose_video_sequence(
     command = [executable, "-v", "error", "-nostdin", "-y"]
     for source, _, _ in resolved_clips:
         command.extend(["-i", str(source)])
+    if narration is not None:
+        command.extend(["-i", str(narration)])
     filters = []
     labels = []
     for index, (_, start, end) in enumerate(resolved_clips):
@@ -382,13 +393,21 @@ def compose_video_sequence(
         )
         labels.append(f"[{label}]")
     filters.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[outv]")
+    duration = sum(end - start for _, start, end in resolved_clips)
+    if narration is not None:
+        audio_index = len(resolved_clips)
+        filters.append(
+            f"[{audio_index}:a:0]aresample=48000,"
+            "aformat=sample_fmts=fltp:channel_layouts=stereo,apad,"
+            f"atrim=duration={format(duration, '.15g')},asetpts=PTS-STARTPTS[outa]"
+        )
+    command.extend(["-filter_complex", ";".join(filters), "-map", "[outv]"])
+    if narration is None:
+        command.append("-an")
+    else:
+        command.extend(["-map", "[outa]", "-c:a", "aac", "-b:a", "192k"])
     command.extend(
         [
-            "-filter_complex",
-            ";".join(filters),
-            "-map",
-            "[outv]",
-            "-an",
             "-sn",
             "-dn",
             "-c:v",
@@ -439,6 +458,7 @@ def compose_video_sequence(
     return SequenceArtifact(
         source_paths=tuple(str(source) for source, _, _ in resolved_clips),
         output_path=str(output),
-        duration_seconds=sum(end - start for _, start, end in resolved_clips),
+        duration_seconds=duration,
         file_size_bytes=size,
+        narration_source_path=str(narration) if narration is not None else None,
     )

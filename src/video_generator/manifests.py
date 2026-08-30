@@ -128,6 +128,28 @@ def build_sequence_render_manifest(
         raise ManifestError("workflow report operations do not match the plan")
     if _normalized(report.artifact.output_path) != _normalized(plan.output_path):
         raise ManifestError("workflow artifact output does not match the plan")
+    clip_sources = tuple(
+        _normalized(operation.source)
+        for operation in plan.operations
+        if operation.kind == "sequence_clip" and operation.source is not None
+    )
+    if tuple(_normalized(source) for source in report.artifact.source_paths) != clip_sources:
+        raise ManifestError("workflow artifact clip sources do not match the plan")
+    narration_sources = tuple(
+        _normalized(operation.source)
+        for operation in plan.operations
+        if operation.kind == "narration" and operation.source is not None
+    )
+    artifact_narration = (
+        _normalized(report.artifact.narration_source_path)
+        if report.artifact.narration_source_path is not None
+        else None
+    )
+    expected_narration = narration_sources[0] if len(narration_sources) == 1 else None
+    if artifact_narration != expected_narration:
+        raise ManifestError("workflow artifact narration does not match the plan")
+    if report.validation.artifact != report.artifact:
+        raise ManifestError("workflow validation does not match the artifact")
     if not doctor.local_only or doctor.external_services_allowed or not doctor.preserve_sources:
         raise ManifestError("unsafe runtime configuration cannot produce a manifest")
     if len(source_fingerprints) != len(plan.sources):

@@ -14,6 +14,49 @@ from video_generator.adapters import (
 
 
 class FFmpegAdapterTests(unittest.TestCase):
+    def test_composes_video_with_narration_after_clip_inputs_and_expected_codecs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            narration = root / "narration.wav"
+            output = root / "narrated.mp4"
+            for path, content in (
+                (first, b"first"), (second, b"second"), (narration, b"narration")
+            ):
+                path.write_bytes(content)
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"narrated sequence")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            clips = (SequenceClip(str(first), 0, 1), SequenceClip(str(second), 0, 2))
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                artifact = compose_video_sequence(
+                    clips, output, narration_path=narration, timeout_seconds=20
+                )
+
+            command = execute.call_args.args[0]
+            inputs = [command[index + 1] for index, value in enumerate(command) if value == "-i"]
+            self.assertEqual(
+                inputs,
+                [str(first.resolve()), str(second.resolve()), str(narration.resolve())],
+            )
+            filter_graph = command[command.index("-filter_complex") + 1]
+            self.assertIn("[2:a:0]aresample=48000", filter_graph)
+            self.assertIn("apad,atrim=duration=3", filter_graph)
+            self.assertEqual(command[command.index("-c:v") + 1], "libopenh264")
+            self.assertEqual(command[command.index("-c:a") + 1], "aac")
+            self.assertNotIn("-an", command)
+            self.assertFalse(execute.call_args.kwargs["shell"])
+            self.assertEqual(artifact.narration_source_path, str(narration.resolve()))
+            self.assertEqual(
+                (first.read_bytes(), second.read_bytes(), narration.read_bytes()),
+                (b"first", b"second", b"narration"),
+            )
+
     def test_composes_an_ordered_silent_video_sequence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -68,7 +111,58 @@ class FFmpegAdapterTests(unittest.TestCase):
                         (SequenceClip(str(source), 1, 1), SequenceClip(str(other), 0, 1)),
                         root / "out.mp4",
                     )
+                with self.assertRaisesRegex(FFmpegError, "narration does not exist"):
+                    compose_video_sequence(
+                        (SequenceClip(str(source), 0, 1), SequenceClip(str(other), 0, 1)),
+                        root / "out.mp4",
+                        narration_path=root / "missing.wav",
+                    )
+                narration = root / "narration.mp4"
+                narration.write_bytes(b"narration")
+                with self.assertRaisesRegex(FFmpegError, "narration source"):
+                    compose_video_sequence(
+                        (SequenceClip(str(source), 0, 1), SequenceClip(str(other), 0, 1)),
+                        narration,
+                        narration_path=narration,
+                    )
+                existing = root / "existing.mp4"
+                existing.write_bytes(b"existing")
+                with self.assertRaisesRegex(FFmpegError, "already exists"):
+                    compose_video_sequence(
+                        (SequenceClip(str(source), 0, 1), SequenceClip(str(other), 0, 1)),
+                        existing,
+                    )
             resolve.assert_not_called()
+
+    def test_narrated_sequence_removes_partial_or_empty_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            narration = root / "narration.wav"
+            for path in (first, second, narration):
+                path.write_bytes(b"source")
+            clips = (SequenceClip(str(first), 0, 1), SequenceClip(str(second), 0, 1))
+
+            def fail(command, **kwargs):
+                Path(command[-1]).write_bytes(b"partial")
+                return subprocess.CompletedProcess(command, 1, "", "invalid audio")
+
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=fail
+            ):
+                with self.assertRaisesRegex(FFmpegError, "invalid audio"):
+                    compose_video_sequence(clips, root / "failed.mp4", narration_path=narration)
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ):
+                with self.assertRaisesRegex(FFmpegError, "non-empty sequence"):
+                    compose_video_sequence(clips, root / "empty.mp4", narration_path=narration)
+
+            self.assertFalse((root / "failed.mp4").exists())
+            self.assertFalse((root / "empty.mp4").exists())
+            self.assertEqual(list(root.glob(".*.mp4")), [])
 
     def test_extracts_first_audio_stream_as_deterministic_pcm_wav(self):
         with tempfile.TemporaryDirectory() as directory:
