@@ -55,8 +55,10 @@ Adapters encapsulam subprocessos locais com argumentos estruturados. O adapter
 de ffprobe oferece inspeção técnica somente leitura e saída normalizada. O
 adapter de FFmpeg oferece extração temporal por stream copy ou, quando a decisão
 está persistida como `mode=precise`, reencode MP4 H.264/AAC com seek após o input.
-Ambas as variantes publicam um arquivo novo sem overwrite e limpam artifacts
-parciais; os demais entram
+Ele também separa a primeira faixa de áudio em WAV PCM 16-bit, 48 kHz estéreo,
+como artifact local previsível para análise e processamento posterior. Todas as
+operações publicam um arquivo novo sem overwrite e limpam artifacts parciais;
+os demais entram
 conforme casos funcionais exigirem:
 
 - ffprobe para inspeção técnica;
@@ -143,6 +145,7 @@ video-generator doctor
 video-generator inspect <source> [--json]
 video-generator preflight <edit-plan.json> [--json]
 video-generator extract-segment <source> <output> --start-seconds N --end-seconds N [--json]
+video-generator extract-audio <source> <output.wav> [--json]
 video-generator execute-segment-plan <edit-plan.json> [--json]
 video-generator validate-manifest <render-manifest.json> --plan <edit-plan.json> [--json]
 video-generator validate-project --request <video-request.json> --brief <video-brief.json> --plan <edit-plan.json> --manifest <render-manifest.json> [--json]
@@ -152,6 +155,7 @@ video-generator render
 video-generator validate
 ```
 
-`doctor`, `inspect`, `preflight`, `extract-segment`, `execute-segment-plan`,
+`doctor`, `inspect`, `preflight`, `extract-segment`, `extract-audio`,
+`execute-segment-plan`,
 `validate-segment`, `validate-manifest` e `validate-project` existem agora. Novos
 comandos entram quando houver uma operação reutilizável e testada por trás deles.

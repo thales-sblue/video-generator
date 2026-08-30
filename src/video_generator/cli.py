@@ -12,10 +12,12 @@ from dataclasses import asdict
 from pathlib import Path
 
 from video_generator.adapters import (
+    AudioArtifact,
     FFmpegError,
     MediaProbe,
     ProbeError,
     SegmentArtifact,
+    extract_audio,
     extract_segment,
     probe_media,
 )
@@ -89,6 +91,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum FFmpeg execution time (default: 300)",
     )
     extract.add_argument("--json", action="store_true", help="print artifact metadata as JSON")
+    audio = subparsers.add_parser(
+        "extract-audio",
+        help="extract the first audio stream into a new 48 kHz stereo PCM WAV artifact",
+    )
+    audio.add_argument("source", help="path to an immutable local media source")
+    audio.add_argument("output", help="new .wav artifact path; existing files are refused")
+    audio.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=300,
+        help="maximum FFmpeg execution time (default: 300)",
+    )
+    audio.add_argument("--json", action="store_true", help="print artifact metadata as JSON")
     execute_segment = subparsers.add_parser(
         "execute-segment-plan",
         help="execute one supported segment EditPlan through technical validation",
@@ -216,6 +231,18 @@ def _format_segment_artifact(artifact: SegmentArtifact) -> str:
             f"Artifact: {artifact.output_path}",
             f"Range: {artifact.start_seconds} to {artifact.end_seconds} seconds",
             f"Mode: {artifact.mode}",
+            f"Size: {artifact.file_size_bytes} bytes",
+        ]
+    ) + "\n"
+
+
+def _format_audio_artifact(artifact: AudioArtifact) -> str:
+    return "\n".join(
+        [
+            f"Source: {artifact.source_path}",
+            f"Artifact: {artifact.output_path}",
+            "Audio: PCM 16-bit; "
+            f"{artifact.sample_rate_hz} Hz; {artifact.channels} channels",
             f"Size: {artifact.file_size_bytes} bytes",
         ]
     ) + "\n"
@@ -387,6 +414,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         output = json.dumps(asdict(artifact), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         print(output if args.json else _format_segment_artifact(artifact), end="")
+        return 0
+    if args.command == "extract-audio":
+        try:
+            artifact = extract_audio(
+                args.source,
+                args.output,
+                timeout_seconds=args.timeout_seconds,
+            )
+        except FFmpegError as exc:
+            print(f"Audio extraction error: {exc}", file=sys.stderr)
+            return 2
+        output = json.dumps(asdict(artifact), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        print(output if args.json else _format_audio_artifact(artifact), end="")
         return 0
     if args.command == "execute-segment-plan":
         try:

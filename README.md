@@ -66,6 +66,7 @@ python -m video_generator preflight projects\example\edit-plan.json
 python -m video_generator preflight projects\example\edit-plan.json --json
 python -m video_generator extract-segment inputs\clip.mp4 output\segment.mp4 --start-seconds 0 --end-seconds 5 --json
 python -m video_generator extract-segment inputs\clip.mp4 output\precise.mp4 --start-seconds 0.25 --end-seconds 5.25 --mode precise --json
+python -m video_generator extract-audio inputs\clip.mp4 output\audio.wav --json
 python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 python -m video_generator validate-segment output\segment.mp4 --source inputs\clip.mp4 --start-seconds 0 --end-seconds 5 --file-size-bytes 123456 --json
 python -m video_generator validate-manifest projects\example\render-manifest.json --plan projects\example\edit-plan.json --json
@@ -97,6 +98,14 @@ FFmpeg falha. O comando
 paths absolutos, intervalo e tamanho do arquivo, em texto ou JSON. A operação
 ainda não é um workflow nem um render final e não implica revisão
 visual/auditiva.
+
+`extract-audio` separa a primeira faixa de áudio de uma mídia local em um novo
+WAV PCM 16-bit, estéreo, a 48 kHz. O formato fixo fornece um artifact previsível
+para escuta, análise e etapas locais futuras, sem modificar o source. O comando
+recusa outputs existentes ou fora de `.wav`, remove arquivos parciais em caso de
+falha e retorna paths absolutos, formato e tamanho em texto ou JSON. Ele ainda é
+uma operação de baixo nível, sem `EditPlan`, `RenderManifest` ou afirmação de
+revisão auditiva.
 
 `validate-manifest` verifica posteriormente, sem escrever arquivos, se o plano,
 sources e outputs ainda correspondem aos IDs e fingerprints registrados. O

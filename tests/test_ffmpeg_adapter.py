@@ -2,12 +2,81 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from video_generator.adapters import FFmpegError, extract_segment
+from video_generator.adapters import FFmpegError, extract_audio, extract_segment
 
 
 class FFmpegAdapterTests(unittest.TestCase):
+    def test_extracts_first_audio_stream_as_deterministic_pcm_wav(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            output = root / "audio.wav"
+            source.write_bytes(b"source")
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"wav-data")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                artifact = extract_audio(source, output, timeout_seconds=20)
+
+            command = execute.call_args.args[0]
+            self.assertEqual(
+                command,
+                [
+                    "ffmpeg", "-v", "error", "-nostdin", "-y", "-i", str(source.resolve()),
+                    "-map", "0:a:0", "-vn", "-sn", "-dn", "-c:a", "pcm_s16le",
+                    "-ar", "48000", "-ac", "2", command[-1],
+                ],
+            )
+            self.assertFalse(execute.call_args.kwargs["shell"])
+            self.assertEqual(execute.call_args.kwargs["timeout"], 20)
+            self.assertEqual(artifact.source_path, str(source.resolve()))
+            self.assertEqual(artifact.output_path, str(output.resolve()))
+            self.assertEqual((artifact.sample_rate_hz, artifact.channels), (48000, 2))
+            self.assertEqual(output.read_bytes(), b"wav-data")
+
+    def test_audio_extraction_rejects_unsafe_targets_before_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            source.write_bytes(b"source")
+            execute = Mock()
+            with patch("video_generator.adapters.ffmpeg.subprocess.run", execute):
+                with self.assertRaisesRegex(FFmpegError, "requires a .wav"):
+                    extract_audio(source, root / "audio.mp3")
+                existing = root / "audio.wav"
+                existing.write_bytes(b"existing")
+                with self.assertRaisesRegex(FFmpegError, "already exists"):
+                    extract_audio(source, existing)
+                with self.assertRaisesRegex(FFmpegError, "greater than zero"):
+                    extract_audio(source, root / "new.wav", timeout_seconds=0)
+            execute.assert_not_called()
+
+    def test_audio_extraction_removes_partial_artifact_on_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            output = root / "audio.wav"
+            source.write_bytes(b"source")
+
+            def fail(command, **kwargs):
+                Path(command[-1]).write_bytes(b"partial")
+                return subprocess.CompletedProcess(command, 1, "", "no audio stream")
+
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=fail
+            ):
+                with self.assertRaisesRegex(FFmpegError, "no audio stream"):
+                    extract_audio(source, output)
+
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".*.wav")), [])
+
     def test_extracts_segment_with_structured_stream_copy_command(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

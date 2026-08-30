@@ -27,6 +27,15 @@ class SegmentArtifact:
     mode: str = "copy"
 
 
+@dataclass(frozen=True, slots=True)
+class AudioArtifact:
+    source_path: str
+    output_path: str
+    sample_rate_hz: int
+    channels: int
+    file_size_bytes: int
+
+
 def _time(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise FFmpegError(f"{name} must be a finite non-negative number")
@@ -182,3 +191,106 @@ def extract_segment(
     except OSError as exc:
         raise FFmpegError(f"could not inspect published output: {output}") from exc
     return SegmentArtifact(str(source), str(output), start, end, size, mode)
+
+
+def extract_audio(
+    source_path: str | Path,
+    output_path: str | Path,
+    *,
+    timeout_seconds: float = 300,
+) -> AudioArtifact:
+    """Extract the first audio stream as deterministic 48 kHz stereo PCM WAV."""
+
+    source = Path(source_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    timeout = _time(timeout_seconds, "timeout_seconds")
+    if timeout == 0:
+        raise FFmpegError("timeout_seconds must be greater than zero")
+    if not source.exists():
+        raise FFmpegError(f"source does not exist: {source}")
+    if not source.is_file():
+        raise FFmpegError(f"source is not a file: {source}")
+    if os.path.normcase(str(source)) == os.path.normcase(str(output)):
+        raise FFmpegError("output_path must not overwrite the source")
+    if output.exists():
+        raise FFmpegError(f"output already exists: {output}")
+    if output.suffix.lower() != ".wav":
+        raise FFmpegError("audio extraction requires a .wav output_path")
+
+    try:
+        executable = resolve_media_tool("ffmpeg", path_lookup=shutil.which)
+    except ToolResolutionError as exc:
+        raise FFmpegError(str(exc)) from exc
+    if executable is None:
+        raise FFmpegError("ffmpeg is not available locally or on PATH")
+
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{output.stem}-",
+            suffix=output.suffix,
+            dir=output.parent,
+            delete=False,
+        ) as reserved:
+            temporary = Path(reserved.name)
+    except OSError as exc:
+        raise FFmpegError(f"could not prepare output path: {output}") from exc
+
+    command = [
+        executable,
+        "-v",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        str(source),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-c:a",
+        "pcm_s16le",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        str(temporary),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _cleanup(temporary)
+        raise FFmpegError(f"ffmpeg timed out while extracting audio: {source}") from exc
+    except OSError as exc:
+        _cleanup(temporary)
+        raise FFmpegError(
+            f"ffmpeg could not extract audio from {source}: {type(exc).__name__}"
+        ) from exc
+
+    if completed.returncode != 0:
+        _cleanup(temporary)
+        detail = (completed.stderr or completed.stdout).strip()
+        suffix = f": {detail}" if detail else ""
+        raise FFmpegError(f"ffmpeg exited with {completed.returncode}{suffix}")
+    if not temporary.is_file() or temporary.stat().st_size == 0:
+        _cleanup(temporary)
+        raise FFmpegError("ffmpeg reported success without creating a non-empty audio artifact")
+    try:
+        os.link(temporary, output)
+    except OSError as exc:
+        _cleanup(temporary)
+        raise FFmpegError(f"could not publish output without overwriting: {output}") from exc
+    _cleanup(temporary)
+    try:
+        size = output.stat().st_size
+    except OSError as exc:
+        raise FFmpegError(f"could not inspect published output: {output}") from exc
+    return AudioArtifact(str(source), str(output), 48000, 2, size)
