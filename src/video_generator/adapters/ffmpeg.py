@@ -45,12 +45,20 @@ class SequenceClip:
 
 
 @dataclass(frozen=True, slots=True)
+class CaptionCue:
+    text: str
+    start_seconds: float
+    end_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
 class SequenceArtifact:
     source_paths: tuple[str, ...]
     output_path: str
     duration_seconds: float
     file_size_bytes: int
     narration_source_path: str | None = None
+    caption_count: int = 0
 
 
 def _time(value: object, name: str) -> float:
@@ -67,6 +75,21 @@ def _cleanup(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _srt_timestamp(seconds: float) -> str:
+    total_milliseconds = round(seconds * 1000)
+    hours, remainder = divmod(total_milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d},{milliseconds:03d}"
+
+
+def _escape_filter_path(path: Path) -> str:
+    value = path.as_posix()
+    for character in ("\\", "'", ":", ",", ";", "[", "]"):
+        value = value.replace(character, f"\\{character}")
+    return value
 
 
 def extract_segment(
@@ -318,9 +341,10 @@ def compose_video_sequence(
     output_path: str | Path,
     *,
     narration_path: str | Path | None = None,
+    captions: Sequence[CaptionCue] = (),
     timeout_seconds: float = 300,
 ) -> SequenceArtifact:
-    """Compose H.264 clips, optionally normalizing one narration to AAC."""
+    """Compose H.264 clips with optional matched narration and burned captions."""
 
     if isinstance(clips, (str, bytes)) or not isinstance(clips, Sequence):
         raise FFmpegError("clips must be a sequence of SequenceClip values")
@@ -329,6 +353,13 @@ def compose_video_sequence(
         raise FFmpegError("video sequence requires at least two clips")
     if not all(isinstance(clip, SequenceClip) for clip in normalized_clips):
         raise FFmpegError("clips must contain only SequenceClip values")
+    if isinstance(captions, (str, bytes)) or not isinstance(captions, Sequence):
+        raise FFmpegError("captions must be a sequence of CaptionCue values")
+    normalized_captions = tuple(captions)
+    if len(normalized_captions) > 500:
+        raise FFmpegError("video sequence accepts at most 500 caption cues")
+    if not all(isinstance(cue, CaptionCue) for cue in normalized_captions):
+        raise FFmpegError("captions must contain only CaptionCue values")
 
     output = Path(output_path).expanduser().resolve()
     timeout = _time(timeout_seconds, "timeout_seconds")
@@ -349,6 +380,29 @@ def compose_video_sequence(
         if os.path.normcase(str(source)) == os.path.normcase(str(output)):
             raise FFmpegError("output_path must not overwrite a source")
         resolved_clips.append((source, start, end))
+    duration = sum(end - start for _, start, end in resolved_clips)
+    resolved_captions: list[tuple[str, float, float]] = []
+    previous_end = 0.0
+    for cue in normalized_captions:
+        if not isinstance(cue.text, str) or not cue.text.strip():
+            raise FFmpegError("caption text must be a non-empty string")
+        text = cue.text.strip()
+        if len(text) > 160:
+            raise FFmpegError("caption text must contain at most 160 characters")
+        if any(ord(character) < 32 for character in text):
+            raise FFmpegError("caption text must not contain control characters")
+        if any(character in text for character in "<>{}"):
+            raise FFmpegError("caption text must not contain subtitle markup characters")
+        start = _time(cue.start_seconds, "caption start_seconds")
+        end = _time(cue.end_seconds, "caption end_seconds")
+        if end <= start or round(end * 1000) <= round(start * 1000):
+            raise FFmpegError("caption end_seconds must be at least 1 ms after start_seconds")
+        if start < previous_end:
+            raise FFmpegError("caption cues must be ordered and non-overlapping")
+        if end > duration:
+            raise FFmpegError("caption end_seconds must not exceed the sequence duration")
+        resolved_captions.append((text, start, end))
+        previous_end = end
     narration: Path | None = None
     if narration_path is not None:
         narration = Path(narration_path).expanduser().resolve()
@@ -366,6 +420,8 @@ def compose_video_sequence(
     if executable is None:
         raise FFmpegError("ffmpeg is not available locally or on PATH")
 
+    temporary: Path | None = None
+    caption_file: Path | None = None
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
@@ -375,7 +431,25 @@ def compose_video_sequence(
             delete=False,
         ) as reserved:
             temporary = Path(reserved.name)
+        if resolved_captions:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix=f".{output.stem}-captions-",
+                suffix=".srt",
+                dir=output.parent,
+                delete=False,
+            ) as caption_stream:
+                caption_file = Path(caption_stream.name)
+                for index, (text, start, end) in enumerate(resolved_captions, start=1):
+                    caption_stream.write(
+                        f"{index}\n{_srt_timestamp(start)} --> {_srt_timestamp(end)}\n{text}\n\n"
+                    )
     except OSError as exc:
+        if temporary is not None:
+            _cleanup(temporary)
+        if caption_file is not None:
+            _cleanup(caption_file)
         raise FFmpegError(f"could not prepare output path: {output}") from exc
 
     command = [executable, "-v", "error", "-nostdin", "-y"]
@@ -392,8 +466,20 @@ def compose_video_sequence(
             f"setpts=PTS-STARTPTS[{label}]"
         )
         labels.append(f"[{label}]")
-    filters.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[outv]")
-    duration = sum(end - start for _, start, end in resolved_clips)
+    video_output_label = "basev" if caption_file is not None else "outv"
+    filters.append(
+        f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[{video_output_label}]"
+    )
+    if caption_file is not None:
+        caption_path = _escape_filter_path(caption_file)
+        style = (
+            "FontName=Sans,FontSize=24,PrimaryColour=&H00FFFFFF,"
+            "OutlineColour=&H00000000,BackColour=&H99000000,"
+            "BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=24"
+        )
+        filters.append(
+            f"[basev]subtitles=filename='{caption_path}':force_style='{style}'[outv]"
+        )
     if narration is not None:
         audio_index = len(resolved_clips)
         filters.append(
@@ -436,6 +522,9 @@ def compose_video_sequence(
     except OSError as exc:
         _cleanup(temporary)
         raise FFmpegError(f"ffmpeg could not compose the video sequence: {type(exc).__name__}") from exc
+    finally:
+        if caption_file is not None:
+            _cleanup(caption_file)
 
     if completed.returncode != 0:
         _cleanup(temporary)
@@ -461,4 +550,5 @@ def compose_video_sequence(
         duration_seconds=duration,
         file_size_bytes=size,
         narration_source_path=str(narration) if narration is not None else None,
+        caption_count=len(resolved_captions),
     )

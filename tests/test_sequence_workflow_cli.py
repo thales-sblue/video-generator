@@ -37,6 +37,16 @@ class SequenceWorkflowCliTests(unittest.TestCase):
                     EditOperation("clip-1", "sequence_clip", str(first), 0, 1),
                     EditOperation("clip-2", "sequence_clip", str(second), 0, 2),
                     EditOperation(
+                        "captions-1",
+                        "captions",
+                        parameters={
+                            "style": "bottom_box",
+                            "items": [
+                                {"text": "Caption", "start_seconds": 0, "end_seconds": 3}
+                            ],
+                        },
+                    ),
+                    EditOperation(
                         "voice-1",
                         "narration",
                         str(narration),
@@ -51,6 +61,7 @@ class SequenceWorkflowCliTests(unittest.TestCase):
                 3,
                 output.stat().st_size,
                 str(narration.resolve()),
+                1,
             )
             probe = MediaProbe(
                 str(output.resolve()),
@@ -72,7 +83,7 @@ class SequenceWorkflowCliTests(unittest.TestCase):
             validation = SequenceValidationReport(True, artifact, 3, 0.15, (), probe)
             report = SequenceWorkflowReport(
                 plan.plan_id,
-                ("clip-1", "clip-2", "voice-1"),
+                ("clip-1", "clip-2", "captions-1", "voice-1"),
                 preflight,
                 artifact,
                 validation,
@@ -116,6 +127,7 @@ class SequenceWorkflowCliTests(unittest.TestCase):
         self.assertEqual(payload["workflow"], "video-sequence")
         self.assertEqual(persisted["workflow"], "video-sequence")
         self.assertEqual(len(persisted["sources"]), 3)
+        self.assertEqual(payload["artifact"]["caption_count"], 1)
         self.assertEqual(persisted["editorial_review"], "not_performed")
         self.assertTrue(persisted["technical_validation_valid"])
 

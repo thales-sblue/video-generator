@@ -56,12 +56,13 @@ workflow operacional: exige um plano com um único recorte temporal, executa
 preflight, extração e validação técnica, e recusa qualquer shape não suportado
 antes de escrever mídia.
 
-`video-sequence` compõe ao menos dois `sequence_clip` ordenados no `EditPlan` e
-pode receber uma operação final `narration`. O workflow executa preflight,
-confere dimensões e a política de duração persistida, recorta e concatena os
-vídeos, normaliza a voz e produz MP4 H.264/AAC. Sem narração, preserva o render
-silencioso anterior. Imagens, transitions, captions e mixagem continuam fora do
-escopo, mantendo a timeline mínima reproduzível sem antecipar o compositor rico.
+`video-sequence` compõe ao menos dois `sequence_clip` ordenados no `EditPlan`,
+pode queimar uma faixa `captions` e receber uma operação final `narration`. O
+workflow executa preflight, confere dimensões, tempos e políticas persistidas,
+recorta e concatena vídeos, queima os cues, normaliza a voz e produz MP4
+H.264/AAC. Sem opções, preserva o render silencioso anterior. Imagens,
+transitions e mixagem continuam fora do escopo, mantendo a timeline mínima
+reproduzível sem antecipar o compositor rico.
 
 ### Adapters e renderers
 
@@ -72,7 +73,8 @@ está persistida como `mode=precise`, reencode MP4 H.264/AAC com seek após o in
 Ele também separa a primeira faixa de áudio em WAV PCM 16-bit, 48 kHz estéreo,
 como artifact local previsível para análise e processamento posterior. Todas as
 operações publicam um arquivo novo sem overwrite e limpam artifacts parciais;
-os demais entram
+para captions, gera um SRT temporário a partir de cues já validados, usa libass
+com estilo mínimo fixo e remove o intermediário em sucesso ou falha. Os demais entram
 conforme casos funcionais exigirem:
 
 - ffprobe para inspeção técnica;
@@ -155,8 +157,9 @@ Composição por renderer e avaliação editorial ainda permanecem necessárias 
 de expor um render final.
 
 O workflow `video-sequence` já produz um MP4 composto a partir de múltiplos
-trechos e uma narração fornecida. Ele ainda não satisfaz `dark-video` v1 sem
-imagens estáticas, captions, música/mixagem básica e revisão.
+trechos, captions temporizadas e uma narração fornecida. Ele ainda não satisfaz
+`dark-video` v1 sem imagens estáticas, música/mixagem básica e revisão; para um
+primeiro caso baseado apenas em vídeo, imagens permanecem opcionais.
 
 ## Direção da CLI
 

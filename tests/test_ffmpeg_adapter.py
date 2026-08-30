@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from video_generator.adapters import (
+    CaptionCue,
     FFmpegError,
     SequenceClip,
     compose_video_sequence,
@@ -14,6 +15,43 @@ from video_generator.adapters import (
 
 
 class FFmpegAdapterTests(unittest.TestCase):
+    def test_burns_caption_cues_from_a_temporary_srt_without_filter_injection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            output = root / "captioned.mp4"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            captured_srt = []
+
+            def succeed(command, **kwargs):
+                caption_files = list(root.glob(".*-captions-*.srt"))
+                self.assertEqual(len(caption_files), 1)
+                captured_srt.append(caption_files[0].read_text(encoding="utf-8"))
+                Path(command[-1]).write_bytes(b"captioned sequence")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            clips = (SequenceClip(str(first), 0, 1), SequenceClip(str(second), 0, 1))
+            cues = (
+                CaptionCue("Why: now, not later?", 0, 1),
+                CaptionCue("Because captions help.", 1, 2),
+            )
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                artifact = compose_video_sequence(clips, output, captions=cues)
+
+            command = execute.call_args.args[0]
+            filter_graph = command[command.index("-filter_complex") + 1]
+            self.assertIn("[basev]subtitles=filename=", filter_graph)
+            self.assertIn("BorderStyle=3", filter_graph)
+            self.assertNotIn(cues[0].text, filter_graph)
+            self.assertIn("00:00:00,000 --> 00:00:01,000", captured_srt[0])
+            self.assertIn(cues[0].text, captured_srt[0])
+            self.assertEqual(artifact.caption_count, 2)
+            self.assertEqual(list(root.glob(".*-captions-*.srt")), [])
+
     def test_composes_video_with_narration_after_clip_inputs_and_expected_codecs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -132,6 +170,18 @@ class FFmpegAdapterTests(unittest.TestCase):
                         (SequenceClip(str(source), 0, 1), SequenceClip(str(other), 0, 1)),
                         existing,
                     )
+                with self.assertRaisesRegex(FFmpegError, "must not exceed"):
+                    compose_video_sequence(
+                        (SequenceClip(str(source), 0, 1), SequenceClip(str(other), 0, 1)),
+                        root / "out.mp4",
+                        captions=(CaptionCue("Too late", 1, 2.1),),
+                    )
+                with self.assertRaisesRegex(FFmpegError, "markup"):
+                    compose_video_sequence(
+                        (SequenceClip(str(source), 0, 1), SequenceClip(str(other), 0, 1)),
+                        root / "out.mp4",
+                        captions=(CaptionCue("{\\an8}Injected style", 0, 1),),
+                    )
             resolve.assert_not_called()
 
     def test_narrated_sequence_removes_partial_or_empty_artifacts(self):
@@ -152,7 +202,12 @@ class FFmpegAdapterTests(unittest.TestCase):
                 "video_generator.adapters.ffmpeg.subprocess.run", side_effect=fail
             ):
                 with self.assertRaisesRegex(FFmpegError, "invalid audio"):
-                    compose_video_sequence(clips, root / "failed.mp4", narration_path=narration)
+                    compose_video_sequence(
+                        clips,
+                        root / "failed.mp4",
+                        narration_path=narration,
+                        captions=(CaptionCue("Caption", 0, 2),),
+                    )
             with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
                 "video_generator.adapters.ffmpeg.subprocess.run",
                 return_value=subprocess.CompletedProcess([], 0, "", ""),
@@ -163,6 +218,7 @@ class FFmpegAdapterTests(unittest.TestCase):
             self.assertFalse((root / "failed.mp4").exists())
             self.assertFalse((root / "empty.mp4").exists())
             self.assertEqual(list(root.glob(".*.mp4")), [])
+            self.assertEqual(list(root.glob(".*-captions-*.srt")), [])
 
     def test_extracts_first_audio_stream_as_deterministic_pcm_wav(self):
         with tempfile.TemporaryDirectory() as directory:

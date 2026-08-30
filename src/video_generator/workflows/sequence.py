@@ -1,15 +1,17 @@
-"""Compose a persisted clip sequence, optionally with matched narration."""
+"""Compose a persisted clip sequence with optional narration and captions."""
 
 from __future__ import annotations
 
 import json
 import math
 import os
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
 from video_generator.adapters import (
+    CaptionCue,
     FFmpegError,
     MediaProbe,
     SequenceArtifact,
@@ -29,6 +31,8 @@ WORKFLOW_NAME = "video-sequence"
 OPERATION_KIND = "sequence_clip"
 NARRATION_KIND = "narration"
 NARRATION_PARAMETERS = {"duration_policy": "match_timeline"}
+CAPTIONS_KIND = "captions"
+CAPTIONS_STYLE = "bottom_box"
 
 
 class SequenceWorkflowError(RuntimeError):
@@ -75,7 +79,63 @@ def _runtime_number(value: object, name: str, *, allow_zero: bool) -> float:
     return float(value)
 
 
-def _operations_from_plan(plan: EditPlan) -> tuple[tuple[SequenceClip, ...], str | None]:
+def _caption_cues(parameters: Mapping[str, object]) -> tuple[CaptionCue, ...]:
+    values = dict(parameters)
+    if set(values) != {"style", "items"} or values["style"] != CAPTIONS_STYLE:
+        raise SequenceWorkflowError(
+            "captions require style=bottom_box and an items array"
+        )
+    items = values["items"]
+    if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
+        raise SequenceWorkflowError("captions items must be an array")
+    if not items or len(items) > 500:
+        raise SequenceWorkflowError("captions require between 1 and 500 items")
+    cues = []
+    previous_end = 0.0
+    for index, item in enumerate(items):
+        if not isinstance(item, Mapping) or set(item) != {
+            "text", "start_seconds", "end_seconds"
+        }:
+            raise SequenceWorkflowError(
+                f"caption item {index} requires text, start_seconds and end_seconds"
+            )
+        text = item["text"]
+        if not isinstance(text, str) or not text.strip() or len(text.strip()) > 160:
+            raise SequenceWorkflowError(
+                f"caption item {index} text must contain 1 to 160 characters"
+            )
+        if any(ord(character) < 32 for character in text.strip()):
+            raise SequenceWorkflowError(
+                f"caption item {index} text must not contain control characters"
+            )
+        if any(character in text for character in "<>{}"):
+            raise SequenceWorkflowError(
+                f"caption item {index} text must not contain subtitle markup characters"
+            )
+        start = _runtime_number(
+            item["start_seconds"],
+            f"caption item {index} start_seconds",
+            allow_zero=True,
+        )
+        end = _runtime_number(
+            item["end_seconds"],
+            f"caption item {index} end_seconds",
+            allow_zero=False,
+        )
+        if end <= start or round(end * 1000) <= round(start * 1000):
+            raise SequenceWorkflowError(
+                f"caption item {index} must last at least 1 ms"
+            )
+        if start < previous_end:
+            raise SequenceWorkflowError("caption items must be ordered and non-overlapping")
+        cues.append(CaptionCue(text.strip(), start, end))
+        previous_end = end
+    return tuple(cues)
+
+
+def _operations_from_plan(
+    plan: EditPlan,
+) -> tuple[tuple[SequenceClip, ...], str | None, tuple[CaptionCue, ...]]:
     if len(plan.operations) < 2:
         raise SequenceWorkflowError("video-sequence requires at least two operations")
     if Path(plan.output_path).suffix.lower() != ".mp4":
@@ -83,6 +143,8 @@ def _operations_from_plan(plan: EditPlan) -> tuple[tuple[SequenceClip, ...], str
     clips = []
     used_sources = set()
     narration_path: str | None = None
+    captions: tuple[CaptionCue, ...] = ()
+    captions_seen = False
     for index, operation in enumerate(plan.operations):
         if operation.kind == NARRATION_KIND:
             if index != len(plan.operations) - 1:
@@ -100,10 +162,24 @@ def _operations_from_plan(plan: EditPlan) -> tuple[tuple[SequenceClip, ...], str
             narration_path = operation.source
             used_sources.add(operation.source)
             continue
+        if operation.kind == CAPTIONS_KIND:
+            if captions_seen:
+                raise SequenceWorkflowError("video-sequence accepts at most one captions operation")
+            if len(clips) < 2:
+                raise SequenceWorkflowError("captions must follow all sequence_clip operations")
+            if operation.source is not None:
+                raise SequenceWorkflowError("captions must not declare a source")
+            if operation.start_seconds is not None or operation.end_seconds is not None:
+                raise SequenceWorkflowError("captions timing belongs to its items")
+            captions = _caption_cues(operation.parameters)
+            captions_seen = True
+            continue
         if operation.kind != OPERATION_KIND:
             raise SequenceWorkflowError(
                 f"video-sequence does not support operation kind: {operation.kind}"
             )
+        if captions_seen:
+            raise SequenceWorkflowError("all sequence_clip operations must precede captions")
         if operation.source is None:
             raise SequenceWorkflowError("sequence_clip must declare a source")
         if operation.start_seconds is None or operation.end_seconds is None:
@@ -118,7 +194,7 @@ def _operations_from_plan(plan: EditPlan) -> tuple[tuple[SequenceClip, ...], str
         raise SequenceWorkflowError("video-sequence requires at least two sequence_clip operations")
     if used_sources != set(plan.sources):
         raise SequenceWorkflowError("every declared source must be used by the sequence")
-    return tuple(clips), narration_path
+    return tuple(clips), narration_path, captions
 
 
 def _source_probes(report: PreflightReport, plan: EditPlan) -> dict[str, MediaProbe]:
@@ -194,7 +270,12 @@ def run_sequence_workflow(
         "duration_tolerance_seconds",
         allow_zero=True,
     )
-    clips, narration_path = _operations_from_plan(plan)
+    clips, narration_path, captions = _operations_from_plan(plan)
+    expected_duration = sum(clip.end_seconds - clip.start_seconds for clip in clips)
+    if captions and captions[-1].end_seconds > expected_duration:
+        raise SequenceWorkflowError(
+            "caption end_seconds must not exceed the sequence duration"
+        )
     inspect_plan = preflight or preflight_edit_plan
     preflight_report = inspect_plan(plan)
     if not isinstance(preflight_report, PreflightReport):
@@ -206,7 +287,6 @@ def run_sequence_workflow(
         raise SequenceWorkflowError(f"preflight rejected plan {plan.plan_id}: {issue_codes}")
     probes = _source_probes(preflight_report, plan)
     _video_shape(probes, clips)
-    expected_duration = sum(clip.end_seconds - clip.start_seconds for clip in clips)
     if narration_path is not None:
         _validate_narration(probes, narration_path, expected_duration, tolerance)
     if before_compose is not None:
@@ -217,6 +297,8 @@ def run_sequence_workflow(
         compose_kwargs = {"timeout_seconds": timeout}
         if narration_path is not None:
             compose_kwargs["narration_path"] = narration_path
+        if captions:
+            compose_kwargs["captions"] = captions
         artifact = create_artifact(clips, plan.output_path, **compose_kwargs)
     except FFmpegError as exc:
         raise SequenceWorkflowError(f"video sequence composition failed: {exc}") from exc
@@ -236,6 +318,8 @@ def run_sequence_workflow(
     )
     if actual_narration != expected_narration:
         raise SequenceWorkflowError("compose returned unexpected narration metadata")
+    if artifact.caption_count != len(captions):
+        raise SequenceWorkflowError("compose returned unexpected caption metadata")
     if artifact.duration_seconds != expected_duration or artifact.file_size_bytes <= 0:
         raise SequenceWorkflowError("compose returned inconsistent artifact metadata")
 

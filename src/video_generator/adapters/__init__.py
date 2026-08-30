@@ -2,6 +2,7 @@
 
 from video_generator.adapters.ffmpeg import (
     AudioArtifact,
+    CaptionCue,
     FFmpegError,
     SegmentArtifact,
     SequenceArtifact,
@@ -14,6 +15,7 @@ from video_generator.adapters.ffprobe import MediaProbe, ProbeError, StreamProbe
 
 __all__ = [
     "AudioArtifact",
+    "CaptionCue",
     "FFmpegError",
     "MediaProbe",
     "ProbeError",

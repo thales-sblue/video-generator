@@ -39,6 +39,7 @@ timeline renderizada:
 
 ```text
 EditPlan com sequence_clip ordenados -> preflight -> FFmpeg concat filter
+              + captions opcionais
               + narration opcional   -> ffprobe -> RenderManifest -> MP4
 ```
 
@@ -48,7 +49,16 @@ declarados devem ser usados; parâmetros e outputs diferentes de MP4 são
 recusados. A v1 exige um stream de vídeo e dimensões iguais entre sources.
 
 FFmpeg recorta, zera os timestamps, concatena e reencoda o resultado em H.264.
-O áudio original dos clipes não entra na timeline. Uma operação final opcional
+O áudio original dos clipes não entra na timeline. Depois dos clipes, uma
+operação opcional `captions` representa uma faixa inteira sem source próprio:
+`parameters` contém `style=bottom_box` e de 1 a 500 itens com texto e tempos
+relativos à timeline. Cada texto tem até 160 caracteres; cues são ordenados,
+não sobrepostos, não aceitam markup e são limitados à duração visual. O adapter cria um SRT temporário,
+queima captions brancas em uma caixa escura via FFmpeg/libass e sempre remove o
+arquivo intermediário. O texto não compõe o filter graph, evitando que conteúdo
+editorial seja interpretado como sintaxe do FFmpeg.
+
+Uma operação final opcional
 `narration`, sem tempos e com
 `parameters={"duration_policy":"match_timeline"}`, adiciona um source de áudio
 local a partir de `t=0`. Sua duração deve corresponder à soma dos trechos dentro
@@ -58,16 +68,15 @@ silêncio final ou trim até a duração visual e é codificada em AAC. A valida
 exige exatamente um stream H.264 e, no modo narrado, exatamente um stream AAC.
 Sem a operação, a timeline silenciosa anterior continua suportada.
 
-Esse escopo prova `EditPlan -> timeline -> composição -> MP4` sem substituir
-HyperFrames, que permanece o compositor planejado para imagens, layout, motion,
-captions e composição visual mais rica. O próximo gap deve ampliar este caminho
+Esse escopo prova `EditPlan -> timeline -> captions -> composição -> MP4` sem
+substituir HyperFrames, que permanece o compositor planejado para imagens,
+layout, motion e captions avançadas. O próximo gap deve ampliar este caminho
 rumo a um vídeo dark completo, não criar outro workflow.
 
 ## Evolução planejada do `dark-video`
 
 - aceitar imagens com duração explícita na timeline;
 - gerar narração local a partir de texto fornecido;
-- gerar e queimar captions legíveis;
 - adicionar música opcional e mixar volumes básicos;
 - promover o render validado a `final.mp4` com QA técnico.
 

@@ -43,7 +43,7 @@ def state(directory: str, *, technical_valid: bool = True):
 
 
 class ManifestValidationTests(unittest.TestCase):
-    def test_accepts_narrated_sequence_plan_and_all_source_fingerprints(self):
+    def test_accepts_captioned_narrated_sequence_and_all_source_fingerprints(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             first = root / "first.mp4"
@@ -65,6 +65,17 @@ class ManifestValidationTests(unittest.TestCase):
                 (
                     EditOperation("clip-1", "sequence_clip", str(first), 0, 1),
                     EditOperation("clip-2", "sequence_clip", str(second), 0, 1),
+                    EditOperation(
+                        "captions-1",
+                        "captions",
+                        parameters={
+                            "style": "bottom_box",
+                            "items": [
+                                {"text": "First", "start_seconds": 0, "end_seconds": 1},
+                                {"text": "Second", "start_seconds": 1, "end_seconds": 2},
+                            ],
+                        },
+                    ),
                     EditOperation(
                         "voice-1",
                         "narration",
@@ -89,9 +100,31 @@ class ManifestValidationTests(unittest.TestCase):
             )
 
             report = validate_render_manifest(manifest, plan)
+            invalid_caption_plan = EditPlan(
+                plan.plan_id,
+                plan.brief_id,
+                plan.sources,
+                plan.output_path,
+                (
+                    *plan.operations[:2],
+                    EditOperation(
+                        "captions-1",
+                        "captions",
+                        parameters={
+                            "style": "bottom_box",
+                            "items": [
+                                {"text": "{\\an8}override", "start_seconds": 0, "end_seconds": 1}
+                            ],
+                        },
+                    ),
+                    plan.operations[-1],
+                ),
+            )
+            invalid_report = validate_render_manifest(manifest, invalid_caption_plan)
 
         self.assertTrue(report.technically_ready)
         self.assertEqual(report.issues, ())
+        self.assertIn("workflow_plan_mismatch", {issue.code for issue in invalid_report.issues})
 
     def test_accepts_unchanged_plan_sources_and_outputs(self):
         with tempfile.TemporaryDirectory() as directory:

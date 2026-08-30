@@ -148,6 +148,16 @@ def build_sequence_render_manifest(
     expected_narration = narration_sources[0] if len(narration_sources) == 1 else None
     if artifact_narration != expected_narration:
         raise ManifestError("workflow artifact narration does not match the plan")
+    captions = tuple(
+        operation for operation in plan.operations if operation.kind == "captions"
+    )
+    expected_caption_count = 0
+    if len(captions) == 1:
+        items = captions[0].parameters.get("items")
+        if isinstance(items, (list, tuple)):
+            expected_caption_count = len(items)
+    if report.artifact.caption_count != expected_caption_count:
+        raise ManifestError("workflow artifact captions do not match the plan")
     if report.validation.artifact != report.artifact:
         raise ManifestError("workflow validation does not match the artifact")
     if not doctor.local_only or doctor.external_services_allowed or not doctor.preserve_sources:

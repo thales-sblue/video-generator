@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -78,21 +80,84 @@ def _check_fingerprint(
 
 
 def _sequence_plan_matches(plan: EditPlan) -> bool:
-    clips = tuple(operation for operation in plan.operations if operation.kind == "sequence_clip")
-    narrations = tuple(operation for operation in plan.operations if operation.kind == "narration")
-    if len(clips) < 2 or len(narrations) > 1:
+    operations = plan.operations
+    index = 0
+    timeline_duration = 0.0
+    used_sources = set()
+    while index < len(operations) and operations[index].kind == "sequence_clip":
+        clip = operations[index]
+        if (
+            clip.source is None
+            or clip.start_seconds is None
+            or clip.end_seconds is None
+            or clip.parameters
+        ):
+            return False
+        timeline_duration += clip.end_seconds - clip.start_seconds
+        used_sources.add(clip.source)
+        index += 1
+    if index < 2:
         return False
-    if len(clips) + len(narrations) != len(plan.operations):
-        return False
-    if not narrations:
-        return True
-    narration = narrations[0]
+    if index < len(operations) and operations[index].kind == "captions":
+        captions = operations[index]
+        parameters = dict(captions.parameters)
+        items = parameters.get("items")
+        if (
+            captions.source is not None
+            or captions.start_seconds is not None
+            or captions.end_seconds is not None
+            or set(parameters) != {"style", "items"}
+            or parameters.get("style") != "bottom_box"
+            or isinstance(items, (str, bytes))
+            or not isinstance(items, (list, tuple))
+            or not items
+            or len(items) > 500
+            or any(
+                not isinstance(item, Mapping)
+                or set(item) != {"text", "start_seconds", "end_seconds"}
+                for item in items
+            )
+        ):
+            return False
+        previous_end = 0.0
+        for item in items:
+            text = item["text"]
+            start = item["start_seconds"]
+            end = item["end_seconds"]
+            if (
+                not isinstance(text, str)
+                or not text.strip()
+                or len(text.strip()) > 160
+                or any(ord(character) < 32 or character in "<>{}" for character in text)
+                or isinstance(start, bool)
+                or not isinstance(start, (int, float))
+                or not math.isfinite(start)
+                or start < previous_end
+                or isinstance(end, bool)
+                or not isinstance(end, (int, float))
+                or not math.isfinite(end)
+                or end <= start
+                or round(end * 1000) <= round(start * 1000)
+                or end > timeline_duration
+            ):
+                return False
+            previous_end = float(end)
+        index += 1
+    if index < len(operations) and operations[index].kind == "narration":
+        narration = operations[index]
+        if (
+            narration.source is None
+            or narration.start_seconds is not None
+            or narration.end_seconds is not None
+            or dict(narration.parameters) != {"duration_policy": "match_timeline"}
+        ):
+            return False
+        used_sources.add(narration.source)
+        index += 1
     return (
-        plan.operations[-1] == narration
-        and narration.source is not None
-        and narration.start_seconds is None
-        and narration.end_seconds is None
-        and dict(narration.parameters) == {"duration_policy": "match_timeline"}
+        index == len(operations)
+        and used_sources == set(plan.sources)
+        and Path(plan.output_path).suffix.lower() == ".mp4"
     )
 
 
@@ -139,7 +204,7 @@ def validate_render_manifest(
             ManifestValidationIssue(
                 "workflow_plan_mismatch",
                 "video-sequence manifest requires at least two sequence_clip operations "
-                "and at most one final match_timeline narration",
+                "followed by optional bottom_box captions and match_timeline narration",
             )
         )
 

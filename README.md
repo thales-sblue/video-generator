@@ -11,9 +11,10 @@ VideoRequest -> VideoBrief -> EditPlan -> execução local -> RenderManifest
 
 O projeto já inspeciona mídia com `ffprobe`, extrai segmentos e áudio com FFmpeg
 e executa workflows estritos a partir de `EditPlan`. `video-sequence` monta
-múltiplos trechos de vídeo em ordem e pode incorporar uma narração local,
-produzindo H.264/AAC validado e registrado em `RenderManifest`. Imagens,
-captions, música, mixagem e render final completo ainda não estão implementados.
+múltiplos trechos de vídeo em ordem, pode queimar captions e incorporar uma
+narração local, produzindo H.264/AAC validado e registrado em `RenderManifest`.
+Imagens, música, mixagem e promoção a render final completo ainda não estão
+implementados.
 
 ## Princípios
 
@@ -22,8 +23,8 @@ captions, música, mixagem e render final completo ainda não estão implementad
 - processamento é local-first; internet gratuita é permitida para pesquisa e
   assets autorizados, sem dependência de APIs pagas de geração;
 - o domínio não depende de renderers nem ferramentas externas;
-- FFmpeg/ffprobe cuidam de mídia de baixo nível e HyperFrames será o compositor
-  principal quando a renderização for implementada.
+- FFmpeg/ffprobe cuidam de mídia de baixo nível e HyperFrames permanece planejado
+  como compositor principal para layout, motion e composição visual rica.
 
 ## Requisitos
 
@@ -121,8 +122,15 @@ container WAV, um único stream PCM 16-bit, 48 kHz, dois canais e duração posi
 A validação é somente leitura e não representa aprovação auditiva.
 
 `execute-sequence-plan` aceita ao menos dois `sequence_clip` ordenados, com
-source, início e fim, e exige vídeos com as mesmas dimensões. Opcionalmente, a
-última operação pode ser uma `narration` com source local e
+source, início e fim, e exige vídeos com as mesmas dimensões. Após os clipes, uma
+operação opcional `captions` pode persistir uma faixa com estilo fixo
+`bottom_box` e itens de texto, início e fim relativos à timeline. Os itens devem
+estar ordenados, não podem se sobrepor, duram ao menos 1 ms, usam no máximo 160
+caracteres, recusam markup de subtitles e não podem ultrapassar o vídeo. O texto é escrito em um SRT
+temporário, queimado localmente via FFmpeg/libass e removido após a execução;
+ele não é interpolado no filter graph.
+
+Opcionalmente, a última operação pode ser uma `narration` com source local e
 `{"duration_policy": "match_timeline"}`. Ela começa em zero e deve ter duração
 igual à soma dos clipes dentro da tolerância configurada (150 ms por padrão);
 diferenças maiores são recusadas antes do render. Dentro da tolerância, a faixa
@@ -131,7 +139,7 @@ timeline e codificada como AAC. Sem essa operação, o comportamento silencioso
 anterior é preservado. O MP4 final exige exatamente um stream H.264 e, quando
 narrado, exatamente um stream AAC. Preflight, fingerprints, validação e
 `RenderManifest` fazem parte da mesma execução; `editorial_review` permanece
-`not_performed`.
+`not_performed`, inclusive quando captions foram queimadas.
 
 `validate-manifest` verifica posteriormente, sem escrever arquivos, se o plano,
 sources e outputs ainda correspondem aos IDs e fingerprints registrados. O

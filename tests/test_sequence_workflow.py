@@ -91,7 +91,94 @@ def narrated_preflight(plan: EditPlan, *, duration: float = 3.5, audio: bool = T
     return PreflightReport(plan.plan_id, True, (), (*video_probes, narration_probe))
 
 
+def captioned_plan(*, caption_parameters=None) -> EditPlan:
+    narrated = narrated_plan()
+    parameters = caption_parameters or {
+        "style": "bottom_box",
+        "items": [
+            {"text": "First thought", "start_seconds": 0, "end_seconds": 1.5},
+            {"text": "Second thought", "start_seconds": 1.5, "end_seconds": 3.5},
+        ],
+    }
+    return EditPlan(
+        narrated.plan_id,
+        narrated.brief_id,
+        narrated.sources,
+        narrated.output_path,
+        (
+            *narrated.operations[:-1],
+            EditOperation("captions-1", "captions", parameters=parameters),
+            narrated.operations[-1],
+        ),
+    )
+
+
 class SequenceWorkflowTests(unittest.TestCase):
+    def test_burns_persisted_caption_track_before_matched_narration(self):
+        plan = captioned_plan()
+
+        def compose(clips, output, **kwargs):
+            cues = kwargs["captions"]
+            self.assertEqual([cue.text for cue in cues], ["First thought", "Second thought"])
+            self.assertEqual(kwargs["narration_path"], plan.sources[2])
+            return SequenceArtifact(
+                plan.sources[:2], plan.output_path, 3.5, 700, plan.sources[2], 2
+            )
+
+        report = run_sequence_workflow(
+            plan,
+            preflight=narrated_preflight,
+            compose=compose,
+            validate=lambda value, **_: SequenceValidationReport(
+                True, value, 3.5, 0.15, (), None
+            ),
+        )
+
+        self.assertTrue(report.valid)
+        self.assertEqual(report.artifact.caption_count, 2)
+        self.assertEqual(report.operation_ids[-2:], ("captions-1", "voice-1"))
+
+    def test_rejects_invalid_caption_track_before_composition(self):
+        cases = (
+            ({"style": "unknown", "items": []}, "style=bottom_box"),
+            (
+                {
+                    "style": "bottom_box",
+                    "items": [
+                        {"text": "late", "start_seconds": 3, "end_seconds": 4}
+                    ],
+                },
+                "must not exceed",
+            ),
+            (
+                {
+                    "style": "bottom_box",
+                    "items": [
+                        {"text": "first", "start_seconds": 0, "end_seconds": 2},
+                        {"text": "overlap", "start_seconds": 1, "end_seconds": 3},
+                    ],
+                },
+                "non-overlapping",
+            ),
+            (
+                {
+                    "style": "bottom_box",
+                    "items": [
+                        {"text": "<b>styled</b>", "start_seconds": 0, "end_seconds": 1}
+                    ],
+                },
+                "markup",
+            ),
+        )
+        for parameters, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(SequenceWorkflowError, message):
+                    run_sequence_workflow(
+                        captioned_plan(caption_parameters=parameters),
+                        preflight=lambda _: self.fail("must not preflight invalid captions"),
+                        compose=lambda *_args, **_kwargs: self.fail("must not compose"),
+                    )
+
     def test_composes_valid_narration_and_preserves_persisted_policy(self):
         plan = narrated_plan()
 
@@ -175,6 +262,19 @@ class SequenceWorkflowTests(unittest.TestCase):
         self.assertEqual(calls, ["fingerprint", "compose", "validate"])
         self.assertTrue(report.valid)
         self.assertEqual(report.operation_ids, ("clip-1", "clip-2"))
+
+    def test_rejects_inconsistent_caption_artifact_metadata(self):
+        plan = captioned_plan()
+        bad_artifact = SequenceArtifact(
+            plan.sources[:2], plan.output_path, 3.5, 500, plan.sources[2], 1
+        )
+
+        with self.assertRaisesRegex(SequenceWorkflowError, "unexpected caption metadata"):
+            run_sequence_workflow(
+                plan,
+                preflight=narrated_preflight,
+                compose=lambda *_args, **_kwargs: bad_artifact,
+            )
 
     def test_rejects_unsupported_plans_before_preflight(self):
         for plan, message in (
