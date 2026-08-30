@@ -1,7 +1,7 @@
 # Workflows
 
 Workflows coordenam capacidades reutilizáveis a partir de um `EditPlan`. A etapa
-editorial anterior pertence ao Codex/orquestrador, que traduz `VideoRequest` e
+editorial anterior pertence ao agente orquestrador, que traduz `VideoRequest` e
 `VideoBrief` em um plano persistido. O primeiro workflow implementado executa um
 recorte temporal já decidido; ele não toma decisões editoriais.
 
@@ -97,9 +97,35 @@ explícito.
 
 ## Evolução planejada do `dark-video`
 
+Capacidades que ainda faltam para `dark-video` v1:
+
 - aceitar imagens com duração explícita na timeline;
 - gerar narração local a partir de texto fornecido;
+- derivar captions do timing da narração, não de timestamps manuais;
 - executar a primeira produção real completa e registrar sua revisão humana.
+
+### Ordem recomendada dos próximos incrementos
+
+Sequência sugerida (cada item ainda deve passar pela pergunta do menor
+incremento; nada aqui autoriza pular testes ou camadas):
+
+1. **Spike do Kokoro no Windows** — validar TTS local (ONNX/CPU, sem torch) antes
+   de comprometer contrato. Kokoro-82M é Apache 2.0 e roda em CPU.
+2. **Adapter Kokoro + narração a partir de texto** — `VideoBrief`/`EditPlan`
+   ganham o texto da narração e voz/seed persistidos; o adapter produz um WAV
+   local que alimenta a operação `narration` já existente. Ausência do modelo
+   degrada só essa capacidade, nunca contratos ou diagnóstico.
+3. **Captions a partir da narração** — gerar os cues do alinhamento do TTS (ou de
+   Whisper local), respeitando `VIDEO_LANGUAGE.md` (timing por unidades de
+   significado).
+4. **Primeiro adapter HyperFrames** — provar `EditPlan -> cena HTML -> MP4` com um
+   title card / camada de captions. Avaliar se **imagens na timeline** saem mais
+   baratas por HTML (fit ao canvas, Ken Burns) do que por `zoompan`/`tpad` no
+   FFmpeg; se sim, HyperFrames passa a ser o caminho de imagens e captions ricas.
+   HyperFrames exige Node e Chrome headless e deve receber um lock de proveniência
+   análogo a `config/ffmpeg-lock.json`.
+5. **Primeira produção real completa** com registro de revisão humana — fecha
+   `dark-video` v1.
 
 Pesquisa, roteiro, storyboard e assets automáticos vêm depois do primeiro vídeo
 completo. O workflow de creator/talking-head permanece futuro e deverá reutilizar
@@ -110,7 +136,7 @@ o mesmo motor.
 Um fluxo editorial completo deve declarar inputs necessários, capacidades
 opcionais, formato de output, validações e limitações. Ele deve:
 
-1. fazer o Codex/orquestrador receber `VideoRequest` e `VideoBrief` válidos;
+1. fazer o agente orquestrador receber `VideoRequest` e `VideoBrief` válidos;
 2. persistir um `EditPlan` antes de iniciar o workflow operacional;
 3. fazer o workflow aceitar somente o shape de plano que realmente suporta;
 4. não modificar sources;

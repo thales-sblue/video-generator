@@ -2,13 +2,14 @@
 
 ## Direção do produto
 
-`video-generator` é o motor de produção audiovisual local-first controlado pelo
-Codex. O Codex interpreta o pedido, pesquisa quando autorizado, analisa o
-material e persiste decisões editoriais antes de delegar operações repetíveis
-ao projeto. A evolução desejada é:
+`video-generator` é o motor de produção audiovisual local-first controlado por
+um agente orquestrador (atualmente o **Claude Code**; antes o Codex). O agente
+interpreta o pedido, pesquisa quando autorizado, analisa o material e persiste
+decisões editoriais antes de delegar operações repetíveis ao projeto. A evolução
+desejada é:
 
 ```text
-User intent -> Codex -> VideoRequest -> VideoBrief -> EditPlan
+User intent -> agente -> VideoRequest -> VideoBrief -> EditPlan
             -> adapters/renderers -> validation -> RenderManifest -> final.mp4
 ```
 
@@ -24,10 +25,10 @@ dark completo?**
 
 ## Fronteiras arquiteturais
 
-- **Codex/orquestrador:** interpreta linguagem natural, inspeciona assets e
-  transcrições, escolhe workflow, toma decisões editoriais, cria os contratos e
-  revisa resultados. Não deve acumular comandos FFmpeg descartáveis quando a
-  operação for recorrente.
+- **Agente/orquestrador (Claude Code):** interpreta linguagem natural, inspeciona
+  assets e transcrições, escolhe workflow, toma decisões editoriais, cria os
+  contratos e revisa resultados. Não deve acumular comandos FFmpeg descartáveis
+  quando a operação for recorrente.
 - **Domínio/core:** contém contratos, planejamento estruturado, invariantes e
   validações puras. Não depende de FFmpeg, HyperFrames, Whisper, Kokoro ou I/O.
 - **Adapters:** isolam ferramentas locais e traduzem contratos do domínio para
@@ -52,9 +53,11 @@ conceitual, não dependência nem módulo compartilhado.
   de assets, fontes públicas, publicação e análise futura de métricas.
 - Nunca envie mídia, transcrição ou metadata do usuário a terceiros sem
   autorização explícita.
-- Não introduza APIs pagas de geração (incluindo OpenAI API separada, HeyGen,
-  ElevenLabs, fal.ai, Replicate, Runway, Veo, Kling ou equivalentes) como
-  dependência operacional.
+- Não introduza APIs pagas de geração (incluindo Anthropic/Claude API, OpenAI
+  API, HeyGen, ElevenLabs, fal.ai, Replicate, Runway, Veo, Kling ou
+  equivalentes) como dependência ou fallback operacional. O agente orquestrador
+  (Claude Code) é ferramenta de desenvolvimento, não runtime do produto: o motor
+  nunca chama a API do próprio orquestrador nem qualquer serviço pago de geração.
 - Integrações externas futuras exigem autorização explícita, configuração
   opt-in e fronteira de adapter; não podem ser fallback silencioso.
 - Dependências opcionais ausentes não devem impedir contratos, planejamento,
@@ -132,7 +135,7 @@ Nunca represente uma revisão visual/auditiva como realizada sem evidência.
 
 Ao receber apenas uma instrução curta para continuar:
 
-1. leia este `AGENTS.md` e a documentação relevante;
+1. leia este `AGENTS.md`, o `CLAUDE.md` e a documentação relevante;
 2. inspecione árvore, estado do Git, commits recentes e diff do `HEAD`;
 3. execute a suíte completa antes de alterar código;
 4. descubra nos commits, diff e documentos onde o último ciclo parou;
@@ -156,3 +159,6 @@ Ao receber apenas uma instrução curta para continuar:
 Não use `continue` para implementar vários workflows, refatorar por estética,
 antecipar integrações distantes, prolongar infraestrutura sem ganho audiovisual
 concreto ou adicionar geração de vídeo por IA antes da composição básica.
+
+O `CLAUDE.md` mapeia cada passo deste protocolo para os recursos nativos do
+Claude Code (plan mode, subagents, skills `run`/`code-review`, memory files).

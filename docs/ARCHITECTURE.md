@@ -5,7 +5,7 @@
 ```text
 User intent
     ↓
-Codex (interpretação e decisões editoriais)
+agente orquestrador / Claude Code (interpretação e decisões editoriais)
     ↓
 VideoRequest -> VideoBrief -> EditPlan
     ↓
@@ -189,3 +189,10 @@ video-generator validate
 `execute-segment-plan`, `execute-sequence-plan`, `execute-final-sequence-plan`,
 `validate-segment`, `validate-manifest` e `validate-project` existem agora. Novos
 comandos entram quando houver uma operação reutilizável e testada por trás deles.
+
+`transcribe`, `render` e `validate` são atalhos operacionais previstos sobre
+capacidades locais já testadas. `plan`, quando existir, é um utilitário
+**determinístico** de scaffold e validação de `EditPlan` — emitir um esqueleto,
+conferir shape e vínculos — e **não** gera decisões editoriais: interpretar
+intenção, escolher workflow e montar o plano continua sendo papel do agente
+orquestrador, não da CLI.

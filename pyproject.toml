@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "video-generator"
 version = "0.1.0"
-description = "Local-first audiovisual production engine orchestrated by Codex"
+description = "Local-first audiovisual production engine orchestrated by an AI agent (Claude Code)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []

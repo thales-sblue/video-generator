@@ -2,9 +2,10 @@
 
 ## Produto
 
-`video-generator` será um agente produtor audiovisual controlado pelo Codex. O
-Codex é o cérebro editorial e orquestrador; o projeto é o motor operacional
-previsível, auditável e reproduzível.
+`video-generator` será um agente produtor audiovisual controlado por um agente
+orquestrador (atualmente o Claude Code). Esse agente é o cérebro editorial e
+orquestrador; o projeto é o motor operacional previsível, auditável e
+reproduzível.
 
 A visão madura inclui pesquisa, roteiro, storyboard, assets, narração, timeline,
 captions, áudio, render, validação, revisão e correção de problemas detectáveis.
@@ -71,8 +72,10 @@ pagas de geração**.
 - voz, transcrição, composição e render devem ser locais sempre que possível;
 - internet gratuita pode apoiar pesquisa, referências, downloads de assets,
   fontes públicas, publicação e análise futura de métricas;
-- OpenAI API separada, ElevenLabs, Runway, Veo, Kling, fal.ai, Replicate,
-  HeyGen e equivalentes pagos não podem ser dependências operacionais;
+- APIs pagas de geração — Anthropic/Claude API, OpenAI API, ElevenLabs, Runway,
+  Veo, Kling, fal.ai, Replicate, HeyGen e equivalentes — não podem ser
+  dependências nem fallback operacional; o agente orquestrador é ferramenta de
+  desenvolvimento, não runtime do produto, e o motor nunca chama a API dele;
 - integração externa requer autorização explícita, configuração opt-in e uma
   fronteira de adapter; nunca é fallback silencioso;
 - mídia, transcrição ou metadata privada não são enviadas a terceiros sem

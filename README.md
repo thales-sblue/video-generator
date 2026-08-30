@@ -1,6 +1,7 @@
 # video-generator
 
-Motor local-first de um agente produtor audiovisual controlado pelo Codex. A
+Motor local-first de um agente produtor audiovisual controlado por um agente
+orquestrador (atualmente o Claude Code). A
 prioridade atual é `dark-video`: construir incrementalmente o menor produtor
 capaz de gerar um vídeo dark completo, assistível e reproduzível. O projeto
 transforma intenção e referências de mídia em contratos persistentes:
@@ -83,9 +84,10 @@ python -m video_generator validate-project --request projects\example\video-requ
 O diagnóstico apenas inspeciona o computador. Ele não instala ferramentas, não
 altera configurações globais e não acessa serviços remotos.
 
-Internet não é proibida pelo produto: o Codex pode pesquisar e obter referências
-ou assets gratuitos quando autorizado. O runtime de mídia permanece local e
-falha fechado para serviços externos; nenhuma API paga de geração é dependência.
+Internet não é proibida pelo produto: o agente orquestrador pode pesquisar e
+obter referências ou assets gratuitos quando autorizado. O runtime de mídia
+permanece local e falha fechado para serviços externos; nenhuma API paga de
+geração é dependência.
 
 O comando `inspect` exige `ffprobe` no `PATH`, valida que o source seja um
 arquivo local e retorna formato, duração, bit rate e streams em uma representação
