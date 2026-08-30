@@ -122,6 +122,8 @@ def build_sequence_render_manifest(
     doctor: DoctorReport,
     source_fingerprints: tuple[FileFingerprint, ...],
 ) -> RenderManifest:
+    if report.publication == "final" and not report.valid:
+        raise ManifestError("an invalid sequence cannot produce a final manifest")
     if report.plan_id != plan.plan_id:
         raise ManifestError("workflow report does not match the plan")
     if report.operation_ids != tuple(operation.operation_id for operation in plan.operations):

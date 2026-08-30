@@ -4,11 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from video_generator.adapters import SegmentArtifact
+from video_generator.adapters import SegmentArtifact, SequenceArtifact
 from video_generator.doctor import DoctorReport, ToolStatus
 from video_generator.domain import EditOperation, EditPlan, RenderManifest
 from video_generator.manifests import (
     ManifestError,
+    build_sequence_render_manifest,
     build_segment_render_manifest,
     default_manifest_path,
     fingerprint_file,
@@ -19,8 +20,10 @@ from video_generator.validation import (
     PreflightReport,
     SegmentValidationIssue,
     SegmentValidationReport,
+    SequenceValidationIssue,
+    SequenceValidationReport,
 )
-from video_generator.workflows import SegmentWorkflowReport
+from video_generator.workflows import SegmentWorkflowReport, SequenceWorkflowReport
 
 
 def doctor_report(*, local_only: bool = True) -> DoctorReport:
@@ -67,6 +70,55 @@ def execution(directory: str, *, valid: bool = True):
 
 
 class ManifestTests(unittest.TestCase):
+    def test_rejects_a_final_manifest_for_an_invalid_sequence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            output = root / "final.mp4"
+            for path in (first, second, output):
+                path.write_bytes(path.stem.encode("utf-8"))
+            plan = EditPlan(
+                "plan-final",
+                "brief-dark",
+                (str(first), str(second)),
+                str(output),
+                (
+                    EditOperation("clip-1", "sequence_clip", str(first), 0, 1),
+                    EditOperation("clip-2", "sequence_clip", str(second), 0, 1),
+                ),
+            )
+            artifact = SequenceArtifact(
+                (str(first.resolve()), str(second.resolve())),
+                str(output.resolve()),
+                2,
+                output.stat().st_size,
+            )
+            validation = SequenceValidationReport(
+                False,
+                artifact,
+                3,
+                0.15,
+                (SequenceValidationIssue("duration_mismatch", "duration differs"),),
+                None,
+            )
+            report = SequenceWorkflowReport(
+                plan.plan_id,
+                ("clip-1", "clip-2"),
+                PreflightReport(plan.plan_id, True, (), ()),
+                artifact,
+                validation,
+                "final",
+            )
+
+            with self.assertRaisesRegex(ManifestError, "invalid sequence"):
+                build_sequence_render_manifest(
+                    plan,
+                    report,
+                    doctor_report(),
+                    tuple(fingerprint_file(source) for source in plan.sources),
+                )
+
     def test_fingerprints_files_and_builds_round_trippable_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             plan, report = execution(directory)

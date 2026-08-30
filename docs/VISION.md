@@ -44,10 +44,11 @@ O vídeo inicial precisa ser completo e assistível, não cinematográfico.
 
 O motor já recebe uma narração local com duração correspondente à sequência,
 queima captions temporizadas, repete e mistura música com ganho persistido e
-produz H.264/AAC. Geração local de voz e imagens continuam futuras; para o
-primeiro caso alimentado por clipes, voz e música fornecidos, o próximo gap é a
-promoção explícita do artifact validado a `final.mp4`, com QA e fronteira de
-revisão claramente registradas.
+produz H.264/AAC. O modo final publica `final.mp4` apenas após validação em
+staging e uma segunda validação do arquivo publicado, mantendo a revisão humana
+como `not_performed`. Geração local de voz e imagens continuam futuras; para o
+primeiro caso alimentado por clipes, voz e música fornecidos, o próximo marco é
+executar uma produção real completa e obter revisão visual/auditiva humana.
 
 ## Fluxo-alvo
 

@@ -157,10 +157,12 @@ Composição por renderer e avaliação editorial ainda permanecem necessárias 
 de expor um render final.
 
 O workflow `video-sequence` já produz um MP4 composto a partir de múltiplos
-trechos, captions temporizadas, narração e música com ganho básico. Para o
-primeiro caso baseado apenas em vídeo, imagens permanecem opcionais; a principal
-fronteira restante é promover explicitamente um render tecnicamente validado a
-`final.mp4` e registrar a revisão humana que ainda não foi realizada.
+trechos, captions temporizadas, narração e música com ganho básico. O modo final
+usa staging no mesmo filesystem, publica `final.mp4` por hard link exclusivo
+somente após validação e valida novamente o caminho publicado antes do manifest.
+Para o primeiro caso baseado apenas em vídeo, imagens permanecem opcionais; a
+fronteira restante é executar uma produção real e registrar a revisão humana
+que ainda não foi realizada.
 
 ## Direção da CLI
 
@@ -174,6 +176,7 @@ video-generator extract-segment <source> <output> --start-seconds N --end-second
 video-generator extract-audio <source> <output.wav> [--json]
 video-generator execute-segment-plan <edit-plan.json> [--json]
 video-generator execute-sequence-plan <edit-plan.json> [--json]
+video-generator execute-final-sequence-plan <edit-plan.json> [--json]
 video-generator validate-manifest <render-manifest.json> --plan <edit-plan.json> [--json]
 video-generator validate-project --request <video-request.json> --brief <video-brief.json> --plan <edit-plan.json> --manifest <render-manifest.json> [--json]
 video-generator transcribe
@@ -183,6 +186,6 @@ video-generator validate
 ```
 
 `doctor`, `inspect`, `preflight`, `extract-segment`, `extract-audio`,
-`execute-segment-plan`, `execute-sequence-plan`,
+`execute-segment-plan`, `execute-sequence-plan`, `execute-final-sequence-plan`,
 `validate-segment`, `validate-manifest` e `validate-project` existem agora. Novos
 comandos entram quando houver uma operação reutilizável e testada por trás deles.

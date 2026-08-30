@@ -85,11 +85,21 @@ sem substituir HyperFrames, que permanece o compositor planejado para imagens,
 layout, motion e captions avançadas. O próximo gap deve ampliar este caminho
 rumo a um vídeo dark completo, não criar outro workflow.
 
+Quando o plano persiste `output_path` com o nome canônico `final.mp4`, o comando
+`execute-final-sequence-plan` renderiza primeiro em staging no mesmo diretório.
+Somente um resultado tecnicamente válido é publicado, de forma exclusiva e sem
+overwrite; o arquivo publicado é validado novamente antes do `RenderManifest`.
+Se qualquer validação falhar, staging e eventual final recém-criado são
+removidos; falha na construção ou publicação do manifest também remove o final
+sem rastreabilidade. O comando comum recusa o nome reservado `final.mp4`. Essa fronteira é
+QA técnico, não aprovação editorial: `editorial_review=not_performed` permanece
+explícito.
+
 ## Evolução planejada do `dark-video`
 
 - aceitar imagens com duração explícita na timeline;
 - gerar narração local a partir de texto fornecido;
-- promover o render validado a `final.mp4` com QA técnico.
+- executar a primeira produção real completa e registrar sua revisão humana.
 
 Pesquisa, roteiro, storyboard e assets automáticos vêm depois do primeiro vídeo
 completo. O workflow de creator/talking-head permanece futuro e deverá reutilizar

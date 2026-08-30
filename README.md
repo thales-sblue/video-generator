@@ -13,8 +13,8 @@ O projeto já inspeciona mídia com `ffprobe`, extrai segmentos e áudio com FFm
 e executa workflows estritos a partir de `EditPlan`. `video-sequence` monta
 múltiplos trechos de vídeo em ordem, pode queimar captions e incorporar uma
 narração e música local, produzindo H.264/AAC validado e registrado em
-`RenderManifest`. Imagens e promoção a render final completo ainda não estão
-implementadas.
+`RenderManifest`. Um modo final separado publica `final.mp4` somente após QA
+técnico; imagens ainda não estão implementadas.
 
 ## Princípios
 
@@ -73,6 +73,7 @@ python -m video_generator extract-segment inputs\clip.mp4 output\precise.mp4 --s
 python -m video_generator extract-audio inputs\clip.mp4 output\audio.wav --json
 python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 python -m video_generator execute-sequence-plan projects\example\sequence-plan.json --manifest projects\example\sequence-manifest.json --json
+python -m video_generator execute-final-sequence-plan projects\example\final-plan.json --manifest projects\example\final-manifest.json --json
 python -m video_generator validate-segment output\segment.mp4 --source inputs\clip.mp4 --start-seconds 0 --end-seconds 5 --file-size-bytes 123456 --json
 python -m video_generator validate-audio output\audio.wav --source inputs\clip.mp4 --file-size-bytes 123456 --json
 python -m video_generator validate-manifest projects\example\render-manifest.json --plan projects\example\edit-plan.json --json
@@ -149,6 +150,16 @@ estéreo/48 kHz e, quando há voz, mixada sem normalização automática; um lim
 evita picos acima de 0,95. Música sem narração também é suportada. O áudio
 original dos clipes permanece excluído e o output continua contendo uma única
 faixa AAC.
+
+Para publicação, `execute-final-sequence-plan` exige que o `output_path`
+persistido termine exatamente em `final.mp4`. O render é criado em um diretório
+de staging ao lado do destino, passa pela validação técnica, é publicado sem
+overwrite e é validado novamente no caminho final antes da criação do
+`RenderManifest`. Falhas removem staging e qualquer final recém-publicado; um
+`final.mp4` também é removido se seu manifest não puder ser construído ou
+publicado, e um final preexistente nunca é substituído. `execute-sequence-plan` recusa esse
+nome reservado para evitar que um render de trabalho seja apresentado como
+final. Essa promoção não representa revisão visual ou auditiva humana.
 
 `validate-manifest` verifica posteriormente, sem escrever arquivos, se o plano,
 sources e outputs ainda correspondem aos IDs e fingerprints registrados. O

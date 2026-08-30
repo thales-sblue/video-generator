@@ -10,11 +10,65 @@ from video_generator.adapters import MediaProbe, SequenceArtifact, StreamProbe
 from video_generator.cli import main
 from video_generator.doctor import DoctorReport, ToolStatus
 from video_generator.domain import EditOperation, EditPlan
+from video_generator.manifests import ManifestError
 from video_generator.validation import PreflightReport, SequenceValidationReport
 from video_generator.workflows import SequenceWorkflowReport
 
 
 class SequenceWorkflowCliTests(unittest.TestCase):
+    def test_removes_a_final_when_manifest_creation_fails(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            output = root / "final.mp4"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            plan = EditPlan(
+                "plan-final",
+                "brief-dark",
+                (str(first), str(second)),
+                str(output),
+                (
+                    EditOperation("clip-1", "sequence_clip", str(first), 0, 1),
+                    EditOperation("clip-2", "sequence_clip", str(second), 0, 1),
+                ),
+            )
+            plan_path = root / "edit-plan.json"
+            plan_path.write_text(plan.to_json(), encoding="utf-8")
+
+            def run(plan_value, **kwargs):
+                kwargs["before_compose"](plan_value)
+                output.write_bytes(b"validated but unmanifested")
+                artifact = SequenceArtifact(
+                    plan.sources,
+                    str(output.resolve()),
+                    2,
+                    output.stat().st_size,
+                )
+                validation = SequenceValidationReport(True, artifact, 2, 0.15, (), None)
+                return SequenceWorkflowReport(
+                    plan.plan_id,
+                    ("clip-1", "clip-2"),
+                    PreflightReport(plan.plan_id, True, (), ()),
+                    artifact,
+                    validation,
+                    "final",
+                )
+
+            with patch(
+                "video_generator.cli.run_final_sequence_workflow", side_effect=run
+            ), patch("video_generator.cli.run_doctor", return_value=object()), patch(
+                "video_generator.cli.build_sequence_render_manifest",
+                side_effect=ManifestError("source changed"),
+            ), contextlib.redirect_stderr(stderr):
+                exit_code = main(["execute-final-sequence-plan", str(plan_path)])
+
+            self.assertEqual(exit_code, 2)
+            self.assertFalse(output.exists())
+            self.assertIn("source changed", stderr.getvalue())
+
     def test_executes_persisted_sequence_and_publishes_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -107,6 +161,7 @@ class SequenceWorkflowCliTests(unittest.TestCase):
                 preflight,
                 artifact,
                 validation,
+                "final",
             )
             doctor = DoctorReport(
                 "Windows",
@@ -127,12 +182,12 @@ class SequenceWorkflowCliTests(unittest.TestCase):
                 return report
 
             stdout = io.StringIO()
-            with patch("video_generator.cli.run_sequence_workflow", side_effect=run), patch(
+            with patch("video_generator.cli.run_final_sequence_workflow", side_effect=run), patch(
                 "video_generator.cli.run_doctor", return_value=doctor
             ), contextlib.redirect_stdout(stdout):
                 exit_code = main(
                     [
-                        "execute-sequence-plan",
+                        "execute-final-sequence-plan",
                         str(plan_path),
                         "--manifest",
                         str(manifest_path),
@@ -149,8 +204,36 @@ class SequenceWorkflowCliTests(unittest.TestCase):
         self.assertEqual(len(persisted["sources"]), 4)
         self.assertEqual(payload["artifact"]["caption_count"], 1)
         self.assertEqual(payload["artifact"]["music_gain_db"], -18.0)
+        self.assertEqual(payload["publication"], "final")
         self.assertEqual(persisted["editorial_review"], "not_performed")
         self.assertTrue(persisted["technical_validation_valid"])
+
+    def test_requires_the_final_command_for_a_final_mp4_plan(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            plan = EditPlan(
+                "plan-final",
+                "brief-dark",
+                (str(first), str(second)),
+                str(root / "final.mp4"),
+                (
+                    EditOperation("clip-1", "sequence_clip", str(first), 0, 1),
+                    EditOperation("clip-2", "sequence_clip", str(second), 0, 1),
+                ),
+            )
+            plan_path = root / "edit-plan.json"
+            plan_path.write_text(plan.to_json(), encoding="utf-8")
+
+            with contextlib.redirect_stderr(stderr):
+                exit_code = main(["execute-sequence-plan", str(plan_path)])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("execute-final-sequence-plan", stderr.getvalue())
 
 
 if __name__ == "__main__":

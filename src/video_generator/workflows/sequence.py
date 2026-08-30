@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import tempfile
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -48,6 +49,16 @@ class SequenceWorkflowReport:
     preflight: PreflightReport
     artifact: SequenceArtifact
     validation: SequenceValidationReport
+    publication: str = "working"
+
+    def __post_init__(self) -> None:
+        if self.publication not in {"working", "final"}:
+            raise ValueError("publication must be working or final")
+        if (
+            self.publication == "final"
+            and Path(self.artifact.output_path).name.lower() != "final.mp4"
+        ):
+            raise ValueError("final publication artifact must be named final.mp4")
 
     @property
     def valid(self) -> bool:
@@ -62,6 +73,7 @@ class SequenceWorkflowReport:
             "preflight": self.preflight.to_dict(),
             "artifact": asdict(self.artifact),
             "validation": self.validation.to_dict(),
+            "publication": self.publication,
         }
 
     def to_json(self) -> str:
@@ -337,6 +349,10 @@ def run_sequence_workflow(
         "duration_tolerance_seconds",
         allow_zero=True,
     )
+    if Path(plan.output_path).name.lower() == "final.mp4":
+        raise SequenceWorkflowError(
+            "final.mp4 requires run_final_sequence_workflow"
+        )
     clips, narration_path, captions, music_path, music_gain_db = _operations_from_plan(plan)
     expected_duration = sum(clip.end_seconds - clip.start_seconds for clip in clips)
     if captions and captions[-1].end_seconds > expected_duration:
@@ -419,3 +435,117 @@ def run_sequence_workflow(
         artifact=artifact,
         validation=validation,
     )
+
+
+def run_final_sequence_workflow(
+    plan: EditPlan,
+    *,
+    timeout_seconds: float = 300,
+    duration_tolerance_seconds: float = 0.15,
+    preflight: Callable[[EditPlan], PreflightReport] | None = None,
+    before_compose: Callable[[EditPlan], None] | None = None,
+    compose: Callable[..., SequenceArtifact] | None = None,
+    validate: Callable[..., SequenceValidationReport] | None = None,
+) -> SequenceWorkflowReport:
+    """Render in staging and publish final.mp4 only after technical validation."""
+
+    if not isinstance(plan, EditPlan):
+        raise TypeError("plan must be an EditPlan")
+    final_path = Path(plan.output_path).expanduser().resolve()
+    if final_path.name.lower() != "final.mp4":
+        raise SequenceWorkflowError("final sequence output_path must be named final.mp4")
+    if final_path.exists():
+        raise SequenceWorkflowError(f"final output already exists: {final_path}")
+    try:
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SequenceWorkflowError(
+            f"could not create final output directory: {final_path.parent}"
+        ) from exc
+
+    published = False
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=f".{final_path.stem}-staging-",
+            dir=final_path.parent,
+        ) as staging_directory:
+            staged_path = Path(staging_directory) / "render.mp4"
+            staged_plan = EditPlan(
+                plan.plan_id,
+                plan.brief_id,
+                plan.sources,
+                str(staged_path),
+                plan.operations,
+            )
+            staged_report = run_sequence_workflow(
+                staged_plan,
+                timeout_seconds=timeout_seconds,
+                duration_tolerance_seconds=duration_tolerance_seconds,
+                preflight=preflight,
+                before_compose=(
+                    (lambda _staged_plan: before_compose(plan))
+                    if before_compose is not None
+                    else None
+                ),
+                compose=compose,
+                validate=validate,
+            )
+            if not staged_report.valid:
+                issue_codes = ", ".join(
+                    issue.code for issue in staged_report.validation.issues
+                ) or "unknown"
+                raise SequenceWorkflowError(
+                    f"final render failed technical validation: {issue_codes}"
+                )
+            try:
+                os.link(staged_path, final_path)
+                published = True
+            except FileExistsError as exc:
+                raise SequenceWorkflowError(
+                    f"final output already exists: {final_path}"
+                ) from exc
+            except OSError as exc:
+                raise SequenceWorkflowError(
+                    f"could not publish validated final output: {final_path}"
+                ) from exc
+
+            final_artifact = replace(
+                staged_report.artifact,
+                output_path=str(final_path),
+                file_size_bytes=final_path.stat().st_size,
+            )
+            inspect_artifact = validate or validate_sequence_artifact
+            final_validation = inspect_artifact(
+                final_artifact,
+                duration_tolerance_seconds=staged_report.validation.duration_tolerance_seconds,
+            )
+            if not isinstance(final_validation, SequenceValidationReport):
+                raise TypeError("validate must return a SequenceValidationReport")
+            if final_validation.artifact != final_artifact:
+                raise SequenceWorkflowError(
+                    "validation returned a report for an unexpected final artifact"
+                )
+            if not final_validation.valid:
+                issue_codes = ", ".join(
+                    issue.code for issue in final_validation.issues
+                ) or "unknown"
+                raise SequenceWorkflowError(
+                    f"published final failed technical validation: {issue_codes}"
+                )
+            return SequenceWorkflowReport(
+                plan_id=plan.plan_id,
+                operation_ids=staged_report.operation_ids,
+                preflight=staged_report.preflight,
+                artifact=final_artifact,
+                validation=final_validation,
+                publication="final",
+            )
+    except Exception:
+        if published:
+            try:
+                final_path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                raise SequenceWorkflowError(
+                    f"could not remove rejected final output: {final_path}"
+                ) from cleanup_error
+        raise

@@ -1,10 +1,19 @@
+import tempfile
 import unittest
 from pathlib import Path
 
 from video_generator.adapters import FFmpegError, MediaProbe, SequenceArtifact, StreamProbe
 from video_generator.domain import EditOperation, EditPlan
-from video_generator.validation import PreflightReport, SequenceValidationReport
-from video_generator.workflows import SequenceWorkflowError, run_sequence_workflow
+from video_generator.validation import (
+    PreflightReport,
+    SequenceValidationIssue,
+    SequenceValidationReport,
+)
+from video_generator.workflows import (
+    SequenceWorkflowError,
+    run_final_sequence_workflow,
+    run_sequence_workflow,
+)
 
 
 def sequence_plan(*, second_kind: str = "sequence_clip", second_parameters=None) -> EditPlan:
@@ -150,6 +159,142 @@ def music_preflight(plan: EditPlan, *, audio: bool = True) -> PreflightReport:
 
 
 class SequenceWorkflowTests(unittest.TestCase):
+    def test_stages_validates_and_exclusively_publishes_final_mp4(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = sequence_plan()
+            final_path = Path(directory) / "final.mp4"
+            plan = EditPlan(
+                base.plan_id,
+                base.brief_id,
+                base.sources,
+                str(final_path),
+                base.operations,
+            )
+            validated_paths = []
+            fingerprint_plans = []
+
+            def compose(clips, output, **_kwargs):
+                Path(output).write_bytes(b"validated final render")
+                return SequenceArtifact(
+                    tuple(clip.source_path for clip in clips),
+                    str(Path(output).resolve()),
+                    3.5,
+                    Path(output).stat().st_size,
+                )
+
+            def validate(artifact, **_kwargs):
+                validated_paths.append(artifact.output_path)
+                return SequenceValidationReport(True, artifact, 3.5, 0.15, (), None)
+
+            report = run_final_sequence_workflow(
+                plan,
+                preflight=valid_preflight,
+                before_compose=lambda value: fingerprint_plans.append(value),
+                compose=compose,
+                validate=validate,
+            )
+
+            self.assertEqual(report.publication, "final")
+            self.assertEqual(report.artifact.output_path, str(final_path.resolve()))
+            self.assertEqual(final_path.read_bytes(), b"validated final render")
+            self.assertEqual(len(validated_paths), 2)
+            self.assertNotEqual(validated_paths[0], str(final_path.resolve()))
+            self.assertEqual(validated_paths[1], str(final_path.resolve()))
+            self.assertEqual(fingerprint_plans, [plan])
+            self.assertEqual(list(Path(directory).glob(".final-staging-*")), [])
+
+    def test_refuses_or_removes_unvalidated_final_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = sequence_plan()
+            final_path = Path(directory) / "final.mp4"
+            plan = EditPlan(
+                base.plan_id,
+                base.brief_id,
+                base.sources,
+                str(final_path),
+                base.operations,
+            )
+
+            def compose(clips, output, **_kwargs):
+                Path(output).write_bytes(b"invalid render")
+                return SequenceArtifact(
+                    tuple(clip.source_path for clip in clips),
+                    str(Path(output).resolve()),
+                    3.5,
+                    Path(output).stat().st_size,
+                )
+
+            def reject(artifact, **_kwargs):
+                return SequenceValidationReport(
+                    False,
+                    artifact,
+                    4.0,
+                    0.15,
+                    (SequenceValidationIssue("duration_mismatch", "duration differs"),),
+                    None,
+                )
+
+            with self.assertRaisesRegex(SequenceWorkflowError, "duration_mismatch"):
+                run_final_sequence_workflow(
+                    plan,
+                    preflight=valid_preflight,
+                    compose=compose,
+                    validate=reject,
+                )
+
+            self.assertFalse(final_path.exists())
+            self.assertEqual(list(Path(directory).glob(".final-staging-*")), [])
+
+            validation_calls = 0
+
+            def reject_published(artifact, **_kwargs):
+                nonlocal validation_calls
+                validation_calls += 1
+                if validation_calls == 1:
+                    return SequenceValidationReport(True, artifact, 3.5, 0.15, (), None)
+                return reject(artifact)
+
+            with self.assertRaisesRegex(SequenceWorkflowError, "published final"):
+                run_final_sequence_workflow(
+                    plan,
+                    preflight=valid_preflight,
+                    compose=compose,
+                    validate=reject_published,
+                )
+
+            self.assertFalse(final_path.exists())
+            self.assertEqual(list(Path(directory).glob(".final-staging-*")), [])
+
+            final_path.write_bytes(b"existing final")
+            with self.assertRaisesRegex(SequenceWorkflowError, "already exists"):
+                run_final_sequence_workflow(
+                    plan,
+                    preflight=lambda _: self.fail("must not preflight"),
+                )
+            self.assertEqual(final_path.read_bytes(), b"existing final")
+
+    def test_final_publication_requires_the_canonical_filename(self):
+        plan = sequence_plan()
+
+        with self.assertRaisesRegex(SequenceWorkflowError, "named final.mp4"):
+            run_final_sequence_workflow(
+                plan,
+                preflight=lambda _: self.fail("must not preflight"),
+            )
+
+        final_plan = EditPlan(
+            plan.plan_id,
+            plan.brief_id,
+            plan.sources,
+            str(Path("output/final.mp4").resolve()),
+            plan.operations,
+        )
+        with self.assertRaisesRegex(SequenceWorkflowError, "run_final_sequence_workflow"):
+            run_sequence_workflow(
+                final_plan,
+                preflight=lambda _: self.fail("must not preflight"),
+            )
+
     def test_mixes_persisted_looped_music_under_captioned_narration(self):
         plan = music_plan()
 

@@ -8,6 +8,7 @@ from video_generator.workflows.segment import (
 from video_generator.workflows.sequence import (
     SequenceWorkflowError,
     SequenceWorkflowReport,
+    run_final_sequence_workflow,
     run_sequence_workflow,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "run_segment_workflow",
     "SequenceWorkflowError",
     "SequenceWorkflowReport",
+    "run_final_sequence_workflow",
     "run_sequence_workflow",
 ]

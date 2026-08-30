@@ -56,6 +56,7 @@ from video_generator.workflows import (
     SegmentWorkflowReport,
     SequenceWorkflowError,
     SequenceWorkflowReport,
+    run_final_sequence_workflow,
     run_segment_workflow,
     run_sequence_workflow,
 )
@@ -150,6 +151,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum accepted artifact duration difference (default: 0.15)",
     )
     execute_sequence.add_argument("--json", action="store_true", help="print a machine-readable report")
+    execute_final_sequence = subparsers.add_parser(
+        "execute-final-sequence-plan",
+        help="stage, validate, and exclusively publish a sequence as final.mp4",
+    )
+    execute_final_sequence.add_argument(
+        "plan", help="persisted sequence EditPlan whose output is named final.mp4"
+    )
+    execute_final_sequence.add_argument("--manifest", help="new RenderManifest JSON path")
+    execute_final_sequence.add_argument(
+        "--config", help="path to a fail-closed TOML configuration file"
+    )
+    execute_final_sequence.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=300,
+        help="maximum FFmpeg execution time (default: 300)",
+    )
+    execute_final_sequence.add_argument(
+        "--duration-tolerance-seconds",
+        type=float,
+        default=0.15,
+        help="maximum accepted artifact duration difference (default: 0.15)",
+    )
+    execute_final_sequence.add_argument(
+        "--json", action="store_true", help="print a machine-readable report"
+    )
     validate_segment = subparsers.add_parser(
         "validate-segment",
         help="verify one extracted segment artifact with ffprobe",
@@ -326,6 +353,7 @@ def _format_sequence_workflow(report: SequenceWorkflowReport, manifest_path: Pat
             f"Narration: {'included' if report.artifact.narration_source_path else 'not included'}",
             f"Captions: {report.artifact.caption_count}",
             f"Music: {'included' if report.artifact.music_source_path else 'not included'}",
+            f"Publication: {report.publication}",
             f"Artifact: {report.artifact.output_path}",
             f"Duration: {report.artifact.duration_seconds} seconds",
             f"Preflight: {'valid' if report.preflight.valid else 'INVALID'}",
@@ -559,9 +587,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(_format_segment_workflow(report, published_manifest), end="")
         return 0 if report.valid else 1
-    if args.command == "execute-sequence-plan":
+    if args.command in {"execute-sequence-plan", "execute-final-sequence-plan"}:
+        final_execution = args.command == "execute-final-sequence-plan"
+        report = None
         try:
             plan = _load_edit_plan(args.plan)
+            if not final_execution and Path(plan.output_path).name.lower() == "final.mp4":
+                raise SequenceWorkflowError(
+                    "final.mp4 must be published with execute-final-sequence-plan"
+                )
             manifest_path = validate_manifest_target(
                 args.manifest or default_manifest_path(plan.output_path),
                 forbidden_paths=(*plan.sources, plan.output_path),
@@ -575,7 +609,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     fingerprint_file(source) for source in execution_plan.sources
                 )
 
-            report = run_sequence_workflow(
+            execute_workflow = (
+                run_final_sequence_workflow if final_execution else run_sequence_workflow
+            )
+            report = execute_workflow(
                 plan,
                 timeout_seconds=args.timeout_seconds,
                 duration_tolerance_seconds=args.duration_tolerance_seconds,
@@ -589,6 +626,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             published_manifest = publish_render_manifest(manifest, manifest_path)
         except (ConfigurationError, ContractError, ManifestError, SequenceWorkflowError) as exc:
+            if final_execution and report is not None and report.publication == "final":
+                try:
+                    Path(report.artifact.output_path).unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    print(
+                        f"Sequence workflow error: {exc}; could not remove unmanifested "
+                        f"final output: {cleanup_error}",
+                        file=sys.stderr,
+                    )
+                    return 2
             print(f"Sequence workflow error: {exc}", file=sys.stderr)
             return 2
         if args.json:
