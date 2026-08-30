@@ -6,6 +6,33 @@ from video_generator.validation import validate_sequence_artifact
 
 
 class SequenceValidationTests(unittest.TestCase):
+    def test_accepts_music_only_as_the_planned_aac_audio_stream(self):
+        output = str(Path("music-only.mp4").resolve())
+        artifact = SequenceArtifact(
+            ("a.mp4", "b.mp4"),
+            output,
+            3.5,
+            2400,
+            music_source_path="music.wav",
+            music_gain_db=-18.0,
+        )
+        probe = MediaProbe(
+            output,
+            2400,
+            "mov,mp4",
+            3.5,
+            1100000,
+            (
+                StreamProbe(0, "video", "h264", 3.5, 1280, 720, None, None),
+                StreamProbe(1, "audio", "aac", 3.5, None, None, 48000, 2),
+            ),
+        )
+
+        report = validate_sequence_artifact(artifact, probe=lambda _: probe)
+
+        self.assertTrue(report.valid)
+        self.assertEqual(report.issues, ())
+
     def test_accepts_exactly_one_h264_video_and_one_aac_narration_stream(self):
         output = str(Path("narrated.mp4").resolve())
         artifact = SequenceArtifact(

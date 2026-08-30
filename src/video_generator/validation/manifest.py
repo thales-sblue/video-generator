@@ -84,6 +84,7 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
     index = 0
     timeline_duration = 0.0
     used_sources = set()
+    music_source = None
     while index < len(operations) and operations[index].kind == "sequence_clip":
         clip = operations[index]
         if (
@@ -143,6 +144,26 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
                 return False
             previous_end = float(end)
         index += 1
+    if index < len(operations) and operations[index].kind == "music":
+        music = operations[index]
+        parameters = dict(music.parameters)
+        gain = parameters.get("gain_db")
+        if (
+            music.source is None
+            or music.start_seconds is not None
+            or music.end_seconds is not None
+            or set(parameters) != {"duration_policy", "gain_db"}
+            or parameters.get("duration_policy") != "loop_to_timeline"
+            or isinstance(gain, bool)
+            or not isinstance(gain, (int, float))
+            or not math.isfinite(gain)
+            or gain < -60
+            or gain > 0
+        ):
+            return False
+        used_sources.add(music.source)
+        music_source = music.source
+        index += 1
     if index < len(operations) and operations[index].kind == "narration":
         narration = operations[index]
         if (
@@ -151,6 +172,8 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
             or narration.end_seconds is not None
             or dict(narration.parameters) != {"duration_policy": "match_timeline"}
         ):
+            return False
+        if music_source is not None and _normalized(narration.source) == _normalized(music_source):
             return False
         used_sources.add(narration.source)
         index += 1
@@ -204,7 +227,7 @@ def validate_render_manifest(
             ManifestValidationIssue(
                 "workflow_plan_mismatch",
                 "video-sequence manifest requires at least two sequence_clip operations "
-                "followed by optional bottom_box captions and match_timeline narration",
+                "followed by optional captions, looped music and matched narration",
             )
         )
 

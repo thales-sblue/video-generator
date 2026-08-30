@@ -43,10 +43,11 @@ funcionar. Não são requisitos do primeiro vídeo.
 O vídeo inicial precisa ser completo e assistível, não cinematográfico.
 
 O motor já recebe uma narração local com duração correspondente à sequência,
-queima captions temporizadas com estilo mínimo e produz H.264/AAC. Geração local
-de voz, imagens e música/mixagem básica continuam sendo gaps; para o primeiro
-caso alimentado somente por clipes e voz fornecidos, o próximo gap funcional é
-o áudio musical opcional com controle básico de volumes.
+queima captions temporizadas, repete e mistura música com ganho persistido e
+produz H.264/AAC. Geração local de voz e imagens continuam futuras; para o
+primeiro caso alimentado por clipes, voz e música fornecidos, o próximo gap é a
+promoção explícita do artifact validado a `final.mp4`, com QA e fronteira de
+revisão claramente registradas.
 
 ## Fluxo-alvo
 

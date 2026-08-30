@@ -21,17 +21,19 @@ class SequenceWorkflowCliTests(unittest.TestCase):
             first = root / "first.mp4"
             second = root / "second.mp4"
             narration = root / "narration.wav"
+            music = root / "music.wav"
             output = root / "final.mp4"
             plan_path = root / "edit-plan.json"
             manifest_path = root / "render-manifest.json"
             first.write_bytes(b"first")
             second.write_bytes(b"second")
             narration.write_bytes(b"narration")
+            music.write_bytes(b"music")
             output.write_bytes(b"timeline")
             plan = EditPlan(
                 "plan-sequence",
                 "brief-dark",
-                (str(first), str(second), str(narration)),
+                (str(first), str(second), str(narration), str(music)),
                 str(output),
                 (
                     EditOperation("clip-1", "sequence_clip", str(first), 0, 1),
@@ -45,6 +47,12 @@ class SequenceWorkflowCliTests(unittest.TestCase):
                                 {"text": "Caption", "start_seconds": 0, "end_seconds": 3}
                             ],
                         },
+                    ),
+                    EditOperation(
+                        "music-1",
+                        "music",
+                        str(music),
+                        parameters={"duration_policy": "loop_to_timeline", "gain_db": -18},
                     ),
                     EditOperation(
                         "voice-1",
@@ -62,6 +70,8 @@ class SequenceWorkflowCliTests(unittest.TestCase):
                 output.stat().st_size,
                 str(narration.resolve()),
                 1,
+                str(music.resolve()),
+                -18.0,
             )
             probe = MediaProbe(
                 str(output.resolve()),
@@ -79,11 +89,21 @@ class SequenceWorkflowCliTests(unittest.TestCase):
                 1536000,
                 (StreamProbe(0, "audio", "pcm_s16le", 3, None, None, 48000, 2),),
             )
-            preflight = PreflightReport(plan.plan_id, True, (), (probe, probe, narration_probe))
+            music_probe = MediaProbe(
+                str(music.resolve()),
+                music.stat().st_size,
+                "wav",
+                1,
+                1536000,
+                (StreamProbe(0, "audio", "pcm_s16le", 1, None, None, 48000, 2),),
+            )
+            preflight = PreflightReport(
+                plan.plan_id, True, (), (probe, probe, narration_probe, music_probe)
+            )
             validation = SequenceValidationReport(True, artifact, 3, 0.15, (), probe)
             report = SequenceWorkflowReport(
                 plan.plan_id,
-                ("clip-1", "clip-2", "captions-1", "voice-1"),
+                ("clip-1", "clip-2", "captions-1", "music-1", "voice-1"),
                 preflight,
                 artifact,
                 validation,
@@ -126,8 +146,9 @@ class SequenceWorkflowCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["workflow"], "video-sequence")
         self.assertEqual(persisted["workflow"], "video-sequence")
-        self.assertEqual(len(persisted["sources"]), 3)
+        self.assertEqual(len(persisted["sources"]), 4)
         self.assertEqual(payload["artifact"]["caption_count"], 1)
+        self.assertEqual(payload["artifact"]["music_gain_db"], -18.0)
         self.assertEqual(persisted["editorial_review"], "not_performed")
         self.assertTrue(persisted["technical_validation_valid"])
 

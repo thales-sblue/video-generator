@@ -57,12 +57,12 @@ preflight, extração e validação técnica, e recusa qualquer shape não supor
 antes de escrever mídia.
 
 `video-sequence` compõe ao menos dois `sequence_clip` ordenados no `EditPlan`,
-pode queimar uma faixa `captions` e receber uma operação final `narration`. O
-workflow executa preflight, confere dimensões, tempos e políticas persistidas,
-recorta e concatena vídeos, queima os cues, normaliza a voz e produz MP4
-H.264/AAC. Sem opções, preserva o render silencioso anterior. Imagens,
-transitions e mixagem continuam fora do escopo, mantendo a timeline mínima
-reproduzível sem antecipar o compositor rico.
+pode queimar uma faixa `captions`, repetir uma faixa `music` com ganho explícito
+e receber uma operação final `narration`. O workflow executa preflight, confere
+dimensões, tempos, streams e políticas persistidas, recorta e concatena vídeos,
+queima os cues, normaliza e mistura áudio e produz MP4 H.264/AAC. Sem opções,
+preserva o render silencioso anterior. Imagens e transitions continuam fora do
+escopo, mantendo a timeline mínima reproduzível sem antecipar o compositor rico.
 
 ### Adapters e renderers
 
@@ -157,9 +157,10 @@ Composição por renderer e avaliação editorial ainda permanecem necessárias 
 de expor um render final.
 
 O workflow `video-sequence` já produz um MP4 composto a partir de múltiplos
-trechos, captions temporizadas e uma narração fornecida. Ele ainda não satisfaz
-`dark-video` v1 sem imagens estáticas, música/mixagem básica e revisão; para um
-primeiro caso baseado apenas em vídeo, imagens permanecem opcionais.
+trechos, captions temporizadas, narração e música com ganho básico. Para o
+primeiro caso baseado apenas em vídeo, imagens permanecem opcionais; a principal
+fronteira restante é promover explicitamente um render tecnicamente validado a
+`final.mp4` e registrar a revisão humana que ainda não foi realizada.
 
 ## Direção da CLI
 

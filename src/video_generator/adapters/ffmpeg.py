@@ -59,6 +59,8 @@ class SequenceArtifact:
     file_size_bytes: int
     narration_source_path: str | None = None
     caption_count: int = 0
+    music_source_path: str | None = None
+    music_gain_db: float | None = None
 
 
 def _time(value: object, name: str) -> float:
@@ -342,9 +344,11 @@ def compose_video_sequence(
     *,
     narration_path: str | Path | None = None,
     captions: Sequence[CaptionCue] = (),
+    music_path: str | Path | None = None,
+    music_gain_db: float | None = None,
     timeout_seconds: float = 300,
 ) -> SequenceArtifact:
-    """Compose H.264 clips with optional matched narration and burned captions."""
+    """Compose clips with optional captions, narration, and looped music."""
 
     if isinstance(clips, (str, bytes)) or not isinstance(clips, Sequence):
         raise FFmpegError("clips must be a sequence of SequenceClip values")
@@ -410,6 +414,26 @@ def compose_video_sequence(
             raise FFmpegError(f"narration does not exist or is not a file: {narration}")
         if os.path.normcase(str(narration)) == os.path.normcase(str(output)):
             raise FFmpegError("output_path must not overwrite the narration source")
+    music: Path | None = None
+    gain: float | None = None
+    if music_path is None:
+        if music_gain_db is not None:
+            raise FFmpegError("music_gain_db requires a music_path")
+    else:
+        music = Path(music_path).expanduser().resolve()
+        if not music.exists() or not music.is_file():
+            raise FFmpegError(f"music does not exist or is not a file: {music}")
+        if os.path.normcase(str(music)) == os.path.normcase(str(output)):
+            raise FFmpegError("output_path must not overwrite the music source")
+        if (
+            isinstance(music_gain_db, bool)
+            or not isinstance(music_gain_db, (int, float))
+            or not math.isfinite(music_gain_db)
+            or music_gain_db < -60
+            or music_gain_db > 0
+        ):
+            raise FFmpegError("music_gain_db must be a finite number from -60 to 0")
+        gain = float(music_gain_db)
     if output.exists():
         raise FFmpegError(f"output already exists: {output}")
 
@@ -457,6 +481,8 @@ def compose_video_sequence(
         command.extend(["-i", str(source)])
     if narration is not None:
         command.extend(["-i", str(narration)])
+    if music is not None:
+        command.extend(["-stream_loop", "-1", "-i", str(music)])
     filters = []
     labels = []
     for index, (_, start, end) in enumerate(resolved_clips):
@@ -480,15 +506,32 @@ def compose_video_sequence(
         filters.append(
             f"[basev]subtitles=filename='{caption_path}':force_style='{style}'[outv]"
         )
-    if narration is not None:
-        audio_index = len(resolved_clips)
+    narration_index = len(resolved_clips) if narration is not None else None
+    music_index = len(resolved_clips) + (1 if narration is not None else 0) if music is not None else None
+    if narration_index is not None:
         filters.append(
-            f"[{audio_index}:a:0]aresample=48000,"
+            f"[{narration_index}:a:0]aresample=48000,"
             "aformat=sample_fmts=fltp:channel_layouts=stereo,apad,"
-            f"atrim=duration={format(duration, '.15g')},asetpts=PTS-STARTPTS[outa]"
+            f"atrim=duration={format(duration, '.15g')},asetpts=PTS-STARTPTS[voice]"
         )
+    if music_index is not None and gain is not None:
+        filters.append(
+            f"[{music_index}:a:0]aresample=48000,"
+            "aformat=sample_fmts=fltp:channel_layouts=stereo,"
+            f"volume={format(gain, '.15g')}dB,"
+            f"atrim=duration={format(duration, '.15g')},asetpts=PTS-STARTPTS[bed]"
+        )
+    if narration_index is not None and music_index is not None:
+        filters.append(
+            "[voice][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+            "alimiter=limit=0.95:latency=1[outa]"
+        )
+    elif narration_index is not None:
+        filters.append("[voice]anull[outa]")
+    elif music_index is not None:
+        filters.append("[bed]alimiter=limit=0.95:latency=1[outa]")
     command.extend(["-filter_complex", ";".join(filters), "-map", "[outv]"])
-    if narration is None:
+    if narration is None and music is None:
         command.append("-an")
     else:
         command.extend(["-map", "[outa]", "-c:a", "aac", "-b:a", "192k"])
@@ -551,4 +594,6 @@ def compose_video_sequence(
         file_size_bytes=size,
         narration_source_path=str(narration) if narration is not None else None,
         caption_count=len(resolved_captions),
+        music_source_path=str(music) if music is not None else None,
+        music_gain_db=gain,
     )

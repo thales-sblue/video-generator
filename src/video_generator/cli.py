@@ -132,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     execute_segment.add_argument("--json", action="store_true", help="print a machine-readable report")
     execute_sequence = subparsers.add_parser(
         "execute-sequence-plan",
-        help="compose sequence clips with optional captions and narration into one MP4",
+        help="compose clips with optional captions, narration, and music into one MP4",
     )
     execute_sequence.add_argument("plan", help="path to a persisted sequence EditPlan JSON file")
     execute_sequence.add_argument("--manifest", help="new RenderManifest JSON path")
@@ -325,6 +325,7 @@ def _format_sequence_workflow(report: SequenceWorkflowReport, manifest_path: Pat
             f"Timeline operations: {len(report.operation_ids)}",
             f"Narration: {'included' if report.artifact.narration_source_path else 'not included'}",
             f"Captions: {report.artifact.caption_count}",
+            f"Music: {'included' if report.artifact.music_source_path else 'not included'}",
             f"Artifact: {report.artifact.output_path}",
             f"Duration: {report.artifact.duration_seconds} seconds",
             f"Preflight: {'valid' if report.preflight.valid else 'INVALID'}",

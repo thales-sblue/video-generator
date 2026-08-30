@@ -1,4 +1,4 @@
-"""Compose a persisted clip sequence with optional narration and captions."""
+"""Compose a persisted clip sequence with captions and planned audio."""
 
 from __future__ import annotations
 
@@ -33,6 +33,8 @@ NARRATION_KIND = "narration"
 NARRATION_PARAMETERS = {"duration_policy": "match_timeline"}
 CAPTIONS_KIND = "captions"
 CAPTIONS_STYLE = "bottom_box"
+MUSIC_KIND = "music"
+MUSIC_DURATION_POLICY = "loop_to_timeline"
 
 
 class SequenceWorkflowError(RuntimeError):
@@ -133,9 +135,35 @@ def _caption_cues(parameters: Mapping[str, object]) -> tuple[CaptionCue, ...]:
     return tuple(cues)
 
 
+def _music_gain(parameters: Mapping[str, object]) -> float:
+    values = dict(parameters)
+    if set(values) != {"duration_policy", "gain_db"}:
+        raise SequenceWorkflowError(
+            "music requires duration_policy=loop_to_timeline and gain_db"
+        )
+    if values["duration_policy"] != MUSIC_DURATION_POLICY:
+        raise SequenceWorkflowError("music duration_policy must be loop_to_timeline")
+    gain = values["gain_db"]
+    if (
+        isinstance(gain, bool)
+        or not isinstance(gain, (int, float))
+        or not math.isfinite(gain)
+        or gain < -60
+        or gain > 0
+    ):
+        raise SequenceWorkflowError("music gain_db must be a finite number from -60 to 0")
+    return float(gain)
+
+
 def _operations_from_plan(
     plan: EditPlan,
-) -> tuple[tuple[SequenceClip, ...], str | None, tuple[CaptionCue, ...]]:
+) -> tuple[
+    tuple[SequenceClip, ...],
+    str | None,
+    tuple[CaptionCue, ...],
+    str | None,
+    float | None,
+]:
     if len(plan.operations) < 2:
         raise SequenceWorkflowError("video-sequence requires at least two operations")
     if Path(plan.output_path).suffix.lower() != ".mp4":
@@ -145,6 +173,8 @@ def _operations_from_plan(
     narration_path: str | None = None
     captions: tuple[CaptionCue, ...] = ()
     captions_seen = False
+    music_path: str | None = None
+    music_gain_db: float | None = None
     for index, operation in enumerate(plan.operations):
         if operation.kind == NARRATION_KIND:
             if index != len(plan.operations) - 1:
@@ -167,6 +197,8 @@ def _operations_from_plan(
                 raise SequenceWorkflowError("video-sequence accepts at most one captions operation")
             if len(clips) < 2:
                 raise SequenceWorkflowError("captions must follow all sequence_clip operations")
+            if music_path is not None:
+                raise SequenceWorkflowError("captions must precede music")
             if operation.source is not None:
                 raise SequenceWorkflowError("captions must not declare a source")
             if operation.start_seconds is not None or operation.end_seconds is not None:
@@ -174,12 +206,27 @@ def _operations_from_plan(
             captions = _caption_cues(operation.parameters)
             captions_seen = True
             continue
+        if operation.kind == MUSIC_KIND:
+            if music_path is not None:
+                raise SequenceWorkflowError("video-sequence accepts at most one music operation")
+            if len(clips) < 2:
+                raise SequenceWorkflowError("music must follow all sequence_clip operations")
+            if operation.source is None:
+                raise SequenceWorkflowError("music must declare a source")
+            if operation.start_seconds is not None or operation.end_seconds is not None:
+                raise SequenceWorkflowError("music timing is fixed at zero in v1")
+            music_gain_db = _music_gain(operation.parameters)
+            music_path = operation.source
+            used_sources.add(operation.source)
+            continue
         if operation.kind != OPERATION_KIND:
             raise SequenceWorkflowError(
                 f"video-sequence does not support operation kind: {operation.kind}"
             )
-        if captions_seen:
-            raise SequenceWorkflowError("all sequence_clip operations must precede captions")
+        if captions_seen or music_path is not None:
+            raise SequenceWorkflowError(
+                "all sequence_clip operations must precede captions and music"
+            )
         if operation.source is None:
             raise SequenceWorkflowError("sequence_clip must declare a source")
         if operation.start_seconds is None or operation.end_seconds is None:
@@ -194,7 +241,13 @@ def _operations_from_plan(
         raise SequenceWorkflowError("video-sequence requires at least two sequence_clip operations")
     if used_sources != set(plan.sources):
         raise SequenceWorkflowError("every declared source must be used by the sequence")
-    return tuple(clips), narration_path, captions
+    if (
+        narration_path is not None
+        and music_path is not None
+        and _normalized(narration_path) == _normalized(music_path)
+    ):
+        raise SequenceWorkflowError("narration and music must use distinct sources")
+    return tuple(clips), narration_path, captions, music_path, music_gain_db
 
 
 def _source_probes(report: PreflightReport, plan: EditPlan) -> dict[str, MediaProbe]:
@@ -246,6 +299,20 @@ def _validate_narration(
         )
 
 
+def _validate_music(probes: dict[str, MediaProbe], music_path: str) -> None:
+    source = probes.get(_normalized(music_path))
+    if source is None:
+        raise SequenceWorkflowError("preflight omitted the music source")
+    audio_streams = tuple(stream for stream in source.streams if stream.codec_type == "audio")
+    non_audio_streams = tuple(stream for stream in source.streams if stream.codec_type != "audio")
+    if len(audio_streams) != 1 or non_audio_streams:
+        raise SequenceWorkflowError(
+            "music v1 requires exactly one audio stream and no other streams"
+        )
+    if source.duration_seconds is None or source.duration_seconds <= 0:
+        raise SequenceWorkflowError("music duration is unavailable or invalid")
+
+
 def _normalized(value: str) -> str:
     return os.path.normcase(str(Path(value).expanduser().resolve()))
 
@@ -270,7 +337,7 @@ def run_sequence_workflow(
         "duration_tolerance_seconds",
         allow_zero=True,
     )
-    clips, narration_path, captions = _operations_from_plan(plan)
+    clips, narration_path, captions, music_path, music_gain_db = _operations_from_plan(plan)
     expected_duration = sum(clip.end_seconds - clip.start_seconds for clip in clips)
     if captions and captions[-1].end_seconds > expected_duration:
         raise SequenceWorkflowError(
@@ -289,6 +356,8 @@ def run_sequence_workflow(
     _video_shape(probes, clips)
     if narration_path is not None:
         _validate_narration(probes, narration_path, expected_duration, tolerance)
+    if music_path is not None:
+        _validate_music(probes, music_path)
     if before_compose is not None:
         before_compose(plan)
 
@@ -299,6 +368,9 @@ def run_sequence_workflow(
             compose_kwargs["narration_path"] = narration_path
         if captions:
             compose_kwargs["captions"] = captions
+        if music_path is not None and music_gain_db is not None:
+            compose_kwargs["music_path"] = music_path
+            compose_kwargs["music_gain_db"] = music_gain_db
         artifact = create_artifact(clips, plan.output_path, **compose_kwargs)
     except FFmpegError as exc:
         raise SequenceWorkflowError(f"video sequence composition failed: {exc}") from exc
@@ -320,6 +392,14 @@ def run_sequence_workflow(
         raise SequenceWorkflowError("compose returned unexpected narration metadata")
     if artifact.caption_count != len(captions):
         raise SequenceWorkflowError("compose returned unexpected caption metadata")
+    expected_music = _normalized(music_path) if music_path is not None else None
+    actual_music = (
+        _normalized(artifact.music_source_path)
+        if artifact.music_source_path is not None
+        else None
+    )
+    if actual_music != expected_music or artifact.music_gain_db != music_gain_db:
+        raise SequenceWorkflowError("compose returned unexpected music metadata")
     if artifact.duration_seconds != expected_duration or artifact.file_size_bytes <= 0:
         raise SequenceWorkflowError("compose returned inconsistent artifact metadata")
 

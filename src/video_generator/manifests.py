@@ -158,6 +158,21 @@ def build_sequence_render_manifest(
             expected_caption_count = len(items)
     if report.artifact.caption_count != expected_caption_count:
         raise ManifestError("workflow artifact captions do not match the plan")
+    music_operations = tuple(
+        operation for operation in plan.operations if operation.kind == "music"
+    )
+    expected_music = None
+    expected_gain = None
+    if len(music_operations) == 1 and music_operations[0].source is not None:
+        expected_music = _normalized(music_operations[0].source)
+        expected_gain = music_operations[0].parameters.get("gain_db")
+    artifact_music = (
+        _normalized(report.artifact.music_source_path)
+        if report.artifact.music_source_path is not None
+        else None
+    )
+    if artifact_music != expected_music or report.artifact.music_gain_db != expected_gain:
+        raise ManifestError("workflow artifact music does not match the plan")
     if report.validation.artifact != report.artifact:
         raise ManifestError("workflow validation does not match the artifact")
     if not doctor.local_only or doctor.external_services_allowed or not doctor.preserve_sources:

@@ -105,7 +105,11 @@ def validate_sequence_artifact(
                     f"expected H.264 video, found {video_streams[0].codec_name or 'unknown'}",
                 )
             )
-        if artifact.narration_source_path is None:
+        has_planned_audio = (
+            artifact.narration_source_path is not None
+            or artifact.music_source_path is not None
+        )
+        if not has_planned_audio:
             if audio_streams or other_streams:
                 issues.append(
                     SequenceValidationIssue(
@@ -119,7 +123,7 @@ def validate_sequence_artifact(
                 issues.append(
                     SequenceValidationIssue(
                         "unexpected_audio_stream_count",
-                        f"expected exactly one audio stream, found {len(audio_streams)}",
+                        f"expected exactly one mixed audio stream, found {len(audio_streams)}",
                     )
                 )
             elif audio_streams[0].codec_name != "aac":

@@ -40,6 +40,7 @@ timeline renderizada:
 ```text
 EditPlan com sequence_clip ordenados -> preflight -> FFmpeg concat filter
               + captions opcionais
+              + music opcional
               + narration opcional   -> ffprobe -> RenderManifest -> MP4
 ```
 
@@ -53,10 +54,11 @@ O áudio original dos clipes não entra na timeline. Depois dos clipes, uma
 operação opcional `captions` representa uma faixa inteira sem source próprio:
 `parameters` contém `style=bottom_box` e de 1 a 500 itens com texto e tempos
 relativos à timeline. Cada texto tem até 160 caracteres; cues são ordenados,
-não sobrepostos, não aceitam markup e são limitados à duração visual. O adapter cria um SRT temporário,
-queima captions brancas em uma caixa escura via FFmpeg/libass e sempre remove o
-arquivo intermediário. O texto não compõe o filter graph, evitando que conteúdo
-editorial seja interpretado como sintaxe do FFmpeg.
+não sobrepostos, não aceitam markup e são limitados à duração visual. O adapter
+cria um SRT temporário, queima captions brancas em uma caixa escura via
+FFmpeg/libass e sempre remove o arquivo intermediário. O texto não compõe o
+filter graph, evitando que conteúdo editorial seja interpretado como sintaxe do
+FFmpeg.
 
 Uma operação final opcional
 `narration`, sem tempos e com
@@ -65,11 +67,21 @@ local a partir de `t=0`. Sua duração deve corresponder à soma dos trechos den
 da tolerância (150 ms por padrão); diferença maior falha antes da composição.
 Dentro da tolerância, a narração é normalizada para estéreo/48 kHz, recebe
 silêncio final ou trim até a duração visual e é codificada em AAC. A validação
-exige exatamente um stream H.264 e, no modo narrado, exatamente um stream AAC.
-Sem a operação, a timeline silenciosa anterior continua suportada.
+exige exatamente um stream H.264 e, quando há áudio planejado, exatamente um
+stream AAC. Sem narração nem música, a timeline silenciosa anterior continua
+suportada.
 
-Esse escopo prova `EditPlan -> timeline -> captions -> composição -> MP4` sem
-substituir HyperFrames, que permanece o compositor planejado para imagens,
+Antes da narração, uma operação opcional `music` declara um source de áudio
+local, sem tempos próprios, e
+`parameters={"duration_policy":"loop_to_timeline","gain_db":N}`. O ganho
+aceita valores de -60 a 0 dB. O source deve ter exatamente um stream de áudio e
+duração positiva; não precisa corresponder à timeline, pois FFmpeg o repete e
+corta no fim visual. Música e voz são convertidas para estéreo/48 kHz, mixadas
+com `normalize=0` e limitadas a 0,95 antes da codificação AAC. Sem voz, a música
+sozinha ocupa a faixa AAC. O áudio original dos clipes nunca entra no mix.
+
+Esse escopo prova `EditPlan -> timeline -> captions/áudio -> composição -> MP4`
+sem substituir HyperFrames, que permanece o compositor planejado para imagens,
 layout, motion e captions avançadas. O próximo gap deve ampliar este caminho
 rumo a um vídeo dark completo, não criar outro workflow.
 
@@ -77,7 +89,6 @@ rumo a um vídeo dark completo, não criar outro workflow.
 
 - aceitar imagens com duração explícita na timeline;
 - gerar narração local a partir de texto fornecido;
-- adicionar música opcional e mixar volumes básicos;
 - promover o render validado a `final.mp4` com QA técnico.
 
 Pesquisa, roteiro, storyboard e assets automáticos vêm depois do primeiro vídeo

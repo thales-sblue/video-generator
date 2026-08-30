@@ -15,6 +15,49 @@ from video_generator.adapters import (
 
 
 class FFmpegAdapterTests(unittest.TestCase):
+    def test_loops_and_mixes_music_under_narration_with_persisted_gain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            narration = root / "narration.wav"
+            music = root / "music.wav"
+            output = root / "mixed.mp4"
+            for path in (first, second, narration, music):
+                path.write_bytes(path.stem.encode("utf-8"))
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"mixed sequence")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            clips = (SequenceClip(str(first), 0, 1), SequenceClip(str(second), 0, 2))
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                artifact = compose_video_sequence(
+                    clips,
+                    output,
+                    narration_path=narration,
+                    music_path=music,
+                    music_gain_db=-18,
+                )
+
+            command = execute.call_args.args[0]
+            inputs = [command[index + 1] for index, value in enumerate(command) if value == "-i"]
+            self.assertEqual(
+                inputs,
+                [str(first.resolve()), str(second.resolve()), str(narration.resolve()), str(music.resolve())],
+            )
+            self.assertEqual(command[command.index("-stream_loop") + 1], "-1")
+            self.assertLess(command.index("-stream_loop"), command.index(str(music.resolve())))
+            filter_graph = command[command.index("-filter_complex") + 1]
+            self.assertIn("[3:a:0]aresample=48000", filter_graph)
+            self.assertIn("volume=-18dB", filter_graph)
+            self.assertIn("[voice][bed]amix=inputs=2", filter_graph)
+            self.assertIn("alimiter=limit=0.95:latency=1[outa]", filter_graph)
+            self.assertEqual(artifact.music_source_path, str(music.resolve()))
+            self.assertEqual(artifact.music_gain_db, -18.0)
+
     def test_burns_caption_cues_from_a_temporary_srt_without_filter_injection(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -162,6 +205,28 @@ class FFmpegAdapterTests(unittest.TestCase):
                         (SequenceClip(str(source), 0, 1), SequenceClip(str(other), 0, 1)),
                         narration,
                         narration_path=narration,
+                    )
+                with self.assertRaisesRegex(FFmpegError, "music does not exist"):
+                    compose_video_sequence(
+                        (SequenceClip(str(source), 0, 1), SequenceClip(str(other), 0, 1)),
+                        root / "out.mp4",
+                        music_path=root / "missing.wav",
+                        music_gain_db=-18,
+                    )
+                music = root / "music.wav"
+                music.write_bytes(b"music")
+                with self.assertRaisesRegex(FFmpegError, "from -60 to 0"):
+                    compose_video_sequence(
+                        (SequenceClip(str(source), 0, 1), SequenceClip(str(other), 0, 1)),
+                        root / "out.mp4",
+                        music_path=music,
+                        music_gain_db=3,
+                    )
+                with self.assertRaisesRegex(FFmpegError, "requires a music_path"):
+                    compose_video_sequence(
+                        (SequenceClip(str(source), 0, 1), SequenceClip(str(other), 0, 1)),
+                        root / "out.mp4",
+                        music_gain_db=-18,
                     )
                 existing = root / "existing.mp4"
                 existing.write_bytes(b"existing")

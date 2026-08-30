@@ -43,24 +43,26 @@ def state(directory: str, *, technical_valid: bool = True):
 
 
 class ManifestValidationTests(unittest.TestCase):
-    def test_accepts_captioned_narrated_sequence_and_all_source_fingerprints(self):
+    def test_accepts_captioned_mixed_sequence_and_all_source_fingerprints(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             first = root / "first.mp4"
             second = root / "second.mp4"
             narration = root / "narration.wav"
+            music = root / "music.wav"
             output = root / "final.mp4"
             for path, content in (
                 (first, b"first"),
                 (second, b"second"),
                 (narration, b"narration"),
+                (music, b"music"),
                 (output, b"final"),
             ):
                 path.write_bytes(content)
             plan = EditPlan(
                 "plan-narrated",
                 "brief-dark",
-                (str(first), str(second), str(narration)),
+                (str(first), str(second), str(narration), str(music)),
                 str(output),
                 (
                     EditOperation("clip-1", "sequence_clip", str(first), 0, 1),
@@ -75,6 +77,12 @@ class ManifestValidationTests(unittest.TestCase):
                                 {"text": "Second", "start_seconds": 1, "end_seconds": 2},
                             ],
                         },
+                    ),
+                    EditOperation(
+                        "music-1",
+                        "music",
+                        str(music),
+                        parameters={"duration_policy": "loop_to_timeline", "gain_db": -18},
                     ),
                     EditOperation(
                         "voice-1",
@@ -117,7 +125,7 @@ class ManifestValidationTests(unittest.TestCase):
                             ],
                         },
                     ),
-                    plan.operations[-1],
+                    *plan.operations[-2:],
                 ),
             )
             invalid_report = validate_render_manifest(manifest, invalid_caption_plan)

@@ -113,7 +113,94 @@ def captioned_plan(*, caption_parameters=None) -> EditPlan:
     )
 
 
+def music_plan(*, music_parameters=None) -> EditPlan:
+    captioned = captioned_plan()
+    music = str(Path("inputs/music.wav").resolve())
+    return EditPlan(
+        captioned.plan_id,
+        captioned.brief_id,
+        (*captioned.sources, music),
+        captioned.output_path,
+        (
+            *captioned.operations[:-1],
+            EditOperation(
+                "music-1",
+                "music",
+                music,
+                parameters=(
+                    {"duration_policy": "loop_to_timeline", "gain_db": -18}
+                    if music_parameters is None
+                    else music_parameters
+                ),
+            ),
+            captioned.operations[-1],
+        ),
+    )
+
+
+def music_preflight(plan: EditPlan, *, audio: bool = True) -> PreflightReport:
+    base = narrated_preflight(plan)
+    streams = (
+        (StreamProbe(0, "audio", "pcm_s16le", 0.75, None, None, 48000, 2),)
+        if audio
+        else (StreamProbe(0, "video", "h264", 0.75, 1280, 720, None, None),)
+    )
+    music_probe = MediaProbe(plan.sources[3], 1500, "wav", 0.75, 1536000, streams)
+    return PreflightReport(plan.plan_id, True, (), (*base.sources, music_probe))
+
+
 class SequenceWorkflowTests(unittest.TestCase):
+    def test_mixes_persisted_looped_music_under_captioned_narration(self):
+        plan = music_plan()
+
+        def compose(clips, output, **kwargs):
+            self.assertEqual(kwargs["music_path"], plan.sources[3])
+            self.assertEqual(kwargs["music_gain_db"], -18.0)
+            return SequenceArtifact(
+                source_paths=plan.sources[:2],
+                output_path=plan.output_path,
+                duration_seconds=3.5,
+                file_size_bytes=900,
+                narration_source_path=plan.sources[2],
+                caption_count=2,
+                music_source_path=plan.sources[3],
+                music_gain_db=-18.0,
+            )
+
+        report = run_sequence_workflow(
+            plan,
+            preflight=music_preflight,
+            compose=compose,
+            validate=lambda value, **_: SequenceValidationReport(
+                True, value, 3.5, 0.15, (), None
+            ),
+        )
+
+        self.assertTrue(report.valid)
+        self.assertEqual(report.operation_ids[-2:], ("music-1", "voice-1"))
+        self.assertEqual(report.artifact.music_gain_db, -18.0)
+
+    def test_rejects_invalid_music_policy_gain_or_stream_before_composition(self):
+        for parameters, message in (
+            ({"duration_policy": "match_timeline", "gain_db": -18}, "loop_to_timeline"),
+            ({"duration_policy": "loop_to_timeline", "gain_db": 1}, "from -60 to 0"),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(SequenceWorkflowError, message):
+                    run_sequence_workflow(
+                        music_plan(music_parameters=parameters),
+                        preflight=lambda _: self.fail("must not preflight invalid music"),
+                        compose=lambda *_args, **_kwargs: self.fail("must not compose"),
+                    )
+
+        plan = music_plan()
+        with self.assertRaisesRegex(SequenceWorkflowError, "one audio stream"):
+            run_sequence_workflow(
+                plan,
+                preflight=lambda value: music_preflight(value, audio=False),
+                compose=lambda *_args, **_kwargs: self.fail("must not compose"),
+            )
+
     def test_burns_persisted_caption_track_before_matched_narration(self):
         plan = captioned_plan()
 
@@ -273,6 +360,26 @@ class SequenceWorkflowTests(unittest.TestCase):
             run_sequence_workflow(
                 plan,
                 preflight=narrated_preflight,
+                compose=lambda *_args, **_kwargs: bad_artifact,
+            )
+
+    def test_rejects_inconsistent_music_artifact_metadata(self):
+        plan = music_plan()
+        bad_artifact = SequenceArtifact(
+            source_paths=plan.sources[:2],
+            output_path=plan.output_path,
+            duration_seconds=3.5,
+            file_size_bytes=500,
+            narration_source_path=plan.sources[2],
+            caption_count=2,
+            music_source_path=plan.sources[3],
+            music_gain_db=-6.0,
+        )
+
+        with self.assertRaisesRegex(SequenceWorkflowError, "unexpected music metadata"):
+            run_sequence_workflow(
+                plan,
+                preflight=music_preflight,
                 compose=lambda *_args, **_kwargs: bad_artifact,
             )
 
