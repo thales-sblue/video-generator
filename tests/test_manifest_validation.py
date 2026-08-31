@@ -134,6 +134,55 @@ class ManifestValidationTests(unittest.TestCase):
         self.assertEqual(report.issues, ())
         self.assertIn("workflow_plan_mismatch", {issue.code for issue in invalid_report.issues})
 
+    def test_accepts_a_sequence_plan_with_image_clip_and_captions_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clip = root / "clip.mp4"
+            still = root / "card.png"
+            subtitles = root / "cues.srt"
+            output = root / "final.mp4"
+            for path, content in (
+                (clip, b"clip"),
+                (still, b"still"),
+                (subtitles, b"1\n00:00:00,000 --> 00:00:01,000\nhi\n"),
+                (output, b"final"),
+            ):
+                path.write_bytes(content)
+            plan = EditPlan(
+                "plan-image-captions",
+                "brief-dark",
+                (str(clip), str(still), str(subtitles)),
+                str(output),
+                (
+                    EditOperation("clip-1", "sequence_clip", str(clip), 0, 1.5),
+                    EditOperation(
+                        "image-1", "image_clip", str(still), parameters={"duration_seconds": 2}
+                    ),
+                    EditOperation(
+                        "captions-1", "captions", str(subtitles), parameters={"style": "bottom_box"}
+                    ),
+                ),
+            )
+            manifest = RenderManifest(
+                "manifest-plan-image-captions",
+                plan.plan_id,
+                plan.brief_id,
+                "video-sequence",
+                fingerprint_plan(plan),
+                tuple(fingerprint_file(source) for source in plan.sources),
+                (fingerprint_file(output),),
+                (
+                    ToolRecord("FFmpeg", "C:/tools/ffmpeg.exe", "ffmpeg 8"),
+                    ToolRecord("ffprobe", "C:/tools/ffprobe.exe", "ffprobe 8"),
+                ),
+                True,
+            )
+
+            report = validate_render_manifest(manifest, plan)
+
+        self.assertTrue(report.technically_ready)
+        self.assertEqual(report.issues, ())
+
     def test_accepts_unchanged_plan_sources_and_outputs(self):
         with tempfile.TemporaryDirectory() as directory:
             plan, manifest, _, _ = state(directory)

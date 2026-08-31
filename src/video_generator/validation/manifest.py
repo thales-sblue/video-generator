@@ -79,35 +79,65 @@ def _check_fingerprint(
         )
 
 
+_SUBTITLE_SUFFIXES = {".srt", ".vtt"}
+
+
 def _sequence_plan_matches(plan: EditPlan) -> bool:
     operations = plan.operations
     index = 0
     timeline_duration = 0.0
+    clip_count = 0
     used_sources = set()
     music_source = None
-    while index < len(operations) and operations[index].kind == "sequence_clip":
-        clip = operations[index]
-        if (
-            clip.source is None
-            or clip.start_seconds is None
-            or clip.end_seconds is None
-            or clip.parameters
-        ):
+    while index < len(operations) and operations[index].kind in ("sequence_clip", "image_clip"):
+        segment = operations[index]
+        if segment.source is None:
             return False
-        timeline_duration += clip.end_seconds - clip.start_seconds
-        used_sources.add(clip.source)
+        if segment.kind == "image_clip":
+            parameters = dict(segment.parameters)
+            duration = parameters.get("duration_seconds")
+            if (
+                segment.start_seconds is not None
+                or segment.end_seconds is not None
+                or set(parameters) != {"duration_seconds"}
+                or isinstance(duration, bool)
+                or not isinstance(duration, (int, float))
+                or not math.isfinite(duration)
+                or duration <= 0
+                or duration > 600
+            ):
+                return False
+            timeline_duration += float(duration)
+        else:
+            if (
+                segment.start_seconds is None
+                or segment.end_seconds is None
+                or segment.parameters
+            ):
+                return False
+            timeline_duration += segment.end_seconds - segment.start_seconds
+            clip_count += 1
+        used_sources.add(segment.source)
         index += 1
-    if index < 2:
+    if index < 2 or clip_count < 1:
         return False
     if index < len(operations) and operations[index].kind == "captions":
         captions = operations[index]
         parameters = dict(captions.parameters)
         items = parameters.get("items")
-        if (
-            captions.source is not None
-            or captions.start_seconds is not None
-            or captions.end_seconds is not None
-            or set(parameters) != {"style", "items"}
+        if captions.start_seconds is not None or captions.end_seconds is not None:
+            return False
+        if captions.source is not None:
+            if (
+                Path(captions.source).suffix.lower() not in _SUBTITLE_SUFFIXES
+                or set(parameters) != {"style"}
+                or parameters.get("style") != "bottom_box"
+            ):
+                return False
+            used_sources.add(captions.source)
+            items = ()
+        elif (
+            set(parameters) != {"style", "items"}
             or parameters.get("style") != "bottom_box"
             or isinstance(items, (str, bytes))
             or not isinstance(items, (list, tuple))

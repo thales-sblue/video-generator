@@ -58,14 +58,21 @@ H.264. Cada `image_clip` entra como um input `-loop 1 -t N` e, quando há qualqu
 imagem na timeline, todos os segmentos são normalizados para 30 fps e `yuv420p`
 para manter o concat determinístico. O áudio original dos clipes não entra na
 timeline. Depois dos segmentos, uma
-operação opcional `captions` representa uma faixa inteira sem source próprio:
-`parameters` contém `style=bottom_box` e de 1 a 500 itens com texto e tempos
-relativos à timeline. Cada texto tem até 160 caracteres; cues são ordenados,
-não sobrepostos, não aceitam markup e são limitados à duração visual. O adapter
-cria um SRT temporário, queima captions brancas em uma caixa escura via
-FFmpeg/libass e sempre remove o arquivo intermediário. O texto não compõe o
-filter graph, evitando que conteúdo editorial seja interpretado como sintaxe do
-FFmpeg.
+operação opcional `captions` representa uma faixa inteira. Os cues vêm de uma de
+duas formas:
+
+- **inline:** sem source, `parameters` com `style=bottom_box` e de 1 a 500 itens
+  com texto e tempos relativos à timeline;
+- **arquivo:** `source` aponta um `.srt` ou `.vtt` local (declarado como source
+  do plano, portanto com fingerprint no `RenderManifest`) e `parameters` contém
+  apenas `style=bottom_box`. O arquivo é lido como UTF-8 e convertido em cues;
+  tags de estilo e posicionamento (`<`, `>`, `{`, `}`) são recusadas.
+
+Em ambos os casos cada texto tem até 160 caracteres; cues são ordenados, não
+sobrepostos, duram ao menos 1 ms e são limitados à duração visual. O adapter cria
+um SRT temporário, queima captions brancas em uma caixa escura via FFmpeg/libass
+e sempre remove o arquivo intermediário. O texto nunca compõe o filter graph,
+evitando que conteúdo editorial seja interpretado como sintaxe do FFmpeg.
 
 Uma operação final opcional
 `narration`, sem tempos e com
@@ -110,9 +117,13 @@ Capacidades que ainda faltam para `dark-video` v1:
 - derivar captions do timing da narração, não de timestamps manuais;
 - executar a primeira produção real completa e registrar sua revisão humana.
 
-Já disponível: `image_clip` insere imagens locais com duração explícita na
-timeline de `video-sequence`, desde que as dimensões batam com os clipes (sem
-scale/pad automático nesta v1).
+Já disponível:
+
+- `image_clip` insere imagens locais com duração explícita na timeline de
+  `video-sequence`, desde que as dimensões batam com os clipes (sem scale/pad
+  automático nesta v1);
+- `captions` aceita um `.srt`/`.vtt` local como source, além dos itens inline —
+  precursor de "captions a partir da narração", que passará a emitir esse arquivo.
 
 ### Ordem recomendada dos próximos incrementos
 
@@ -125,9 +136,9 @@ incremento; nada aqui autoriza pular testes ou camadas):
    ganham o texto da narração e voz/seed persistidos; o adapter produz um WAV
    local que alimenta a operação `narration` já existente. Ausência do modelo
    degrada só essa capacidade, nunca contratos ou diagnóstico.
-3. **Captions a partir da narração** — gerar os cues do alinhamento do TTS (ou de
-   Whisper local), respeitando `VIDEO_LANGUAGE.md` (timing por unidades de
-   significado).
+3. **Captions a partir da narração** — gerar um `.srt` a partir do alinhamento do
+   TTS (ou de Whisper local) e alimentá-lo pela operação `captions` já existente,
+   respeitando `VIDEO_LANGUAGE.md` (timing por unidades de significado).
 4. **Primeiro adapter HyperFrames** — provar `EditPlan -> cena HTML -> MP4` com um
    title card / camada de captions. Avaliar se imagens com scale/pad, fit ao
    canvas e Ken Burns saem mais baratas por HTML do que por `zoompan`/`tpad` no

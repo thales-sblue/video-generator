@@ -58,8 +58,9 @@ antes de escrever mídia.
 
 `video-sequence` compõe ao menos dois segmentos ordenados no `EditPlan` — com ao
 menos um `sequence_clip` (trecho de vídeo) e, opcionalmente, `image_clip`
-(imagem local com `duration_seconds`). Pode queimar uma faixa `captions`, repetir
-uma faixa `music` com ganho explícito e receber uma operação final `narration`. O
+(imagem local com `duration_seconds`). Pode queimar uma faixa `captions` — cues
+inline ou de um `.srt`/`.vtt` local —, repetir uma faixa `music` com ganho
+explícito e receber uma operação final `narration`. O
 workflow executa preflight, confere dimensões, tempos, streams e políticas
 persistidas, recorta e concatena os segmentos, queima os cues, normaliza e
 mistura áudio e produz MP4 H.264/AAC. Sem opções, preserva o render silencioso

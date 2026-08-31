@@ -201,6 +201,52 @@ def image_preflight(plan: EditPlan, *, image_width: int = 1280) -> PreflightRepo
     return PreflightReport(plan.plan_id, True, (), (clip_probe, image_probe))
 
 
+def caption_file_plan(directory, *, srt_name="cues.srt", parameters=None):
+    root = Path(directory)
+    first = str((root / "first.mp4").resolve())
+    second = str((root / "second.mp4").resolve())
+    subtitles = str((root / srt_name).resolve())
+    return EditPlan(
+        "plan-caption-file",
+        "brief-dark",
+        (first, second, subtitles),
+        str((root / "timeline.mp4").resolve()),
+        (
+            EditOperation("clip-1", "sequence_clip", first, 0, 1.5),
+            EditOperation("clip-2", "sequence_clip", second, 0, 2),
+            EditOperation(
+                "captions-1",
+                "captions",
+                subtitles,
+                parameters=parameters if parameters is not None else {"style": "bottom_box"},
+            ),
+        ),
+    )
+
+
+def caption_file_preflight(plan):
+    video = tuple(
+        MediaProbe(
+            source,
+            1000,
+            "mov,mp4",
+            10,
+            800000,
+            (StreamProbe(0, "video", "h264", 10, 1280, 720, None, None),),
+        )
+        for source in plan.sources[:2]
+    )
+    subtitles = MediaProbe(
+        plan.sources[2],
+        88,
+        "srt",
+        None,
+        None,
+        (StreamProbe(0, "subtitle", "subrip", None, None, None, None, None),),
+    )
+    return PreflightReport(plan.plan_id, True, (), (*video, subtitles))
+
+
 class SequenceWorkflowTests(unittest.TestCase):
     def test_stages_validates_and_exclusively_publishes_final_mp4(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -682,6 +728,93 @@ class SequenceWorkflowTests(unittest.TestCase):
                 preflight=image_preflight,
                 compose=lambda *_a, **_k: bad_artifact,
             )
+
+    def test_burns_captions_resolved_from_an_srt_source_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = caption_file_plan(directory)
+            Path(plan.sources[2]).write_text(
+                "1\n00:00:00,000 --> 00:00:01,500\nFirst\n\n"
+                "2\n00:00:01,500 --> 00:00:03,000\nSecond\n",
+                encoding="utf-8",
+            )
+            burned = {}
+
+            def compose(clips, output, **kwargs):
+                burned["cues"] = tuple(
+                    (cue.text, cue.start_seconds, cue.end_seconds)
+                    for cue in kwargs.get("captions", ())
+                )
+                return SequenceArtifact(
+                    tuple(clip.source_path for clip in clips), plan.output_path, 3.5, 500, caption_count=2
+                )
+
+            report = run_sequence_workflow(
+                plan,
+                preflight=caption_file_preflight,
+                compose=compose,
+                validate=lambda artifact, **_k: SequenceValidationReport(
+                    True, artifact, 3.5, 0.15, (), None
+                ),
+            )
+
+            self.assertTrue(report.valid)
+            self.assertEqual(
+                burned["cues"], (("First", 0.0, 1.5), ("Second", 1.5, 3.0))
+            )
+            self.assertEqual(report.artifact.caption_count, 2)
+
+    def test_rejects_a_captions_file_with_an_unsupported_extension(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = caption_file_plan(directory, srt_name="cues.txt")
+            Path(plan.sources[2]).write_text("whatever", encoding="utf-8")
+            with self.assertRaisesRegex(SequenceWorkflowError, r"\.srt or \.vtt"):
+                run_sequence_workflow(
+                    plan,
+                    preflight=lambda _: self.fail("must not preflight"),
+                    compose=lambda *_a, **_k: self.fail("must not compose"),
+                )
+
+    def test_rejects_a_captions_file_that_also_declares_items(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = caption_file_plan(
+                directory,
+                parameters={
+                    "style": "bottom_box",
+                    "items": [{"text": "x", "start_seconds": 0, "end_seconds": 1}],
+                },
+            )
+            Path(plan.sources[2]).write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nx\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(SequenceWorkflowError, "only style=bottom_box"):
+                run_sequence_workflow(
+                    plan,
+                    preflight=lambda _: self.fail("must not preflight"),
+                    compose=lambda *_a, **_k: self.fail("must not compose"),
+                )
+
+    def test_rejects_a_captions_file_whose_cues_exceed_the_timeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = caption_file_plan(directory)
+            Path(plan.sources[2]).write_text(
+                "1\n00:00:00,000 --> 00:01:39,000\ntoo long\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(SequenceWorkflowError, "not exceed the sequence duration"):
+                run_sequence_workflow(
+                    plan,
+                    preflight=caption_file_preflight,
+                    compose=lambda *_a, **_k: self.fail("must not compose"),
+                )
+
+    def test_rejects_a_missing_captions_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = caption_file_plan(directory)
+            with self.assertRaisesRegex(SequenceWorkflowError, "cannot read captions file"):
+                run_sequence_workflow(
+                    plan,
+                    preflight=caption_file_preflight,
+                    compose=lambda *_a, **_k: self.fail("must not compose"),
+                )
 
     def test_rejects_inconsistent_artifact_metadata(self):
         plan = sequence_plan()

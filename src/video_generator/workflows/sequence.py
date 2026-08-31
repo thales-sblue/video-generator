@@ -21,6 +21,7 @@ from video_generator.adapters import (
     compose_video_sequence,
 )
 from video_generator.domain import EditPlan
+from video_generator.subtitles import SubtitleParseError, parse_subtitle_cues
 from video_generator.validation import (
     PreflightReport,
     SequenceValidationReport,
@@ -37,6 +38,7 @@ NARRATION_KIND = "narration"
 NARRATION_PARAMETERS = {"duration_policy": "match_timeline"}
 CAPTIONS_KIND = "captions"
 CAPTIONS_STYLE = "bottom_box"
+CAPTION_SUBTITLE_FORMATS = {".srt": "srt", ".vtt": "vtt"}
 MUSIC_KIND = "music"
 MUSIC_DURATION_POLICY = "loop_to_timeline"
 
@@ -96,7 +98,9 @@ def _runtime_number(value: object, name: str, *, allow_zero: bool) -> float:
     return float(value)
 
 
-def _caption_cues(parameters: Mapping[str, object]) -> tuple[CaptionCue, ...]:
+def _inline_caption_triples(
+    parameters: Mapping[str, object]
+) -> tuple[tuple[str, float, float], ...]:
     values = dict(parameters)
     if set(values) != {"style", "items"} or values["style"] != CAPTIONS_STYLE:
         raise SequenceWorkflowError(
@@ -105,10 +109,7 @@ def _caption_cues(parameters: Mapping[str, object]) -> tuple[CaptionCue, ...]:
     items = values["items"]
     if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
         raise SequenceWorkflowError("captions items must be an array")
-    if not items or len(items) > 500:
-        raise SequenceWorkflowError("captions require between 1 and 500 items")
-    cues = []
-    previous_end = 0.0
+    triples: list[tuple[str, float, float]] = []
     for index, item in enumerate(items):
         if not isinstance(item, Mapping) or set(item) != {
             "text", "start_seconds", "end_seconds"
@@ -117,18 +118,8 @@ def _caption_cues(parameters: Mapping[str, object]) -> tuple[CaptionCue, ...]:
                 f"caption item {index} requires text, start_seconds and end_seconds"
             )
         text = item["text"]
-        if not isinstance(text, str) or not text.strip() or len(text.strip()) > 160:
-            raise SequenceWorkflowError(
-                f"caption item {index} text must contain 1 to 160 characters"
-            )
-        if any(ord(character) < 32 for character in text.strip()):
-            raise SequenceWorkflowError(
-                f"caption item {index} text must not contain control characters"
-            )
-        if any(character in text for character in "<>{}"):
-            raise SequenceWorkflowError(
-                f"caption item {index} text must not contain subtitle markup characters"
-            )
+        if not isinstance(text, str):
+            raise SequenceWorkflowError(f"caption item {index} text must be a string")
         start = _runtime_number(
             item["start_seconds"],
             f"caption item {index} start_seconds",
@@ -139,15 +130,58 @@ def _caption_cues(parameters: Mapping[str, object]) -> tuple[CaptionCue, ...]:
             f"caption item {index} end_seconds",
             allow_zero=False,
         )
+        triples.append((text, start, end))
+    return tuple(triples)
+
+
+def _validate_caption_cues(
+    raw: tuple[tuple[str, float, float], ...]
+) -> tuple[CaptionCue, ...]:
+    if not raw or len(raw) > 500:
+        raise SequenceWorkflowError("captions require between 1 and 500 items")
+    cues = []
+    previous_end = 0.0
+    for index, (text, start, end) in enumerate(raw):
+        stripped = text.strip()
+        if not stripped or len(stripped) > 160:
+            raise SequenceWorkflowError(
+                f"caption item {index} text must contain 1 to 160 characters"
+            )
+        if any(ord(character) < 32 for character in stripped):
+            raise SequenceWorkflowError(
+                f"caption item {index} text must not contain control characters"
+            )
+        if any(character in stripped for character in "<>{}"):
+            raise SequenceWorkflowError(
+                f"caption item {index} text must not contain subtitle markup characters"
+            )
         if end <= start or round(end * 1000) <= round(start * 1000):
             raise SequenceWorkflowError(
                 f"caption item {index} must last at least 1 ms"
             )
         if start < previous_end:
             raise SequenceWorkflowError("caption items must be ordered and non-overlapping")
-        cues.append(CaptionCue(text.strip(), start, end))
+        cues.append(CaptionCue(stripped, start, end))
         previous_end = end
     return tuple(cues)
+
+
+def _caption_cues_from_file(source: str) -> tuple[CaptionCue, ...]:
+    path = Path(source).expanduser()
+    source_format = CAPTION_SUBTITLE_FORMATS.get(path.suffix.lower())
+    if source_format is None:
+        raise SequenceWorkflowError("captions source must be a .srt or .vtt file")
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SequenceWorkflowError(f"cannot read captions file: {path}") from exc
+    except UnicodeDecodeError as exc:
+        raise SequenceWorkflowError(f"captions file must be UTF-8 text: {path}") from exc
+    try:
+        raw = parse_subtitle_cues(content, source_format=source_format)
+    except SubtitleParseError as exc:
+        raise SequenceWorkflowError(f"invalid captions file: {exc}") from exc
+    return _validate_caption_cues(raw)
 
 
 def _music_gain(parameters: Mapping[str, object]) -> float:
@@ -197,6 +231,7 @@ def _operations_from_plan(
     str | None,
     tuple[CaptionCue, ...],
     str | None,
+    str | None,
     float | None,
 ]:
     if len(plan.operations) < 2:
@@ -207,6 +242,7 @@ def _operations_from_plan(
     used_sources = set()
     narration_path: str | None = None
     captions: tuple[CaptionCue, ...] = ()
+    caption_source: str | None = None
     captions_seen = False
     music_path: str | None = None
     music_gain_db: float | None = None
@@ -234,11 +270,24 @@ def _operations_from_plan(
                 raise SequenceWorkflowError("captions must follow all timeline segments")
             if music_path is not None:
                 raise SequenceWorkflowError("captions must precede music")
-            if operation.source is not None:
-                raise SequenceWorkflowError("captions must not declare a source")
             if operation.start_seconds is not None or operation.end_seconds is not None:
                 raise SequenceWorkflowError("captions timing belongs to its items")
-            captions = _caption_cues(operation.parameters)
+            if operation.source is not None:
+                suffix = Path(operation.source).suffix.lower()
+                if suffix not in CAPTION_SUBTITLE_FORMATS:
+                    raise SequenceWorkflowError(
+                        "captions source must be a .srt or .vtt file"
+                    )
+                if dict(operation.parameters) != {"style": CAPTIONS_STYLE}:
+                    raise SequenceWorkflowError(
+                        "a captions file accepts only style=bottom_box, no items"
+                    )
+                caption_source = operation.source
+                used_sources.add(operation.source)
+            else:
+                captions = _validate_caption_cues(
+                    _inline_caption_triples(operation.parameters)
+                )
             captions_seen = True
             continue
         if operation.kind == MUSIC_KIND:
@@ -300,7 +349,14 @@ def _operations_from_plan(
         and _normalized(narration_path) == _normalized(music_path)
     ):
         raise SequenceWorkflowError("narration and music must use distinct sources")
-    return tuple(segments), narration_path, captions, music_path, music_gain_db
+    return (
+        tuple(segments),
+        narration_path,
+        captions,
+        caption_source,
+        music_path,
+        music_gain_db,
+    )
 
 
 def _source_probes(report: PreflightReport, plan: EditPlan) -> dict[str, MediaProbe]:
@@ -395,7 +451,16 @@ def run_sequence_workflow(
         raise SequenceWorkflowError(
             "final.mp4 requires run_final_sequence_workflow"
         )
-    segments, narration_path, captions, music_path, music_gain_db = _operations_from_plan(plan)
+    (
+        segments,
+        narration_path,
+        captions,
+        caption_source,
+        music_path,
+        music_gain_db,
+    ) = _operations_from_plan(plan)
+    if caption_source is not None:
+        captions = _caption_cues_from_file(caption_source)
     expected_duration = sum(_segment_duration(segment) for segment in segments)
     expected_image_count = sum(1 for segment in segments if isinstance(segment, SequenceImage))
     if captions and captions[-1].end_seconds > expected_duration:

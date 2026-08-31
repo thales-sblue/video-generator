@@ -158,12 +158,14 @@ def build_sequence_render_manifest(
     captions = tuple(
         operation for operation in plan.operations if operation.kind == "captions"
     )
-    expected_caption_count = 0
-    if len(captions) == 1:
+    # A captions file (declared as a source) resolves its cue count only at
+    # execution time; the source fingerprint already guards the burned track.
+    if len(captions) == 1 and captions[0].source is None:
         items = captions[0].parameters.get("items")
-        if isinstance(items, (list, tuple)):
-            expected_caption_count = len(items)
-    if report.artifact.caption_count != expected_caption_count:
+        expected_caption_count = len(items) if isinstance(items, (list, tuple)) else 0
+        if report.artifact.caption_count != expected_caption_count:
+            raise ManifestError("workflow artifact captions do not match the plan")
+    elif not captions and report.artifact.caption_count != 0:
         raise ManifestError("workflow artifact captions do not match the plan")
     music_operations = tuple(
         operation for operation in plan.operations if operation.kind == "music"

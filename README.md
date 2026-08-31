@@ -131,11 +131,13 @@ imagem local por `duration_seconds` (até 600 s) sem início ou fim. Todos os
 sources, imagens incluídas, precisam ter as mesmas dimensões; havendo qualquer
 imagem, os segmentos são normalizados para 30 fps. Após os segmentos, uma
 operação opcional `captions` pode persistir uma faixa com estilo fixo
-`bottom_box` e itens de texto, início e fim relativos à timeline. Os itens devem
-estar ordenados, não podem se sobrepor, duram ao menos 1 ms, usam no máximo 160
-caracteres, recusam markup de subtitles e não podem ultrapassar o vídeo. O texto
-é escrito em um SRT temporário, queimado localmente via FFmpeg/libass e removido
-após a execução; ele não é interpolado no filter graph.
+`bottom_box`. Os cues vêm de itens inline (texto, início e fim relativos à
+timeline) ou de um `.srt`/`.vtt` local apontado por `source` e declarado entre os
+sources do plano. Em ambos os casos os cues devem estar ordenados, não podem se
+sobrepor, duram ao menos 1 ms, usam no máximo 160 caracteres, recusam markup de
+subtitles e não podem ultrapassar o vídeo. O texto é escrito em um SRT
+temporário, queimado localmente via FFmpeg/libass e removido após a execução; ele
+não é interpolado no filter graph.
 
 Opcionalmente, a última operação pode ser uma `narration` com source local e
 `{"duration_policy": "match_timeline"}`. Ela começa em zero e deve ter duração
