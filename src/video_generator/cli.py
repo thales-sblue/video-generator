@@ -386,7 +386,14 @@ def _format_sequence_workflow(report: SequenceWorkflowReport, manifest_path: Pat
             "Workflow: video-sequence",
             f"Timeline operations: {len(report.operation_ids)}",
             f"Images: {report.artifact.image_count}",
-            f"Narration: {'included' if report.artifact.narration_source_path else 'not included'}",
+            "Narration: "
+            + (
+                "from text"
+                if report.artifact.narration_text_sha256
+                else "included"
+                if report.artifact.narration_source_path
+                else "not included"
+            ),
             f"Captions: {report.artifact.caption_count}",
             f"Music: {'included' if report.artifact.music_source_path else 'not included'}",
             f"Publication: {report.publication}",

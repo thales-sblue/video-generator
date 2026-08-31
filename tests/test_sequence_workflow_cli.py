@@ -7,12 +7,42 @@ from pathlib import Path
 from unittest.mock import patch
 
 from video_generator.adapters import MediaProbe, SequenceArtifact, StreamProbe
-from video_generator.cli import main
+from video_generator.cli import _format_sequence_workflow, main
 from video_generator.doctor import DoctorReport, ToolStatus
 from video_generator.domain import EditOperation, EditPlan
 from video_generator.manifests import ManifestError
 from video_generator.validation import PreflightReport, SequenceValidationReport
 from video_generator.workflows import SequenceWorkflowReport
+
+
+class SequenceWorkflowSummaryTests(unittest.TestCase):
+    def _report(self, **artifact_kwargs):
+        artifact = SequenceArtifact(("a", "b"), "out.mp4", 3.0, 100, **artifact_kwargs)
+        return SequenceWorkflowReport(
+            "plan-1",
+            ("clip-1", "clip-2"),
+            PreflightReport("plan-1", True, (), ()),
+            artifact,
+            SequenceValidationReport(True, artifact, 3.0, 0.15, (), None),
+        )
+
+    def test_narration_line_distinguishes_text_from_file_and_none(self):
+        self.assertIn(
+            "Narration: not included",
+            _format_sequence_workflow(self._report(), Path("m.json")),
+        )
+        self.assertIn(
+            "Narration: included",
+            _format_sequence_workflow(
+                self._report(narration_source_path="voice.wav"), Path("m.json")
+            ),
+        )
+        self.assertIn(
+            "Narration: from text",
+            _format_sequence_workflow(
+                self._report(narration_text_sha256="a" * 64), Path("m.json")
+            ),
+        )
 
 
 class SequenceWorkflowCliTests(unittest.TestCase):
