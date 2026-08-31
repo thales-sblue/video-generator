@@ -25,6 +25,10 @@ implementado.
 - decisões editoriais são persistidas em contratos versionados;
 - processamento é local-first; internet gratuita é permitida para pesquisa e
   assets autorizados, sem dependência de APIs pagas de geração;
+- capacidades relevantes passam por decisão explícita de build vs reuse e por
+  gates de licença e segurança antes de qualquer dependência nova; assets
+  externos exigem origem e direito de uso comercial rastreáveis (ver
+  [AGENTS.md](AGENTS.md));
 - o domínio não depende de renderers nem ferramentas externas;
 - FFmpeg/ffprobe cuidam de mídia de baixo nível e HyperFrames permanece planejado
   como compositor principal para layout, motion e composição visual rica.

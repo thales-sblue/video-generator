@@ -23,6 +23,13 @@ mesmo motor, mas não deve ser implementado agora. A pergunta de priorização �
 **qual é o menor incremento funcional que mais nos aproxima do primeiro vídeo
 dark completo?**
 
+O objetivo é automatizar a produção de conteúdo original e transformativo, não
+gerar spam. Evite arquiteturas que incentivem automaticamente conteúdo
+repetitivo, massificado quase idêntico, mera reempacotagem de terceiros ou
+produção sem valor editorial. Roteiro, edição, narrativa e seleção de assets
+devem permitir originalidade suficiente para uso comercial. Não construa um
+"detector de monetização".
+
 ## Fronteiras arquiteturais
 
 - **Agente/orquestrador (Claude Code):** interpreta linguagem natural, inspeciona
@@ -54,16 +61,85 @@ conceitual, não dependência nem módulo compartilhado.
 - Nunca envie mídia, transcrição ou metadata do usuário a terceiros sem
   autorização explícita.
 - Não introduza APIs pagas de geração (incluindo Anthropic/Claude API, OpenAI
-  API, HeyGen, ElevenLabs, fal.ai, Replicate, Runway, Veo, Kling ou
+  API, HeyGen, ElevenLabs, Suno, fal.ai, Replicate, Runway, Veo, Kling ou
   equivalentes) como dependência ou fallback operacional. O agente orquestrador
   (Claude Code) é ferramenta de desenvolvimento, não runtime do produto: o motor
   nunca chama a API do próprio orquestrador nem qualquer serviço pago de geração.
+  O free tier de um serviço pago não conta como solução gratuita, e um serviço
+  hoje gratuito que pode passar a cobrar não pode virar dependência obrigatória.
+  A ausência de qualquer serviço externo nunca pode quebrar uma capacidade
+  central do produto.
 - Integrações externas futuras exigem autorização explícita, configuração
   opt-in e fronteira de adapter; não podem ser fallback silencioso.
 - Dependências opcionais ausentes não devem impedir contratos, planejamento,
   inspeção básica ou diagnóstico.
 - Não instale ferramentas pesadas, modelos, ComfyUI ou runtimes globais sem
   solicitação e necessidade concretas. Fixe versões quando forem adicionadas.
+
+## Reutilização antes de reimplementar
+
+Antes de implementar uma capacidade relevante — adapter, renderer, workflow,
+modelo, subsistema ou qualquer bloco grande — o agente toma uma decisão
+consciente de build vs reuse:
+
+```text
+gap -> pesquisa de soluções existentes -> análise -> build vs reuse -> implementação
+```
+
+1. verifique primeiro as capacidades já existentes no próprio projeto;
+2. pesquise soluções open source relevantes (ex.: Code2MP4, MoneyPrinterTurbo,
+   OpenMontage, OpenX Flow e outras que surgirem — ver
+   [docs/VISION.md](docs/VISION.md));
+3. analise licença, custo real, segurança, dependências e compatibilidade com
+   esta arquitetura (ver "Licença e segurança de dependências");
+4. escolha, nesta ordem de preferência: (a) reutilizar uma dependência segura e
+   compatível; (b) adaptar uma implementação existente; (c) reaproveitar apenas
+   conceitos ou arquitetura; (d) implementar do zero somente quando as anteriores
+   não servirem.
+
+O objetivo não é obrigar reutilização, e sim obrigar a decisão explícita. A
+análise deve ser proporcional ao tamanho do incremento: ajustes triviais não
+viram pesquisa. Em cada ciclo relevante, o relatório final resume os
+projetos/soluções avaliados, o componente pertinente encontrado, a decisão
+(reutilizar / adaptar / usar como referência / implementar internamente) e a
+justificativa.
+
+## Licença e segurança de dependências
+
+Antes de incorporar qualquer biblioteca, código ou componente externo relevante:
+
+- **Licença:** confirme licença explícita; avalie compatibilidade com uso
+  comercial, obrigações de atribuição, obrigações de redistribuição ou
+  divulgação de source, risco de copyleft e a possibilidade de manter o
+  `video-generator` privado/proprietário no futuro. Favoreça licenças permissivas
+  (MIT, Apache-2.0, BSD) quando forem tecnicamente adequadas. Não incorpore
+  código sem licença clara; em caso de dúvida, use apenas como referência
+  conceitual até uma análise posterior.
+- **Segurança:** verifique origem oficial; evite binários ou scripts obscuros;
+  confira atividade/manutenção quando pertinente; não execute código remoto
+  automaticamente; mantenha instalações locais isoladas e fixadas por lock quando
+  possível; preserve a política fail-closed. Uma dependência não deve ser
+  adicionada apenas porque outro projeto open source a utiliza.
+
+Isto complementa, não substitui, as regras de "Segurança, imutabilidade e
+artifacts".
+
+## Direitos sobre assets externos
+
+- Nenhum asset externo (vídeo, imagem, música, efeito sonoro, fonte, voz/modelo
+  com restrição, elemento gráfico) pode ser usado em produção comercial sem
+  origem e direito de uso comercial suficientemente rastreáveis.
+- Não use a expressão ou promessa absoluta "conteúdo sem copyright": isso não é
+  tecnicamente garantível.
+- Um asset não é seguro só porque foi encontrado na internet. A licença de um
+  banco (Pexels, Pixabay e equivalentes) pode permitir uso comercial, mas não
+  cobre direitos adicionais sobre marcas, logos, pessoas, propriedade privada ou
+  obras protegidas presentes na mídia.
+- Se a licença ou a origem não puder ser determinada de forma aceitável, o
+  agente não utiliza o asset automaticamente.
+- Enquanto o motor não obtiver assets externos automaticamente, esta é uma
+  fronteira de revisão editorial. Quando essa obtenção existir, a proveniência
+  deve ser persistida (ver "Contratos e evolução").
 
 ## Segurança, imutabilidade e artifacts
 
@@ -87,6 +163,13 @@ O fluxo mínimo publicado é `VideoRequest -> VideoBrief -> EditPlan ->
 RenderManifest`. `Script`, `Storyboard` e `AssetPlan` são candidatos futuros,
 não contratos obrigatórios: só devem existir separadamente quando um caso real
 exigir invariantes ou checkpoints que a representação atual não preserve.
+
+`AssetProvenance` — origem, URL ou identificador, tipo de licença, indicação de
+uso comercial (permitido / conhecido / desconhecido), necessidade e texto de
+atribuição, data de aquisição, SHA-256 do arquivo e restrições relevantes — é
+outro candidato futuro: só passa a ser contrato quando o motor obtiver assets
+externos automaticamente. Até lá, o `RenderManifest` já fixa o SHA-256 de cada
+source e a rastreabilidade de direitos permanece um gate de revisão editorial.
 Contratos publicados devem:
 
 - ter versão explícita e representação JSON determinística;
@@ -139,12 +222,15 @@ Ao receber apenas uma instrução curta para continuar:
 2. inspecione árvore, estado do Git, commits recentes e diff do `HEAD`;
 3. execute a suíte completa antes de alterar código;
 4. descubra nos commits, diff e documentos onde o último ciclo parou;
-5. confirme as capacidades existentes para não reimplementá-las;
+5. confirme as capacidades existentes no projeto para não reimplementá-las e,
+   quando o incremento for relevante, pesquise soluções open source e decida
+   build vs reuse (ver "Reutilização antes de reimplementar");
 6. identifique o próximo gargalo real para `dark-video` v1;
 7. escolha **um** incremento coeso usando a pergunta: “qual é o menor
    incremento funcional que mais nos aproxima do primeiro vídeo dark completo?”;
 8. prefira capacidade funcional a infraestrutura especulativa;
-9. implemente na camada correta;
+9. valide licença, custo e segurança de qualquer dependência nova (ver "Licença
+   e segurança de dependências") e implemente na camada correta;
 10. crie ou atualize testes e faça validações manuais relevantes;
 11. execute novamente toda a suíte;
 12. revise o próprio diff, incluindo segurança e não destruição;
@@ -152,9 +238,11 @@ Ao receber apenas uma instrução curta para continuar:
 14. crie um commit coeso;
 15. confirme `origin`, branch e ausência de mídia/secrets;
 16. envie para `origin/main` somente quando o estado estiver válido;
-17. informe o que foi implementado, por que foi escolhido, testes, validações
-    manuais, limitações, próximo gargalo e percentuais aproximados de progresso
-    até `dark-video` v1 e até a visão madura do agente produtor.
+17. informe o que foi implementado, por que foi escolhido, a decisão de build vs
+    reuse quando o incremento foi relevante (projetos avaliados, componente
+    encontrado, decisão, justificativa), testes, validações manuais, limitações,
+    próximo gargalo e percentuais aproximados de progresso até `dark-video` v1 e
+    até a visão madura do agente produtor.
 
 Não use `continue` para implementar vários workflows, refatorar por estética,
 antecipar integrações distantes, prolongar infraestrutura sem ganho audiovisual

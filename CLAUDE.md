@@ -80,6 +80,15 @@ A mesma suíte roda no GitHub Actions (`.github/workflows/ci.yml`) em `push` par
   filter graph do FFmpeg).
 - Sucesso técnico não é aprovação editorial: `editorial_review` permanece
   `not_performed` até haver revisão humana real com evidência.
+- Antes de implementar uma capacidade relevante, decidir build vs reuse
+  conscientemente (`gap -> pesquisa -> análise -> decisão`), proporcional ao
+  tamanho do incremento, e reportar a decisão no fim do ciclo.
+- Nenhuma dependência, código ou componente externo entra sem passar pelos gates
+  de licença (compatibilidade comercial, copyleft, atribuição, opção
+  proprietária futura) e de segurança (origem oficial, manutenção, sem execução
+  remota automática, instalação isolada, fail-closed).
+- Assets externos só entram em produção comercial com origem e direito de uso
+  comercial rastreáveis; não usar a promessa absoluta "sem copyright".
 - Um incremento só está pronto com testes das invariantes/falhas, suíte completa
   passando, diff revisado (segurança, camadas, escopo) e documentação atualizada.
 
@@ -87,8 +96,9 @@ A mesma suíte roda no GitHub Actions (`.github/workflows/ci.yml`) em `push` par
 
 Seguir o **Protocolo para `continue`** de [AGENTS.md](AGENTS.md): ler as regras,
 inspecionar árvore/Git/commits/diff, rodar a suíte, descobrir onde o último ciclo
-parou, escolher **um** incremento coeso rumo a `dark-video` v1, implementar na
-camada correta, testar, revisar o próprio diff, atualizar docs e commitar.
+parou, escolher **um** incremento coeso rumo a `dark-video` v1, pesquisar reuso
+e validar licença/custo/segurança quando o incremento for relevante, implementar
+na camada correta, testar, revisar o próprio diff, atualizar docs e commitar.
 
 Mapeamento dos passos para recursos nativos do Claude Code:
 
@@ -96,6 +106,7 @@ Mapeamento dos passos para recursos nativos do Claude Code:
 | --- | --- |
 | 2 — inspecionar árvore, estado do Git, commits e diff do `HEAD` | subagent **Explore** quando a varredura for ampla |
 | 3 e 11 — rodar a suíte completa | `$env:PYTHONPATH = "src"; .\.venv\Scripts\python.exe -m unittest discover -s tests -v` |
+| 5 e 9 — pesquisar soluções open source, decidir build vs reuse e validar licença/segurança | **plan mode** + `WebSearch`/subagent **Explore**; skill **`/security-review`** para o gate de segurança |
 | 7 — escolher **um** incremento coeso | **plan mode** (desenhar antes de tocar em código) |
 | 10 — validações manuais / rodar o app | skill **`run`** quando houver algo assistível |
 | 12 — revisar o próprio diff (segurança, camadas, escopo) | skills **`/code-review`** e **`/security-review`** |

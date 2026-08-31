@@ -45,5 +45,9 @@ transformar preferências contextuais em automações universais.
 
 Uma renderização tecnicamente válida ainda pode falhar editorialmente. A revisão
 deve perguntar: o hook é honesto, o ritmo preserva significado, captions ajudam,
-B-roll acrescenta algo e motion serve ao conteúdo? Limitações de inspeção devem
-ser registradas, nunca disfarçadas como aprovação.
+B-roll acrescenta algo e motion serve ao conteúdo? A revisão também confere se a
+peça tem originalidade e transformação suficientes para uso comercial (não é
+conteúdo repetitivo, massificado ou mera reempacotagem) e se todo asset externo
+tem origem e direito de uso comercial rastreáveis. Ausência dessas garantias é
+falha editorial, não detalhe técnico. Limitações de inspeção devem ser
+registradas, nunca disfarçadas como aprovação.

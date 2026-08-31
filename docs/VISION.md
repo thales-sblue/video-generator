@@ -72,10 +72,12 @@ pagas de geração**.
 - voz, transcrição, composição e render devem ser locais sempre que possível;
 - internet gratuita pode apoiar pesquisa, referências, downloads de assets,
   fontes públicas, publicação e análise futura de métricas;
-- APIs pagas de geração — Anthropic/Claude API, OpenAI API, ElevenLabs, Runway,
-  Veo, Kling, fal.ai, Replicate, HeyGen e equivalentes — não podem ser
+- APIs pagas de geração — Anthropic/Claude API, OpenAI API, ElevenLabs, Suno,
+  Runway, Veo, Kling, fal.ai, Replicate, HeyGen e equivalentes — não podem ser
   dependências nem fallback operacional; o agente orquestrador é ferramenta de
-  desenvolvimento, não runtime do produto, e o motor nunca chama a API dele;
+  desenvolvimento, não runtime do produto, e o motor nunca chama a API dele; o
+  free tier de um serviço pago não conta como gratuito, e um serviço hoje
+  gratuito que pode passar a cobrar não vira dependência obrigatória;
 - integração externa requer autorização explícita, configuração opt-in e uma
   fronteira de adapter; nunca é fallback silencioso;
 - mídia, transcrição ou metadata privada não são enviadas a terceiros sem
@@ -92,6 +94,11 @@ automáticos; `AssetPlan`; stock gratuito; geração local de imagem e vídeo;
 B-roll, pacing, transitions, motion graphics, captions avançadas, sound design,
 estilos, QA editorial, autocorreção, `ChannelProfile`, títulos, thumbnails,
 publicação, analytics e feedback de performance.
+
+Qualquer aquisição automática de assets externos exige, antes de uso em produção
+comercial, origem e direito de uso comercial rastreáveis e a persistência dessa
+proveniência (ver "Direitos sobre assets externos" e "Contratos e evolução" em
+[AGENTS.md](../AGENTS.md)).
 
 O objetivo maduro é permitir um pedido como “produza o próximo vídeo do canal”
 e fazer o agente cuidar da maior parte da produção com checkpoints auditáveis.
@@ -115,4 +122,26 @@ assets, render, validação, QA, contratos e infraestrutura criados para
 OpenMontage, Code2MP4, MoneyPrinterTurbo e, quando pertinente, OpenX Flow podem
 inspirar storyboard, separação entre planejamento e execução, checkpoints e
 ferramentas controladas pelo agente. O projeto não é clone de nenhum deles e não
-adota código ou arquitetura sem um problema concreto local.
+adota código ou arquitetura sem um problema concreto local. Antes de qualquer
+reutilização, aplicar a decisão de build vs reuse e os gates de licença e
+segurança de [AGENTS.md](../AGENTS.md).
+
+Papel adequado de cada referência:
+
+- **Code2MP4 (Apache-2.0):** licença permissiva, é o candidato mais aberto a
+  reutilização direta quando houver um gap concreto (storyboard, motion source,
+  integração com HyperFrames, composição, workflow orientado a agentes). Ainda
+  assim, nada é copiado automaticamente.
+- **MoneyPrinterTurbo (MIT):** pode ter partes úteis, mas integra muitos serviços
+  e APIs externas e pagas. MIT não valida os providers: reutilizar apenas partes
+  compatíveis com a política; providers pagos não entram como dependência nem
+  fallback.
+- **OpenMontage (AGPLv3):** forte como referência conceitual e arquitetural.
+  Cuidado com reutilização direta de código — o copyleft do AGPL pode ser
+  incompatível com uma estratégia proprietária futura. Não copiar código AGPL
+  sem uma decisão explícita e justificada sobre as implicações de licença.
+- **OpenX Flow:** avaliar licença, arquitetura, dependências e custo real antes
+  de qualquer reutilização.
+
+Open source não significa automaticamente gratuito para executar, livre de
+dependências externas, seguro ou adequado a esta arquitetura.

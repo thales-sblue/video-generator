@@ -18,8 +18,11 @@ validation -> RenderManifest -> artifacts
 
 A direção madura pode inserir `Script`, `Storyboard` e `AssetPlan` entre brief e
 plano, mas esses contratos não serão criados antes de haver necessidade concreta
-de checkpoint ou invariantes. A prioridade arquitetural atual é atravessar
-`EditPlan -> timeline -> composição -> MP4` para `dark-video`.
+de checkpoint ou invariantes. `AssetProvenance` (origem, licença, uso comercial,
+atribuição, data, SHA-256, restrições) segue a mesma regra: só vira contrato
+quando o motor obtiver assets externos automaticamente; até lá é gate de revisão
+editorial (ver [AGENTS.md](../AGENTS.md)). A prioridade arquitetural atual é
+atravessar `EditPlan -> timeline -> composição -> MP4` para `dark-video`.
 
 O fluxo herda do `midi-generator` a separação entre intenção, plano, integração e
 execução, mas não importa código nem cria acoplamento entre os repositórios.
