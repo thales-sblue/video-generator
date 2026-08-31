@@ -60,8 +60,8 @@ antes de escrever mídia.
 menos um `sequence_clip` (trecho de vídeo) e, opcionalmente, `image_clip`
 (imagem local com `duration_seconds`). Pode queimar uma faixa `captions` — cues
 inline, de um `.srt`/`.vtt` local, ou derivados do texto da narração
-(`from=narration`, timing aproximado) —, repetir uma faixa `music` com ganho
-explícito e receber uma operação final `narration` (de um áudio local ou
+(`from=narration`, timing aproximado) —, repetir uma faixa `music` com ganho e
+fades opcionais e receber uma operação final `narration` (de um áudio local ou
 sintetizada de `text` via Kokoro, com o SHA-256 do texto no manifest). O
 workflow executa preflight, confere dimensões, tempos, streams e políticas
 persistidas, recorta e concatena os segmentos, queima os cues, normaliza e

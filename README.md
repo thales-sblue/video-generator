@@ -174,12 +174,13 @@ stream AAC. Preflight, fingerprints, validação e `RenderManifest` fazem parte 
 mesma execução; `editorial_review` permanece `not_performed`.
 
 Entre captions e narração, uma operação opcional `music` declara um source local
-distinto e `{"duration_policy":"loop_to_timeline","gain_db":N}`. O ganho deve
-ficar entre -60 e 0 dB. A faixa é repetida até a duração visual, convertida para
-estéreo/48 kHz e, quando há voz, mixada sem normalização automática; um limiter
-evita picos acima de 0,95. Música sem narração também é suportada. O áudio
-original dos clipes permanece excluído e o output continua contendo uma única
-faixa AAC.
+distinto e `{"duration_policy":"loop_to_timeline","gain_db":N}`, com
+`fade_in_seconds`/`fade_out_seconds` opcionais (≥ 0, soma ≤ duração visual). O
+ganho fica entre -60 e 0 dB. A faixa é repetida até a duração visual, recebe
+`afade` de entrada/saída, é convertida para estéreo/48 kHz e, quando há voz,
+mixada sem normalização automática; um limiter evita picos acima de 0,95. Música
+sem narração também é suportada. O áudio original dos clipes permanece excluído e
+o output continua contendo uma única faixa AAC.
 
 Para publicação, `execute-final-sequence-plan` exige que o `output_path`
 persistido termine exatamente em `final.mp4`. O render é criado em um diretório

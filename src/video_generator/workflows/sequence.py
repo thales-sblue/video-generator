@@ -64,6 +64,13 @@ class NarrationTextSpec:
     lang: str
 
 
+@dataclass(frozen=True, slots=True)
+class MusicSpec:
+    gain_db: float
+    fade_in_seconds: float
+    fade_out_seconds: float
+
+
 class SequenceWorkflowError(RuntimeError):
     """Raised when a sequence plan cannot safely produce a workflow report."""
 
@@ -205,11 +212,14 @@ def _caption_cues_from_file(source: str) -> tuple[CaptionCue, ...]:
     return _validate_caption_cues(raw)
 
 
-def _music_gain(parameters: Mapping[str, object]) -> float:
+def _music_spec(parameters: Mapping[str, object]) -> MusicSpec:
     values = dict(parameters)
-    if set(values) != {"duration_policy", "gain_db"}:
+    required = {"duration_policy", "gain_db"}
+    allowed = required | {"fade_in_seconds", "fade_out_seconds"}
+    if not required <= set(values) or set(values) - allowed:
         raise SequenceWorkflowError(
-            "music requires duration_policy=loop_to_timeline and gain_db"
+            "music requires duration_policy=loop_to_timeline and gain_db, "
+            "with optional fade_in_seconds/fade_out_seconds"
         )
     if values["duration_policy"] != MUSIC_DURATION_POLICY:
         raise SequenceWorkflowError("music duration_policy must be loop_to_timeline")
@@ -222,7 +232,13 @@ def _music_gain(parameters: Mapping[str, object]) -> float:
         or gain > 0
     ):
         raise SequenceWorkflowError("music gain_db must be a finite number from -60 to 0")
-    return float(gain)
+    fade_in = _runtime_number(
+        values.get("fade_in_seconds", 0.0), "music fade_in_seconds", allow_zero=True
+    )
+    fade_out = _runtime_number(
+        values.get("fade_out_seconds", 0.0), "music fade_out_seconds", allow_zero=True
+    )
+    return MusicSpec(float(gain), fade_in, fade_out)
 
 
 def _image_duration(parameters: Mapping[str, object]) -> float:
@@ -255,7 +271,7 @@ def _operations_from_plan(
     str | None,
     bool,
     str | None,
-    float | None,
+    MusicSpec | None,
 ]:
     if len(plan.operations) < 2:
         raise SequenceWorkflowError("video-sequence requires at least two operations")
@@ -270,7 +286,7 @@ def _operations_from_plan(
     captions_from_narration = False
     captions_seen = False
     music_path: str | None = None
-    music_gain_db: float | None = None
+    music: MusicSpec | None = None
     for index, operation in enumerate(plan.operations):
         if operation.kind == NARRATION_KIND:
             if index != len(plan.operations) - 1:
@@ -345,7 +361,7 @@ def _operations_from_plan(
                 raise SequenceWorkflowError("music must declare a source")
             if operation.start_seconds is not None or operation.end_seconds is not None:
                 raise SequenceWorkflowError("music timing is fixed at zero in v1")
-            music_gain_db = _music_gain(operation.parameters)
+            music = _music_spec(operation.parameters)
             music_path = operation.source
             used_sources.add(operation.source)
             continue
@@ -407,7 +423,7 @@ def _operations_from_plan(
         caption_source,
         captions_from_narration,
         music_path,
-        music_gain_db,
+        music,
     )
 
 
@@ -571,12 +587,16 @@ def run_sequence_workflow(
         caption_source,
         captions_from_narration,
         music_path,
-        music_gain_db,
+        music,
     ) = _operations_from_plan(plan)
     if caption_source is not None:
         captions = _caption_cues_from_file(caption_source)
     expected_duration = sum(_segment_duration(segment) for segment in segments)
     expected_image_count = sum(1 for segment in segments if isinstance(segment, SequenceImage))
+    if music is not None and music.fade_in_seconds + music.fade_out_seconds > expected_duration:
+        raise SequenceWorkflowError(
+            "music fades must not be longer than the sequence duration"
+        )
     if captions and captions[-1].end_seconds > expected_duration:
         raise SequenceWorkflowError(
             "caption end_seconds must not exceed the sequence duration"
@@ -632,9 +652,11 @@ def run_sequence_workflow(
                 compose_kwargs["narration_path"] = narration_path
             if captions:
                 compose_kwargs["captions"] = captions
-            if music_path is not None and music_gain_db is not None:
+            if music_path is not None and music is not None:
                 compose_kwargs["music_path"] = music_path
-                compose_kwargs["music_gain_db"] = music_gain_db
+                compose_kwargs["music_gain_db"] = music.gain_db
+                compose_kwargs["music_fade_in_seconds"] = music.fade_in_seconds
+                compose_kwargs["music_fade_out_seconds"] = music.fade_out_seconds
             if expected_image_count:
                 compose_kwargs["canvas"] = canvas
             artifact = create_artifact(segments, plan.output_path, **compose_kwargs)
@@ -666,7 +688,15 @@ def run_sequence_workflow(
             if artifact.music_source_path is not None
             else None
         )
-        if actual_music != expected_music or artifact.music_gain_db != music_gain_db:
+        expected_gain = music.gain_db if music is not None else None
+        expected_fade_in = music.fade_in_seconds if music is not None else 0.0
+        expected_fade_out = music.fade_out_seconds if music is not None else 0.0
+        if (
+            actual_music != expected_music
+            or artifact.music_gain_db != expected_gain
+            or artifact.music_fade_in_seconds != expected_fade_in
+            or artifact.music_fade_out_seconds != expected_fade_out
+        ):
             raise SequenceWorkflowError("compose returned unexpected music metadata")
         if artifact.duration_seconds != expected_duration or artifact.file_size_bytes <= 0:
             raise SequenceWorkflowError("compose returned inconsistent artifact metadata")

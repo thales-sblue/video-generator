@@ -180,17 +180,26 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
         music = operations[index]
         parameters = dict(music.parameters)
         gain = parameters.get("gain_db")
+        fades = [parameters[key] for key in ("fade_in_seconds", "fade_out_seconds") if key in parameters]
         if (
             music.source is None
             or music.start_seconds is not None
             or music.end_seconds is not None
-            or set(parameters) != {"duration_policy", "gain_db"}
+            or not {"duration_policy", "gain_db"} <= set(parameters)
+            or set(parameters) - {"duration_policy", "gain_db", "fade_in_seconds", "fade_out_seconds"}
             or parameters.get("duration_policy") != "loop_to_timeline"
             or isinstance(gain, bool)
             or not isinstance(gain, (int, float))
             or not math.isfinite(gain)
             or gain < -60
             or gain > 0
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+                for value in fades
+            )
         ):
             return False
         used_sources.add(music.source)

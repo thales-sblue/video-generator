@@ -69,6 +69,8 @@ class SequenceArtifact:
     music_gain_db: float | None = None
     image_count: int = 0
     narration_text_sha256: str | None = None
+    music_fade_in_seconds: float = 0.0
+    music_fade_out_seconds: float = 0.0
 
 
 IMAGE_TIMELINE_FPS = 30
@@ -357,6 +359,8 @@ def compose_video_sequence(
     captions: Sequence[CaptionCue] = (),
     music_path: str | Path | None = None,
     music_gain_db: float | None = None,
+    music_fade_in_seconds: float = 0.0,
+    music_fade_out_seconds: float = 0.0,
     canvas: tuple[int, int] | None = None,
     timeout_seconds: float = 300,
 ) -> SequenceArtifact:
@@ -460,9 +464,13 @@ def compose_video_sequence(
             raise FFmpegError("output_path must not overwrite the narration source")
     music: Path | None = None
     gain: float | None = None
+    fade_in = _time(music_fade_in_seconds, "music_fade_in_seconds")
+    fade_out = _time(music_fade_out_seconds, "music_fade_out_seconds")
     if music_path is None:
         if music_gain_db is not None:
             raise FFmpegError("music_gain_db requires a music_path")
+        if fade_in or fade_out:
+            raise FFmpegError("music fades require a music_path")
     else:
         music = Path(music_path).expanduser().resolve()
         if not music.exists() or not music.is_file():
@@ -478,6 +486,8 @@ def compose_video_sequence(
         ):
             raise FFmpegError("music_gain_db must be a finite number from -60 to 0")
         gain = float(music_gain_db)
+        if fade_in + fade_out > duration:
+            raise FFmpegError("music fades must not exceed the sequence duration")
     if output.exists():
         raise FFmpegError(f"output already exists: {output}")
 
@@ -576,12 +586,20 @@ def compose_video_sequence(
             f"atrim=duration={format(duration, '.15g')},asetpts=PTS-STARTPTS[voice]"
         )
     if music_index is not None and gain is not None:
-        filters.append(
+        bed = (
             f"[{music_index}:a:0]aresample=48000,"
             "aformat=sample_fmts=fltp:channel_layouts=stereo,"
-            f"volume={format(gain, '.15g')}dB,"
-            f"atrim=duration={format(duration, '.15g')},asetpts=PTS-STARTPTS[bed]"
+            f"volume={format(gain, '.15g')}dB"
         )
+        if fade_in > 0:
+            bed += f",afade=t=in:st=0:d={format(fade_in, '.15g')}"
+        if fade_out > 0:
+            bed += (
+                f",afade=t=out:st={format(duration - fade_out, '.15g')}:"
+                f"d={format(fade_out, '.15g')}"
+            )
+        bed += f",atrim=duration={format(duration, '.15g')},asetpts=PTS-STARTPTS[bed]"
+        filters.append(bed)
     if narration_index is not None and music_index is not None:
         filters.append(
             "[voice][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
@@ -658,4 +676,6 @@ def compose_video_sequence(
         music_source_path=str(music) if music is not None else None,
         music_gain_db=gain,
         image_count=sum(1 for kind, _, _, _ in resolved_clips if kind == "image"),
+        music_fade_in_seconds=fade_in if music is not None else 0.0,
+        music_fade_out_seconds=fade_out if music is not None else 0.0,
     )

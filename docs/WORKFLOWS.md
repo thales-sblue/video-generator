@@ -104,12 +104,15 @@ Sucesso técnico não é revisão auditiva.
 
 Antes da narração, uma operação opcional `music` declara um source de áudio
 local, sem tempos próprios, e
-`parameters={"duration_policy":"loop_to_timeline","gain_db":N}`. O ganho
-aceita valores de -60 a 0 dB. O source deve ter exatamente um stream de áudio e
-duração positiva; não precisa corresponder à timeline, pois FFmpeg o repete e
-corta no fim visual. Música e voz são convertidas para estéreo/48 kHz, mixadas
-com `normalize=0` e limitadas a 0,95 antes da codificação AAC. Sem voz, a música
-sozinha ocupa a faixa AAC. O áudio original dos clipes nunca entra no mix.
+`parameters={"duration_policy":"loop_to_timeline","gain_db":N}`, com
+`fade_in_seconds` e `fade_out_seconds` opcionais (≥ 0; a soma não pode passar a
+duração visual). O ganho aceita valores de -60 a 0 dB. O source deve ter
+exatamente um stream de áudio e duração positiva; não precisa corresponder à
+timeline, pois FFmpeg o repete e corta no fim visual. A faixa recebe `afade` de
+entrada/saída antes do corte, é convertida para estéreo/48 kHz com a voz e
+mixada com `normalize=0`, limitada a 0,95 antes da codificação AAC. Sem voz, a
+música sozinha ocupa a faixa AAC. O áudio original dos clipes nunca entra no
+mix. O `RenderManifest` guarda ganho e fades.
 
 Esse escopo prova `EditPlan -> timeline -> captions/áudio -> composição -> MP4`
 sem substituir HyperFrames, que permanece o compositor planejado para imagens,

@@ -242,6 +242,59 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ManifestError, "narration text does not match"):
                 build_sequence_render_manifest(plan, wrong, doctor_report(), fingerprints)
 
+    def test_sequence_manifest_checks_persisted_music_fades(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "a.mp4"
+            second = root / "b.mp4"
+            music = root / "bed.wav"
+            output = root / "timeline.mp4"
+            for path in (first, second, music, output):
+                path.write_bytes(path.stem.encode("utf-8"))
+            plan = EditPlan(
+                "plan-fade",
+                "brief-dark",
+                (str(first), str(second), str(music)),
+                str(output),
+                (
+                    EditOperation("clip-1", "sequence_clip", str(first), 0, 1),
+                    EditOperation("clip-2", "sequence_clip", str(second), 0, 1),
+                    EditOperation(
+                        "music-1",
+                        "music",
+                        str(music),
+                        parameters={
+                            "duration_policy": "loop_to_timeline",
+                            "gain_db": -12,
+                            "fade_out_seconds": 1.5,
+                        },
+                    ),
+                ),
+            )
+
+            def report_for(fade_out):
+                artifact = SequenceArtifact(
+                    (str(first.resolve()), str(second.resolve())),
+                    str(output.resolve()),
+                    2.0,
+                    output.stat().st_size,
+                    music_source_path=str(music.resolve()),
+                    music_gain_db=-12.0,
+                    music_fade_out_seconds=fade_out,
+                )
+                return SequenceWorkflowReport(
+                    plan.plan_id,
+                    ("clip-1", "clip-2", "music-1"),
+                    PreflightReport(plan.plan_id, True, (), ()),
+                    artifact,
+                    SequenceValidationReport(True, artifact, 2.0, 0.15, (), None),
+                )
+
+            fingerprints = tuple(fingerprint_file(source) for source in plan.sources)
+            build_sequence_render_manifest(plan, report_for(1.5), doctor_report(), fingerprints)
+            with self.assertRaisesRegex(ManifestError, "music does not match"):
+                build_sequence_render_manifest(plan, report_for(0.0), doctor_report(), fingerprints)
+
     def test_fingerprints_files_and_builds_round_trippable_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             plan, report = execution(directory)

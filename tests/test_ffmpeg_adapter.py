@@ -173,6 +173,68 @@ class FFmpegAdapterTests(unittest.TestCase):
             self.assertEqual(artifact.source_paths, (str(first.resolve()), str(second.resolve())))
             self.assertEqual(output.read_bytes(), b"composed sequence")
 
+    def test_applies_persisted_music_fades_and_records_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            music = root / "bed.wav"
+            output = root / "mixed.mp4"
+            for path in (first, second, music):
+                path.write_bytes(path.stem.encode("utf-8"))
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"mixed sequence")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            clips = (SequenceClip(str(first), 0, 2), SequenceClip(str(second), 0, 2))
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                artifact = compose_video_sequence(
+                    clips,
+                    output,
+                    music_path=music,
+                    music_gain_db=-12,
+                    music_fade_in_seconds=1,
+                    music_fade_out_seconds=1.5,
+                )
+
+            filter_graph = execute.call_args.args[0][
+                execute.call_args.args[0].index("-filter_complex") + 1
+            ]
+            self.assertIn("volume=-12dB,afade=t=in:st=0:d=1", filter_graph)
+            # 4 s timeline, 1.5 s tail fade -> starts at 2.5 s
+            self.assertIn("afade=t=out:st=2.5:d=1.5,atrim=duration=4", filter_graph)
+            self.assertEqual(artifact.music_fade_in_seconds, 1.0)
+            self.assertEqual(artifact.music_fade_out_seconds, 1.5)
+
+    def test_music_fades_require_a_music_path_and_fit_the_timeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            music = root / "bed.wav"
+            for path in (first, second, music):
+                path.write_bytes(path.stem.encode("utf-8"))
+            clips = (SequenceClip(str(first), 0, 1), SequenceClip(str(second), 0, 1))
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"):
+                with self.assertRaisesRegex(FFmpegError, "fades require a music_path"):
+                    compose_video_sequence(
+                        clips, root / "out.mp4", music_fade_in_seconds=1
+                    )
+                with self.assertRaisesRegex(FFmpegError, "fades must not exceed"):
+                    compose_video_sequence(
+                        clips,
+                        root / "out.mp4",
+                        music_path=music,
+                        music_gain_db=-6,
+                        music_fade_in_seconds=1.5,
+                        music_fade_out_seconds=1.5,
+                    )
+
     def test_composes_a_still_image_between_video_clips(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

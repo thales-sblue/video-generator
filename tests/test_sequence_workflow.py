@@ -471,10 +471,73 @@ class SequenceWorkflowTests(unittest.TestCase):
         self.assertEqual(report.operation_ids[-2:], ("music-1", "voice-1"))
         self.assertEqual(report.artifact.music_gain_db, -18.0)
 
+    def test_passes_persisted_music_fades_to_composition(self):
+        plan = music_plan(
+            music_parameters={
+                "duration_policy": "loop_to_timeline",
+                "gain_db": -14,
+                "fade_in_seconds": 0.5,
+                "fade_out_seconds": 2,
+            }
+        )
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen.update(
+                {k: kwargs.get(k) for k in ("music_fade_in_seconds", "music_fade_out_seconds")}
+            )
+            return SequenceArtifact(
+                plan.sources[:2],
+                plan.output_path,
+                3.5,
+                900,
+                narration_source_path=plan.sources[2],
+                caption_count=2,
+                music_source_path=plan.sources[3],
+                music_gain_db=-14.0,
+                music_fade_in_seconds=0.5,
+                music_fade_out_seconds=2.0,
+            )
+
+        report = run_sequence_workflow(
+            plan,
+            preflight=music_preflight,
+            compose=compose,
+            validate=lambda v, **_: SequenceValidationReport(True, v, 3.5, 0.15, (), None),
+        )
+
+        self.assertTrue(report.valid)
+        self.assertEqual(seen, {"music_fade_in_seconds": 0.5, "music_fade_out_seconds": 2.0})
+        self.assertEqual(report.artifact.music_fade_out_seconds, 2.0)
+
+    def test_rejects_music_fades_longer_than_the_timeline(self):
+        plan = music_plan(
+            music_parameters={
+                "duration_policy": "loop_to_timeline",
+                "gain_db": -14,
+                "fade_in_seconds": 2,
+                "fade_out_seconds": 2,
+            }
+        )
+        with self.assertRaisesRegex(SequenceWorkflowError, "fades must not be longer"):
+            run_sequence_workflow(
+                plan,
+                preflight=lambda _: self.fail("must not preflight"),
+                compose=lambda *_a, **_k: self.fail("must not compose"),
+            )
+
     def test_rejects_invalid_music_policy_gain_or_stream_before_composition(self):
         for parameters, message in (
             ({"duration_policy": "match_timeline", "gain_db": -18}, "loop_to_timeline"),
             ({"duration_policy": "loop_to_timeline", "gain_db": 1}, "from -60 to 0"),
+            (
+                {"duration_policy": "loop_to_timeline", "gain_db": -6, "wobble": 1},
+                "optional fade_in_seconds",
+            ),
+            (
+                {"duration_policy": "loop_to_timeline", "gain_db": -6, "fade_in_seconds": -1},
+                "fade_in_seconds",
+            ),
         ):
             with self.subTest(message=message):
                 with self.assertRaisesRegex(SequenceWorkflowError, message):
