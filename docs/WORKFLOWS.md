@@ -49,15 +49,17 @@ O plano deve declarar pelo menos dois segmentos de timeline e ao menos um
 tem source (imagem local) e `parameters={"duration_seconds": N}`, sem início ou
 fim: a imagem é exibida por `N` segundos (limite de 600 s). A ordem das operações
 é a ordem da timeline. Todos os sources declarados devem ser usados; parâmetros
-inesperados e outputs diferentes de MP4 são recusados. A v1 exige um stream de
-vídeo e dimensões iguais entre todos os sources, incluindo as imagens — sources
-que não batem são recusados antes de qualquer render (sem scale/pad automático).
+inesperados e outputs diferentes de MP4 são recusados. Os `sequence_clip`
+definem o canvas: precisam ter um stream de vídeo e dimensões iguais entre si;
+clipes que não batem são recusados antes de qualquer render. Cada `image_clip` só
+precisa de um stream de vídeo legível — o adapter o escala para caber e
+letter-boxes (barras pretas) no canvas dos clipes.
 
 FFmpeg recorta os clipes, zera os timestamps, concatena e reencoda o resultado em
-H.264. Cada `image_clip` entra como um input `-loop 1 -t N` e, quando há qualquer
-imagem na timeline, todos os segmentos são normalizados para 30 fps e `yuv420p`
-para manter o concat determinístico. O áudio original dos clipes não entra na
-timeline. Depois dos segmentos, uma
+H.264. Cada `image_clip` entra como um input `-loop 1 -t N`, é ajustado ao canvas
+por `scale`/`pad` e, quando há qualquer imagem na timeline, todos os segmentos
+são normalizados para 30 fps e `yuv420p` para manter o concat determinístico. O
+áudio original dos clipes não entra na timeline. Depois dos segmentos, uma
 operação opcional `captions` representa uma faixa inteira. Os cues vêm de uma de
 duas formas:
 
@@ -120,8 +122,8 @@ Capacidades que ainda faltam para `dark-video` v1:
 Já disponível:
 
 - `image_clip` insere imagens locais com duração explícita na timeline de
-  `video-sequence`, desde que as dimensões batam com os clipes (sem scale/pad
-  automático nesta v1);
+  `video-sequence`; qualquer dimensão é aceita e a imagem é escalada e
+  letter-boxed no canvas dos clipes (sem movimento/Ken Burns nesta v1);
 - `captions` aceita um `.srt`/`.vtt` local como source, além dos itens inline —
   precursor de "captions a partir da narração", que passará a emitir esse arquivo.
 
@@ -140,10 +142,11 @@ incremento; nada aqui autoriza pular testes ou camadas):
    TTS (ou de Whisper local) e alimentá-lo pela operação `captions` já existente,
    respeitando `VIDEO_LANGUAGE.md` (timing por unidades de significado).
 4. **Primeiro adapter HyperFrames** — provar `EditPlan -> cena HTML -> MP4` com um
-   title card / camada de captions. Avaliar se imagens com scale/pad, fit ao
-   canvas e Ken Burns saem mais baratas por HTML do que por `zoompan`/`tpad` no
-   FFmpeg; se sim, HyperFrames passa a ser o caminho de imagens ricas e captions
-   avançadas, deixando o `image_clip` atual para o caso simples. HyperFrames exige
+   title card / camada de captions. Avaliar se movimento (Ken Burns), fit
+   configurável e composição visual rica saem mais baratos por HTML do que por
+   `zoompan`/`tpad` no FFmpeg; se sim, HyperFrames passa a ser o caminho de
+   imagens ricas e captions avançadas, deixando o `image_clip` atual (escala +
+   letterbox estático) para o caso simples. HyperFrames exige
    Node e Chrome headless e deve receber um lock de proveniência análogo a
    `config/ffmpeg-lock.json`.
 5. **Primeira produção real completa** com registro de revisão humana — fecha

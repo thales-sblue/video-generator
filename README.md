@@ -15,8 +15,9 @@ e executa workflows estritos a partir de `EditPlan`. `video-sequence` monta
 trechos de vídeo e imagens locais com duração fixa em ordem, pode queimar
 captions e incorporar uma narração e música local, produzindo H.264/AAC validado
 e registrado em `RenderManifest`. Um modo final separado publica `final.mp4`
-somente após QA técnico. Imagens exigem dimensões iguais às dos clipes; scale/pad
-e movimento ainda não estão implementados.
+somente após QA técnico. Imagens de qualquer dimensão são escaladas e
+letter-boxed no canvas dos clipes; movimento (Ken Burns) ainda não está
+implementado.
 
 ## Princípios
 
@@ -127,9 +128,10 @@ A validação é somente leitura e não representa aprovação auditiva.
 
 `execute-sequence-plan` aceita ao menos dois segmentos de timeline ordenados, com
 ao menos um `sequence_clip` (source, início e fim). Um `image_clip` mostra uma
-imagem local por `duration_seconds` (até 600 s) sem início ou fim. Todos os
-sources, imagens incluídas, precisam ter as mesmas dimensões; havendo qualquer
-imagem, os segmentos são normalizados para 30 fps. Após os segmentos, uma
+imagem local por `duration_seconds` (até 600 s) sem início ou fim. Os
+`sequence_clip` precisam ter as mesmas dimensões e definem o canvas; imagens de
+qualquer tamanho são escaladas e letter-boxed nele e, havendo qualquer imagem, os
+segmentos são normalizados para 30 fps. Após os segmentos, uma
 operação opcional `captions` pode persistir uma faixa com estilo fixo
 `bottom_box`. Os cues vêm de itens inline (texto, início e fim relativos à
 timeline) ou de um `.srt`/`.vtt` local apontado por `source` e declarado entre os

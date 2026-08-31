@@ -197,7 +197,9 @@ class FFmpegAdapterTests(unittest.TestCase):
             ), patch(
                 "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
             ) as execute:
-                artifact = compose_video_sequence(timeline, output, timeout_seconds=20)
+                artifact = compose_video_sequence(
+                    timeline, output, canvas=(1280, 720), timeout_seconds=20
+                )
 
             command = execute.call_args.args[0]
             self.assertEqual(command.count("-i"), 3)
@@ -210,7 +212,9 @@ class FFmpegAdapterTests(unittest.TestCase):
             self.assertEqual(command[loop_index + 5], str(still.resolve()))
             filter_graph = command[command.index("-filter_complex") + 1]
             self.assertIn(
-                "[1:v:0]fps=30,setsar=1,format=yuv420p,trim=duration=4,setpts=PTS-STARTPTS[v1]",
+                "[1:v:0]scale=1280:720:force_original_aspect_ratio=decrease,"
+                "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,"
+                "fps=30,setsar=1,format=yuv420p,trim=duration=4,setpts=PTS-STARTPTS[v1]",
                 filter_graph,
             )
             # video segments are normalised too so the concat is deterministic
@@ -240,6 +244,26 @@ class FFmpegAdapterTests(unittest.TestCase):
                         root / "out.mp4",
                     )
             resolve.assert_not_called()
+
+    def test_sequence_requires_a_canvas_when_the_timeline_has_an_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clip = root / "clip.mp4"
+            still = root / "still.png"
+            for path in (clip, still):
+                path.write_bytes(path.stem.encode("utf-8"))
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"):
+                with self.assertRaisesRegex(FFmpegError, "canvas"):
+                    compose_video_sequence(
+                        (SequenceClip(str(clip), 0, 1), SequenceImage(str(still), 2)),
+                        root / "out.mp4",
+                    )
+                with self.assertRaisesRegex(FFmpegError, "canvas"):
+                    compose_video_sequence(
+                        (SequenceClip(str(clip), 0, 1), SequenceImage(str(still), 2)),
+                        root / "out.mp4",
+                        canvas=(1280, 0),
+                    )
 
     def test_sequence_rejects_a_non_positive_image_duration(self):
         with tempfile.TemporaryDirectory() as directory:

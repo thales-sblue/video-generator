@@ -629,7 +629,7 @@ class SequenceWorkflowTests(unittest.TestCase):
     def test_rejects_mismatched_dimensions_before_composition(self):
         plan = sequence_plan()
 
-        with self.assertRaisesRegex(SequenceWorkflowError, "matching source dimensions"):
+        with self.assertRaisesRegex(SequenceWorkflowError, "matching clip dimensions"):
             run_sequence_workflow(
                 plan,
                 preflight=lambda value: valid_preflight(value, second_width=1920),
@@ -643,6 +643,7 @@ class SequenceWorkflowTests(unittest.TestCase):
         def compose(clips, output, **kwargs):
             seen["kinds"] = [type(clip).__name__ for clip in clips]
             seen["sources"] = tuple(clip.source_path for clip in clips)
+            seen["canvas"] = kwargs.get("canvas")
             return SequenceArtifact(
                 tuple(clip.source_path for clip in clips),
                 plan.output_path,
@@ -661,6 +662,7 @@ class SequenceWorkflowTests(unittest.TestCase):
         self.assertTrue(report.valid)
         self.assertEqual(seen["kinds"], ["SequenceClip", "SequenceImage"])
         self.assertEqual(seen["sources"], plan.sources)
+        self.assertEqual(seen["canvas"], (1280, 720))
         # 1.5 s of clip + 4 s of still
         self.assertEqual(report.artifact.duration_seconds, 5.5)
         self.assertEqual(report.artifact.image_count, 1)
@@ -710,12 +712,59 @@ class SequenceWorkflowTests(unittest.TestCase):
                 compose=lambda *_a, **_k: self.fail("must not compose"),
             )
 
-    def test_rejects_an_image_whose_dimensions_differ_from_the_clips(self):
-        with self.assertRaisesRegex(SequenceWorkflowError, "matching source dimensions"):
+    def test_letterboxes_an_image_whose_dimensions_differ_from_the_clips(self):
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen["canvas"] = kwargs.get("canvas")
+            return SequenceArtifact(
+                tuple(clip.source_path for clip in clips),
+                image_plan().output_path,
+                5.5,
+                500,
+                image_count=1,
+            )
+
+        report = run_sequence_workflow(
+            image_plan(),
+            preflight=lambda value: image_preflight(value, image_width=1920),
+            compose=compose,
+            validate=lambda artifact, **_k: SequenceValidationReport(
+                True, artifact, 5.5, 0.15, (), None
+            ),
+        )
+
+        self.assertTrue(report.valid)
+        # the clips define the canvas; the 1920-wide still is scaled onto it
+        self.assertEqual(seen["canvas"], (1280, 720))
+
+    def test_still_rejects_clips_that_do_not_share_dimensions(self):
+        clip_a = str(Path("inputs/first.mp4").resolve())
+        clip_b = str(Path("inputs/second.mp4").resolve())
+        image = str(Path("inputs/card.png").resolve())
+        plan = EditPlan(
+            "plan-bad-clips",
+            "brief-dark",
+            (clip_a, clip_b, image),
+            str(Path("output/timeline.mp4").resolve()),
+            (
+                EditOperation("clip-1", "sequence_clip", clip_a, 0, 1),
+                EditOperation("clip-2", "sequence_clip", clip_b, 0, 1),
+                EditOperation("image-1", "image_clip", image, parameters={"duration_seconds": 1}),
+            ),
+        )
+
+        def preflight(_):
+            probes = (
+                MediaProbe(clip_a, 1, "mp4", 10, 1, (StreamProbe(0, "video", "h264", 10, 1280, 720, None, None),)),
+                MediaProbe(clip_b, 1, "mp4", 10, 1, (StreamProbe(0, "video", "h264", 10, 1920, 1080, None, None),)),
+                MediaProbe(image, 1, "png_pipe", None, None, (StreamProbe(0, "video", "png", None, 800, 600, None, None),)),
+            )
+            return PreflightReport(plan.plan_id, True, (), probes)
+
+        with self.assertRaisesRegex(SequenceWorkflowError, "matching clip dimensions"):
             run_sequence_workflow(
-                image_plan(),
-                preflight=lambda value: image_preflight(value, image_width=1920),
-                compose=lambda *_a, **_k: self.fail("must not compose"),
+                plan, preflight=preflight, compose=lambda *_a, **_k: self.fail("must not compose")
             )
 
     def test_rejects_inconsistent_image_artifact_metadata(self):

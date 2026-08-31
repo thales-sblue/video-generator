@@ -356,6 +356,7 @@ def compose_video_sequence(
     captions: Sequence[CaptionCue] = (),
     music_path: str | Path | None = None,
     music_gain_db: float | None = None,
+    canvas: tuple[int, int] | None = None,
     timeout_seconds: float = 300,
 ) -> SequenceArtifact:
     """Compose video clips and still images with optional captions, narration, and music.
@@ -363,9 +364,11 @@ def compose_video_sequence(
     ``clips`` is an ordered timeline of ``SequenceClip`` (a trimmed range of a
     local video) and ``SequenceImage`` (a local still shown for a fixed
     duration). At least two segments and at least one ``SequenceClip`` are
-    required. When any image is present every segment is normalised to
-    ``IMAGE_TIMELINE_FPS`` and ``yuv420p`` so the concat is deterministic;
-    matching pixel dimensions across sources remain the caller's responsibility.
+    required. Video clips must already share pixel dimensions; when the timeline
+    contains an image, ``canvas`` (the ``(width, height)`` of those clips) is
+    required and every image is scaled to fit and letter-boxed onto it, then
+    every segment is normalised to ``IMAGE_TIMELINE_FPS`` and ``yuv420p`` so the
+    concat is deterministic.
     """
 
     if isinstance(clips, (str, bytes)) or not isinstance(clips, Sequence):
@@ -413,6 +416,18 @@ def compose_video_sequence(
         resolved_clips.append((kind, source, start, end))
     duration = sum(end - start for _, _, start, end in resolved_clips)
     has_images = any(kind == "image" for kind, _, _, _ in resolved_clips)
+    canvas_size: tuple[int, int] | None = None
+    if has_images:
+        if (
+            not isinstance(canvas, tuple)
+            or len(canvas) != 2
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                for value in canvas
+            )
+        ):
+            raise FFmpegError("a timeline with images requires a positive (width, height) canvas")
+        canvas_size = (int(canvas[0]), int(canvas[1]))
     resolved_captions: list[tuple[str, float, float]] = []
     previous_end = 0.0
     for cue in normalized_captions:
@@ -521,8 +536,11 @@ def compose_video_sequence(
     for index, (kind, _, start, end) in enumerate(resolved_clips):
         label = f"v{index}"
         if kind == "image":
+            width, height = canvas_size  # type: ignore[misc]
             filters.append(
-                f"[{index}:v:0]fps={IMAGE_TIMELINE_FPS},setsar=1,format=yuv420p,"
+                f"[{index}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+                f"fps={IMAGE_TIMELINE_FPS},setsar=1,format=yuv420p,"
                 f"trim=duration={format(end - start, '.15g')},setpts=PTS-STARTPTS[{label}]"
             )
         else:

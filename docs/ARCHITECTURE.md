@@ -64,8 +64,9 @@ explícito e receber uma operação final `narration`. O
 workflow executa preflight, confere dimensões, tempos, streams e políticas
 persistidas, recorta e concatena os segmentos, queima os cues, normaliza e
 mistura áudio e produz MP4 H.264/AAC. Sem opções, preserva o render silencioso
-anterior. Imagens exigem dimensões iguais às dos clipes; scale/pad, transitions e
-motion continuam fora do escopo, reservados ao compositor rico.
+anterior. Os clipes definem o canvas e devem compartilhar dimensões; imagens de
+qualquer tamanho são escaladas e letter-boxed nele. Movimento, transitions e
+composição visual rica continuam fora do escopo, reservados ao compositor rico.
 
 ### Adapters e renderers
 

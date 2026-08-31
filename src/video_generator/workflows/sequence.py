@@ -365,27 +365,42 @@ def _source_probes(report: PreflightReport, plan: EditPlan) -> dict[str, MediaPr
     return {_normalized(source.source_path): source for source in report.sources}
 
 
+def _segment_dimensions(probes: dict[str, MediaProbe], source_path: str) -> tuple[int, int]:
+    source = probes.get(_normalized(source_path))
+    if source is None:
+        raise SequenceWorkflowError(f"preflight omitted sequence source: {source_path}")
+    video_streams = tuple(stream for stream in source.streams if stream.codec_type == "video")
+    if not video_streams:
+        raise SequenceWorkflowError(f"sequence source has no video stream: {source.source_path}")
+    stream = video_streams[0]
+    if stream.width is None or stream.height is None:
+        raise SequenceWorkflowError(
+            f"sequence source dimensions are unavailable: {source.source_path}"
+        )
+    return stream.width, stream.height
+
+
 def _video_shape(
     probes: dict[str, MediaProbe],
-    clips: tuple[SequenceClip | SequenceImage, ...],
+    segments: tuple[SequenceClip | SequenceImage, ...],
 ) -> tuple[int, int]:
-    shapes = []
-    for clip in clips:
-        source = probes.get(_normalized(clip.source_path))
-        if source is None:
-            raise SequenceWorkflowError(f"preflight omitted sequence source: {clip.source_path}")
-        video_streams = tuple(stream for stream in source.streams if stream.codec_type == "video")
-        if not video_streams:
-            raise SequenceWorkflowError(f"sequence source has no video stream: {source.source_path}")
-        stream = video_streams[0]
-        if stream.width is None or stream.height is None:
-            raise SequenceWorkflowError(
-                f"sequence source dimensions are unavailable: {source.source_path}"
-            )
-        shapes.append((stream.width, stream.height))
-    if len(set(shapes)) != 1:
-        raise SequenceWorkflowError("video-sequence v1 requires matching source dimensions")
-    return shapes[0]
+    """Return the timeline canvas: the shared pixel size of the video clips.
+
+    Video clips must all match. Images only need a readable video stream; the
+    adapter scales and letter-boxes each image onto this canvas.
+    """
+
+    clip_shapes = {
+        _segment_dimensions(probes, segment.source_path)
+        for segment in segments
+        if isinstance(segment, SequenceClip)
+    }
+    if len(clip_shapes) != 1:
+        raise SequenceWorkflowError("video-sequence v1 requires matching clip dimensions")
+    for segment in segments:
+        if isinstance(segment, SequenceImage):
+            _segment_dimensions(probes, segment.source_path)
+    return next(iter(clip_shapes))
 
 
 def _validate_narration(
@@ -477,7 +492,7 @@ def run_sequence_workflow(
         issue_codes = ", ".join(issue.code for issue in preflight_report.issues) or "unknown"
         raise SequenceWorkflowError(f"preflight rejected plan {plan.plan_id}: {issue_codes}")
     probes = _source_probes(preflight_report, plan)
-    _video_shape(probes, segments)
+    canvas = _video_shape(probes, segments)
     if narration_path is not None:
         _validate_narration(probes, narration_path, expected_duration, tolerance)
     if music_path is not None:
@@ -495,6 +510,8 @@ def run_sequence_workflow(
         if music_path is not None and music_gain_db is not None:
             compose_kwargs["music_path"] = music_path
             compose_kwargs["music_gain_db"] = music_gain_db
+        if expected_image_count:
+            compose_kwargs["canvas"] = canvas
         artifact = create_artifact(segments, plan.output_path, **compose_kwargs)
     except FFmpegError as exc:
         raise SequenceWorkflowError(f"video sequence composition failed: {exc}") from exc
