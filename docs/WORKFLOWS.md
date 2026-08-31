@@ -126,23 +126,24 @@ Já disponível:
   letter-boxed no canvas dos clipes (sem movimento/Ken Burns nesta v1);
 - `captions` aceita um `.srt`/`.vtt` local como source, além dos itens inline —
   precursor de "captions a partir da narração", que passará a emitir esse arquivo.
-- o ambiente já conhece o Kokoro: extra op-in `tts` (`kokoro-onnx`, `soundfile`),
-  resolução fail-closed dos assets em `.local-tools/kokoro/` (ou `KOKORO_HOME`) e
-  um check no `doctor`. Sem os assets/pacote, `doctor` reporta `missing` e nada
-  mais é afetado.
+- Kokoro (TTS local, opcional): extra op-in `tts`, resolução fail-closed dos
+  assets em `.local-tools/kokoro/` (ou `KOKORO_HOME`), check no `doctor`, o
+  adapter `synthesize_narration` e a CLI de baixo nível `narrate`
+  (texto -> WAV 48 kHz/estéreo, com voz/velocidade/idioma/SHA-256 do texto no
+  artifact). Sem os assets/pacote nada disso impede contratos ou diagnóstico.
+  **Pendente:** revisão auditiva real com evidência humana.
 
 ### Ordem recomendada dos próximos incrementos
 
 Sequência sugerida (cada item ainda deve passar pela pergunta do menor
 incremento; nada aqui autoriza pular testes ou camadas):
 
-1. **Adapter Kokoro + narração a partir de texto** — `VideoBrief`/`EditPlan`
-   ganham o texto da narração e voz/seed persistidos; o adapter usa a resolução
-   de assets já existente, sintetiza localmente e normaliza para o WAV
-   48 kHz/estéreo que a operação `narration` já consome. Ausência do modelo
-   degrada só essa capacidade, nunca contratos ou diagnóstico. Fixar as versões
-   do extra `tts` quando o adapter entrar. Revisão auditiva real fica pendente
-   até haver evidência.
+1. **Wire da narração de texto no `EditPlan`** — a operação `narration` do
+   `video-sequence` ganha um modo texto (`narration_text` + voz/velocidade/idioma
+   persistidos) que chama `synthesize_narration` e alimenta o WAV resultante na
+   composição já existente, com fingerprint e `RenderManifest` cobrindo o
+   determinismo (SHA-256 do texto + versões). Ausência do modelo degrada só essa
+   capacidade.
 2. **Captions a partir da narração** — gerar um `.srt` a partir do alinhamento do
    TTS (ou de Whisper local) e alimentá-lo pela operação `captions` já existente,
    respeitando `VIDEO_LANGUAGE.md` (timing por unidades de significado).

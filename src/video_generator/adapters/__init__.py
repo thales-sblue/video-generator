@@ -1,5 +1,10 @@
 """Local tool adapters for audiovisual operations."""
 
+from video_generator.adapters.kokoro import (
+    KokoroError,
+    NarrationArtifact,
+    synthesize_narration,
+)
 from video_generator.adapters.ffmpeg import (
     AudioArtifact,
     CaptionCue,
@@ -18,7 +23,9 @@ __all__ = [
     "AudioArtifact",
     "CaptionCue",
     "FFmpegError",
+    "KokoroError",
     "MediaProbe",
+    "NarrationArtifact",
     "ProbeError",
     "SegmentArtifact",
     "SequenceArtifact",
@@ -29,4 +36,5 @@ __all__ = [
     "extract_segment",
     "compose_video_sequence",
     "probe_media",
+    "synthesize_narration",
 ]

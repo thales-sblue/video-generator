@@ -11,11 +11,12 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-# Opt-in local text-to-speech. Not required for contracts, planning, inspection
-# or diagnosis; `doctor` reports Kokoro as missing until this extra and the model
-# files under .local-tools/kokoro/ are present. Versions are pinned when the
-# narration adapter that uses them lands.
-tts = ["kokoro-onnx", "soundfile"]
+# Opt-in local text-to-speech used by `narrate` / the kokoro adapter. Not required
+# for contracts, planning, inspection or diagnosis; `doctor` reports Kokoro as
+# missing until this extra and the model files under .local-tools/kokoro/ are
+# present. Floors match the documented `Kokoro(model, voices).create(...)` API and
+# `soundfile.write`; revisit against a verified local install.
+tts = ["kokoro-onnx>=0.4.0", "soundfile>=0.12.0"]
 
 [project.scripts]
 video-generator = "video_generator.cli:main"

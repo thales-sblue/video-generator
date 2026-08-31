@@ -56,7 +56,7 @@ $env:PYTHONPATH = "src"; .\.venv\Scripts\python.exe -m unittest discover -s test
 ```
 
 CLI disponível hoje: `doctor`, `inspect`, `preflight`, `extract-segment`,
-`extract-audio`, `execute-segment-plan`, `execute-sequence-plan`,
+`extract-audio`, `narrate`, `execute-segment-plan`, `execute-sequence-plan`,
 `execute-final-sequence-plan`, `validate-segment`, `validate-audio`,
 `validate-manifest`, `validate-project`. Veja `README.md` para exemplos.
 

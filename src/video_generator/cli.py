@@ -14,12 +14,15 @@ from pathlib import Path
 from video_generator.adapters import (
     AudioArtifact,
     FFmpegError,
+    KokoroError,
     MediaProbe,
+    NarrationArtifact,
     ProbeError,
     SegmentArtifact,
     extract_audio,
     extract_segment,
     probe_media,
+    synthesize_narration,
 )
 from video_generator.config import ConfigurationError, load_config
 from video_generator.doctor import format_report, run_doctor
@@ -111,6 +114,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum FFmpeg execution time (default: 300)",
     )
     audio.add_argument("--json", action="store_true", help="print artifact metadata as JSON")
+    narrate = subparsers.add_parser(
+        "narrate",
+        help="synthesise local narration from text into a 48 kHz stereo PCM WAV (optional Kokoro)",
+    )
+    narrate.add_argument("output", help="new .wav artifact path; existing files are refused")
+    narrate_text = narrate.add_mutually_exclusive_group(required=True)
+    narrate_text.add_argument("--text", help="narration text to synthesise")
+    narrate_text.add_argument("--text-file", help="path to a UTF-8 file with the narration text")
+    narrate.add_argument("--voice", default="af_heart", help="Kokoro voice token (default: af_heart)")
+    narrate.add_argument("--speed", type=float, default=1.0, help="speech rate 0.5-2.0 (default: 1.0)")
+    narrate.add_argument("--lang", default="en-us", help="language code (default: en-us)")
+    narrate.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=300,
+        help="maximum normalisation time (default: 300)",
+    )
+    narrate.add_argument("--json", action="store_true", help="print artifact metadata as JSON")
     execute_segment = subparsers.add_parser(
         "execute-segment-plan",
         help="execute one supported segment EditPlan through technical validation",
@@ -314,6 +335,20 @@ def _format_audio_artifact(artifact: AudioArtifact) -> str:
             "Audio: PCM 16-bit; "
             f"{artifact.sample_rate_hz} Hz; {artifact.channels} channels",
             f"Size: {artifact.file_size_bytes} bytes",
+        ]
+    ) + "\n"
+
+
+def _format_narration_artifact(artifact: NarrationArtifact) -> str:
+    return "\n".join(
+        [
+            f"Artifact: {artifact.output_path}",
+            f"Voice: {artifact.voice}; speed {artifact.speed}; lang {artifact.lang}",
+            "Audio: PCM 16-bit; "
+            f"{artifact.sample_rate_hz} Hz; {artifact.channels} channels",
+            f"Text SHA-256: {artifact.text_sha256}",
+            f"Size: {artifact.file_size_bytes} bytes",
+            "Auditory review: not_performed",
         ]
     ) + "\n"
 
@@ -547,6 +582,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         output = json.dumps(asdict(artifact), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         print(output if args.json else _format_audio_artifact(artifact), end="")
+        return 0
+    if args.command == "narrate":
+        if args.text_file is not None:
+            try:
+                text = Path(args.text_file).expanduser().read_text(encoding="utf-8")
+            except OSError as exc:
+                print(f"Narration error: cannot read text file: {exc}", file=sys.stderr)
+                return 2
+            except UnicodeDecodeError:
+                print("Narration error: text file must be UTF-8", file=sys.stderr)
+                return 2
+        else:
+            text = args.text
+        try:
+            artifact = synthesize_narration(
+                text,
+                args.output,
+                voice=args.voice,
+                speed=args.speed,
+                lang=args.lang,
+                timeout_seconds=args.timeout_seconds,
+            )
+        except KokoroError as exc:
+            print(f"Narration error: {exc}", file=sys.stderr)
+            return 2
+        output = json.dumps(asdict(artifact), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        print(output if args.json else _format_narration_artifact(artifact), end="")
         return 0
     if args.command == "execute-segment-plan":
         try:

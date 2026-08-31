@@ -78,6 +78,8 @@ python -m video_generator preflight projects\example\edit-plan.json --json
 python -m video_generator extract-segment inputs\clip.mp4 output\segment.mp4 --start-seconds 0 --end-seconds 5 --json
 python -m video_generator extract-segment inputs\clip.mp4 output\precise.mp4 --start-seconds 0.25 --end-seconds 5.25 --mode precise --json
 python -m video_generator extract-audio inputs\clip.mp4 output\audio.wav --json
+python -m video_generator narrate output\narration.wav --text "Primeira linha do roteiro." --voice af_heart --json
+python -m video_generator narrate output\narration.wav --text-file inputs\script.txt --lang pt-br --json
 python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 python -m video_generator execute-sequence-plan projects\example\sequence-plan.json --manifest projects\example\sequence-manifest.json --json
 python -m video_generator execute-final-sequence-plan projects\example\final-plan.json --manifest projects\example\final-manifest.json --json
@@ -129,6 +131,15 @@ revisão auditiva.
 `validate-audio` verifica posteriormente se o WAV ainda tem o tamanho registrado,
 container WAV, um único stream PCM 16-bit, 48 kHz, dois canais e duração positiva.
 A validação é somente leitura e não representa aprovação auditiva.
+
+`narrate` sintetiza narração local a partir de texto (`--text` ou `--text-file`
+UTF-8) usando o Kokoro opcional. Valida a voz, a velocidade (0,5–2,0), o idioma e
+o output `.wav` antes de tocar no modelo; resolve os assets de `.local-tools/kokoro/`
+e falha fechado quando eles ou o extra `tts` faltam. A saída float do modelo é
+normalizada pelo FFmpeg travado para o mesmo WAV 48 kHz/estéreo/PCM 16-bit que a
+operação `narration` consome. O artifact registra voz, velocidade, idioma e o
+SHA-256 do texto (o Kokoro é determinístico para essas entradas). Sucesso técnico
+não é revisão auditiva: ela permanece `not_performed`.
 
 `execute-sequence-plan` aceita ao menos dois segmentos de timeline ordenados, com
 ao menos um `sequence_clip` (source, início e fim). Um `image_clip` mostra uma

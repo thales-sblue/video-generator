@@ -185,6 +185,7 @@ video-generator inspect <source> [--json]
 video-generator preflight <edit-plan.json> [--json]
 video-generator extract-segment <source> <output> --start-seconds N --end-seconds N [--json]
 video-generator extract-audio <source> <output.wav> [--json]
+video-generator narrate <output.wav> (--text T | --text-file F) [--voice V] [--speed S] [--lang L] [--json]
 video-generator execute-segment-plan <edit-plan.json> [--json]
 video-generator execute-sequence-plan <edit-plan.json> [--json]
 video-generator execute-final-sequence-plan <edit-plan.json> [--json]
@@ -196,10 +197,14 @@ video-generator render
 video-generator validate
 ```
 
-`doctor`, `inspect`, `preflight`, `extract-segment`, `extract-audio`,
+`doctor`, `inspect`, `preflight`, `extract-segment`, `extract-audio`, `narrate`,
 `execute-segment-plan`, `execute-sequence-plan`, `execute-final-sequence-plan`,
 `validate-segment`, `validate-manifest` e `validate-project` existem agora. Novos
 comandos entram quando houver uma operação reutilizável e testada por trás deles.
+
+`narrate` é uma operação de baixo nível, como `extract-audio`: sem `EditPlan` nem
+`RenderManifest` e sem afirmar revisão auditiva. Depende do Kokoro opcional e
+falha fechado quando ele não está disponível.
 
 `transcribe`, `render` e `validate` são atalhos operacionais previstos sobre
 capacidades locais já testadas. `plan`, quando existir, é um utilitário
