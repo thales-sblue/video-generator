@@ -183,6 +183,55 @@ class ManifestValidationTests(unittest.TestCase):
         self.assertTrue(report.technically_ready)
         self.assertEqual(report.issues, ())
 
+    def test_accepts_a_sequence_plan_with_text_narration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "a.mp4"
+            second = root / "b.mp4"
+            output = root / "final.mp4"
+            for path in (first, second, output):
+                path.write_bytes(path.stem.encode("utf-8"))
+            plan = EditPlan(
+                "plan-tts",
+                "brief-dark",
+                (str(first), str(second)),
+                str(output),
+                (
+                    EditOperation("clip-1", "sequence_clip", str(first), 0, 1),
+                    EditOperation("clip-2", "sequence_clip", str(second), 0, 1),
+                    EditOperation(
+                        "voice-1",
+                        "narration",
+                        parameters={
+                            "duration_policy": "match_timeline",
+                            "text": "Dark script.",
+                            "voice": "am_adam",
+                            "speed": 1.1,
+                            "lang": "en-gb",
+                        },
+                    ),
+                ),
+            )
+            manifest = RenderManifest(
+                "manifest-plan-tts",
+                plan.plan_id,
+                plan.brief_id,
+                "video-sequence",
+                fingerprint_plan(plan),
+                tuple(fingerprint_file(source) for source in plan.sources),
+                (fingerprint_file(output),),
+                (
+                    ToolRecord("FFmpeg", "C:/tools/ffmpeg.exe", "ffmpeg 8"),
+                    ToolRecord("ffprobe", "C:/tools/ffprobe.exe", "ffprobe 8"),
+                ),
+                True,
+            )
+
+            report = validate_render_manifest(manifest, plan)
+
+        self.assertTrue(report.technically_ready)
+        self.assertEqual(report.issues, ())
+
     def test_accepts_unchanged_plan_sources_and_outputs(self):
         with tempfile.TemporaryDirectory() as directory:
             plan, manifest, _, _ = state(directory)

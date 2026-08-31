@@ -107,6 +107,7 @@ def validate_sequence_artifact(
             )
         has_planned_audio = (
             artifact.narration_source_path is not None
+            or artifact.narration_text_sha256 is not None
             or artifact.music_source_path is not None
         )
         if not has_planned_audio:

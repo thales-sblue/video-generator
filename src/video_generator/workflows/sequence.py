@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import tempfile
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
@@ -14,11 +15,15 @@ from typing import Callable
 from video_generator.adapters import (
     CaptionCue,
     FFmpegError,
+    KokoroError,
     MediaProbe,
+    ProbeError,
     SequenceArtifact,
     SequenceClip,
     SequenceImage,
     compose_video_sequence,
+    probe_media,
+    synthesize_narration,
 )
 from video_generator.domain import EditPlan
 from video_generator.subtitles import SubtitleParseError, parse_subtitle_cues
@@ -36,11 +41,23 @@ IMAGE_KIND = "image_clip"
 IMAGE_MAX_DURATION_SECONDS = 600.0
 NARRATION_KIND = "narration"
 NARRATION_PARAMETERS = {"duration_policy": "match_timeline"}
+NARRATION_TEXT_KEYS = {"duration_policy", "text", "voice", "speed", "lang"}
+NARRATION_DEFAULT_VOICE = "af_heart"
+NARRATION_DEFAULT_SPEED = 1.0
+NARRATION_DEFAULT_LANG = "en-us"
 CAPTIONS_KIND = "captions"
 CAPTIONS_STYLE = "bottom_box"
 CAPTION_SUBTITLE_FORMATS = {".srt": "srt", ".vtt": "vtt"}
 MUSIC_KIND = "music"
 MUSIC_DURATION_POLICY = "loop_to_timeline"
+
+
+@dataclass(frozen=True, slots=True)
+class NarrationTextSpec:
+    text: str
+    voice: str
+    speed: float
+    lang: str
 
 
 class SequenceWorkflowError(RuntimeError):
@@ -229,6 +246,7 @@ def _operations_from_plan(
 ) -> tuple[
     tuple[SequenceClip | SequenceImage, ...],
     str | None,
+    NarrationTextSpec | None,
     tuple[CaptionCue, ...],
     str | None,
     str | None,
@@ -241,6 +259,7 @@ def _operations_from_plan(
     segments: list[SequenceClip | SequenceImage] = []
     used_sources = set()
     narration_path: str | None = None
+    narration_text: NarrationTextSpec | None = None
     captions: tuple[CaptionCue, ...] = ()
     caption_source: str | None = None
     captions_seen = False
@@ -250,18 +269,37 @@ def _operations_from_plan(
         if operation.kind == NARRATION_KIND:
             if index != len(plan.operations) - 1:
                 raise SequenceWorkflowError("narration must be the final operation")
-            if narration_path is not None:
+            if narration_path is not None or narration_text is not None:
                 raise SequenceWorkflowError("video-sequence accepts at most one narration")
-            if operation.source is None:
-                raise SequenceWorkflowError("narration must declare a source")
             if operation.start_seconds is not None or operation.end_seconds is not None:
                 raise SequenceWorkflowError("narration timing is fixed at zero in v1")
-            if dict(operation.parameters) != NARRATION_PARAMETERS:
+            params = dict(operation.parameters)
+            if params.get("duration_policy") != "match_timeline":
                 raise SequenceWorkflowError(
                     "narration requires duration_policy=match_timeline"
                 )
-            narration_path = operation.source
-            used_sources.add(operation.source)
+            if operation.source is not None:
+                if set(params) != {"duration_policy"}:
+                    raise SequenceWorkflowError(
+                        "narration from a source accepts only duration_policy=match_timeline"
+                    )
+                narration_path = operation.source
+                used_sources.add(operation.source)
+            else:
+                unknown = set(params) - NARRATION_TEXT_KEYS
+                if unknown:
+                    raise SequenceWorkflowError(
+                        "narration text accepts only text, voice, speed and lang"
+                    )
+                text = params.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    raise SequenceWorkflowError("narration text must be a non-empty string")
+                narration_text = NarrationTextSpec(
+                    text=text,
+                    voice=params.get("voice", NARRATION_DEFAULT_VOICE),
+                    speed=params.get("speed", NARRATION_DEFAULT_SPEED),
+                    lang=params.get("lang", NARRATION_DEFAULT_LANG),
+                )
             continue
         if operation.kind == CAPTIONS_KIND:
             if captions_seen:
@@ -352,6 +390,7 @@ def _operations_from_plan(
     return (
         tuple(segments),
         narration_path,
+        narration_text,
         captions,
         caption_source,
         music_path,
@@ -401,6 +440,51 @@ def _video_shape(
         if isinstance(segment, SequenceImage):
             _segment_dimensions(probes, segment.source_path)
     return next(iter(clip_shapes))
+
+
+def _synthesise_narration(
+    spec: NarrationTextSpec,
+    output_path: str,
+    expected_duration: float,
+    tolerance: float,
+    timeout: float,
+) -> tuple[str, str, str]:
+    """Render narration text to a temp WAV; return (path, text_sha256, temp_dir)."""
+
+    parent = Path(output_path).expanduser().resolve().parent
+    parent.mkdir(parents=True, exist_ok=True)
+    synth_dir = tempfile.mkdtemp(prefix=f".{Path(output_path).stem}-tts-", dir=str(parent))
+    try:
+        target = Path(synth_dir) / "narration.wav"
+        try:
+            artifact = synthesize_narration(
+                spec.text,
+                target,
+                voice=spec.voice,
+                speed=spec.speed,
+                lang=spec.lang,
+                timeout_seconds=timeout,
+            )
+        except KokoroError as exc:
+            raise SequenceWorkflowError(f"narration synthesis failed: {exc}") from exc
+        try:
+            probe = probe_media(artifact.output_path)
+        except ProbeError as exc:
+            raise SequenceWorkflowError(
+                f"could not inspect synthesised narration: {exc}"
+            ) from exc
+        seconds = probe.duration_seconds
+        if seconds is None or seconds <= 0:
+            raise SequenceWorkflowError("synthesised narration has no usable duration")
+        if seconds > expected_duration + tolerance:
+            raise SequenceWorkflowError(
+                f"synthesised narration is {seconds:.3f}s but the timeline is "
+                f"{expected_duration:.3f}s; shorten the narration text"
+            )
+        return artifact.output_path, artifact.text_sha256, synth_dir
+    except BaseException:
+        shutil.rmtree(synth_dir, ignore_errors=True)
+        raise
 
 
 def _validate_narration(
@@ -469,6 +553,7 @@ def run_sequence_workflow(
     (
         segments,
         narration_path,
+        narration_text,
         captions,
         caption_source,
         music_path,
@@ -493,75 +578,94 @@ def run_sequence_workflow(
         raise SequenceWorkflowError(f"preflight rejected plan {plan.plan_id}: {issue_codes}")
     probes = _source_probes(preflight_report, plan)
     canvas = _video_shape(probes, segments)
-    if narration_path is not None:
-        _validate_narration(probes, narration_path, expected_duration, tolerance)
-    if music_path is not None:
-        _validate_music(probes, music_path)
-    if before_compose is not None:
-        before_compose(plan)
-
-    create_artifact = compose or compose_video_sequence
+    synth_dir: str | None = None
+    narration_text_sha256: str | None = None
     try:
-        compose_kwargs = {"timeout_seconds": timeout}
-        if narration_path is not None:
-            compose_kwargs["narration_path"] = narration_path
-        if captions:
-            compose_kwargs["captions"] = captions
-        if music_path is not None and music_gain_db is not None:
-            compose_kwargs["music_path"] = music_path
-            compose_kwargs["music_gain_db"] = music_gain_db
-        if expected_image_count:
-            compose_kwargs["canvas"] = canvas
-        artifact = create_artifact(segments, plan.output_path, **compose_kwargs)
-    except FFmpegError as exc:
-        raise SequenceWorkflowError(f"video sequence composition failed: {exc}") from exc
-    if not isinstance(artifact, SequenceArtifact):
-        raise TypeError("compose must return a SequenceArtifact")
-    if _normalized(artifact.output_path) != _normalized(plan.output_path):
-        raise SequenceWorkflowError("compose returned an artifact at an unexpected output path")
-    expected_sources = tuple(_normalized(clip.source_path) for clip in segments)
-    actual_sources = tuple(_normalized(source) for source in artifact.source_paths)
-    if actual_sources != expected_sources:
-        raise SequenceWorkflowError("compose returned an artifact for an unexpected clip order")
-    expected_narration = _normalized(narration_path) if narration_path is not None else None
-    actual_narration = (
-        _normalized(artifact.narration_source_path)
-        if artifact.narration_source_path is not None
-        else None
-    )
-    if actual_narration != expected_narration:
-        raise SequenceWorkflowError("compose returned unexpected narration metadata")
-    if artifact.caption_count != len(captions):
-        raise SequenceWorkflowError("compose returned unexpected caption metadata")
-    if artifact.image_count != expected_image_count:
-        raise SequenceWorkflowError("compose returned unexpected image metadata")
-    expected_music = _normalized(music_path) if music_path is not None else None
-    actual_music = (
-        _normalized(artifact.music_source_path)
-        if artifact.music_source_path is not None
-        else None
-    )
-    if actual_music != expected_music or artifact.music_gain_db != music_gain_db:
-        raise SequenceWorkflowError("compose returned unexpected music metadata")
-    if artifact.duration_seconds != expected_duration or artifact.file_size_bytes <= 0:
-        raise SequenceWorkflowError("compose returned inconsistent artifact metadata")
+        if narration_text is not None:
+            narration_path, narration_text_sha256, synth_dir = _synthesise_narration(
+                narration_text, plan.output_path, expected_duration, tolerance, timeout
+            )
+        elif narration_path is not None:
+            _validate_narration(probes, narration_path, expected_duration, tolerance)
+        if music_path is not None:
+            _validate_music(probes, music_path)
+        if before_compose is not None:
+            before_compose(plan)
 
-    inspect_artifact = validate or validate_sequence_artifact
-    validation = inspect_artifact(
-        artifact,
-        duration_tolerance_seconds=tolerance,
-    )
-    if not isinstance(validation, SequenceValidationReport):
-        raise TypeError("validate must return a SequenceValidationReport")
-    if validation.artifact != artifact:
-        raise SequenceWorkflowError("validation returned a report for an unexpected artifact")
-    return SequenceWorkflowReport(
-        plan_id=plan.plan_id,
-        operation_ids=tuple(operation.operation_id for operation in plan.operations),
-        preflight=preflight_report,
-        artifact=artifact,
-        validation=validation,
-    )
+        create_artifact = compose or compose_video_sequence
+        try:
+            compose_kwargs = {"timeout_seconds": timeout}
+            if narration_path is not None:
+                compose_kwargs["narration_path"] = narration_path
+            if captions:
+                compose_kwargs["captions"] = captions
+            if music_path is not None and music_gain_db is not None:
+                compose_kwargs["music_path"] = music_path
+                compose_kwargs["music_gain_db"] = music_gain_db
+            if expected_image_count:
+                compose_kwargs["canvas"] = canvas
+            artifact = create_artifact(segments, plan.output_path, **compose_kwargs)
+        except FFmpegError as exc:
+            raise SequenceWorkflowError(f"video sequence composition failed: {exc}") from exc
+        if not isinstance(artifact, SequenceArtifact):
+            raise TypeError("compose must return a SequenceArtifact")
+        if _normalized(artifact.output_path) != _normalized(plan.output_path):
+            raise SequenceWorkflowError("compose returned an artifact at an unexpected output path")
+        expected_sources = tuple(_normalized(clip.source_path) for clip in segments)
+        actual_sources = tuple(_normalized(source) for source in artifact.source_paths)
+        if actual_sources != expected_sources:
+            raise SequenceWorkflowError("compose returned an artifact for an unexpected clip order")
+        expected_narration = _normalized(narration_path) if narration_path is not None else None
+        actual_narration = (
+            _normalized(artifact.narration_source_path)
+            if artifact.narration_source_path is not None
+            else None
+        )
+        if actual_narration != expected_narration:
+            raise SequenceWorkflowError("compose returned unexpected narration metadata")
+        if artifact.caption_count != len(captions):
+            raise SequenceWorkflowError("compose returned unexpected caption metadata")
+        if artifact.image_count != expected_image_count:
+            raise SequenceWorkflowError("compose returned unexpected image metadata")
+        expected_music = _normalized(music_path) if music_path is not None else None
+        actual_music = (
+            _normalized(artifact.music_source_path)
+            if artifact.music_source_path is not None
+            else None
+        )
+        if actual_music != expected_music or artifact.music_gain_db != music_gain_db:
+            raise SequenceWorkflowError("compose returned unexpected music metadata")
+        if artifact.duration_seconds != expected_duration or artifact.file_size_bytes <= 0:
+            raise SequenceWorkflowError("compose returned inconsistent artifact metadata")
+
+        if narration_text_sha256 is not None:
+            # the narration audio is a transient synthesis; the text digest and
+            # the recorded voice/speed/lang keep the render reproducible.
+            artifact = replace(
+                artifact,
+                narration_source_path=None,
+                narration_text_sha256=narration_text_sha256,
+            )
+
+        inspect_artifact = validate or validate_sequence_artifact
+        validation = inspect_artifact(
+            artifact,
+            duration_tolerance_seconds=tolerance,
+        )
+        if not isinstance(validation, SequenceValidationReport):
+            raise TypeError("validate must return a SequenceValidationReport")
+        if validation.artifact != artifact:
+            raise SequenceWorkflowError("validation returned a report for an unexpected artifact")
+        return SequenceWorkflowReport(
+            plan_id=plan.plan_id,
+            operation_ids=tuple(operation.operation_id for operation in plan.operations),
+            preflight=preflight_report,
+            artifact=artifact,
+            validation=validation,
+        )
+    finally:
+        if synth_dir is not None:
+            shutil.rmtree(synth_dir, ignore_errors=True)
 
 
 def run_final_sequence_workflow(

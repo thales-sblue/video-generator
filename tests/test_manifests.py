@@ -182,6 +182,66 @@ class ManifestTests(unittest.TestCase):
                     plan, mismatched, doctor_report(), fingerprints
                 )
 
+    def test_sequence_manifest_records_a_text_narration_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "a.mp4"
+            second = root / "b.mp4"
+            output = root / "timeline.mp4"
+            for path in (first, second, output):
+                path.write_bytes(path.stem.encode("utf-8"))
+            plan = EditPlan(
+                "plan-tts",
+                "brief-dark",
+                (str(first), str(second)),
+                str(output),
+                (
+                    EditOperation("clip-1", "sequence_clip", str(first), 0, 1),
+                    EditOperation("clip-2", "sequence_clip", str(second), 0, 1),
+                    EditOperation(
+                        "voice-1",
+                        "narration",
+                        parameters={"duration_policy": "match_timeline", "text": "Dark script."},
+                    ),
+                ),
+            )
+            digest = hashlib.sha256(b"Dark script.").hexdigest()
+            artifact = SequenceArtifact(
+                (str(first.resolve()), str(second.resolve())),
+                str(output.resolve()),
+                2.0,
+                output.stat().st_size,
+                narration_text_sha256=digest,
+            )
+            report = SequenceWorkflowReport(
+                plan.plan_id,
+                ("clip-1", "clip-2", "voice-1"),
+                PreflightReport(plan.plan_id, True, (), ()),
+                artifact,
+                SequenceValidationReport(True, artifact, 2.0, 0.15, (), None),
+            )
+            fingerprints = tuple(fingerprint_file(source) for source in plan.sources)
+
+            manifest = build_sequence_render_manifest(plan, report, doctor_report(), fingerprints)
+            self.assertEqual(manifest.workflow, "video-sequence")
+
+            wrong_artifact = SequenceArtifact(
+                artifact.source_paths,
+                artifact.output_path,
+                2.0,
+                artifact.file_size_bytes,
+                narration_text_sha256=hashlib.sha256(b"other").hexdigest(),
+            )
+            wrong = SequenceWorkflowReport(
+                plan.plan_id,
+                report.operation_ids,
+                report.preflight,
+                wrong_artifact,
+                SequenceValidationReport(True, wrong_artifact, 2.0, 0.15, (), None),
+            )
+            with self.assertRaisesRegex(ManifestError, "narration text does not match"):
+                build_sequence_render_manifest(plan, wrong, doctor_report(), fingerprints)
+
     def test_fingerprints_files_and_builds_round_trippable_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             plan, report = execution(directory)

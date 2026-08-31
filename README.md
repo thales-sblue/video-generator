@@ -156,17 +156,19 @@ subtitles e não podem ultrapassar o vídeo. O texto é escrito em um SRT
 temporário, queimado localmente via FFmpeg/libass e removido após a execução; ele
 não é interpolado no filter graph.
 
-Opcionalmente, a última operação pode ser uma `narration` com source local e
-`{"duration_policy": "match_timeline"}`. Ela começa em zero e deve ter duração
-igual à soma dos clipes dentro da tolerância configurada (150 ms por padrão);
-diferenças maiores são recusadas antes do render. Dentro da tolerância, a faixa
-é normalizada para estéreo/48 kHz, preenchida ou cortada exatamente até a
-timeline e codificada como AAC. Sem essa operação, o comportamento silencioso
-anterior só é preservado quando também não há música. O MP4 final exige
-exatamente um stream H.264 e, quando há áudio planejado, exatamente um stream
-AAC. Preflight, fingerprints, validação e
-`RenderManifest` fazem parte da mesma execução; `editorial_review` permanece
-`not_performed`, inclusive quando captions foram queimadas.
+Opcionalmente, a última operação pode ser uma `narration` com
+`duration_policy=match_timeline`. Com `source` local, ela começa em zero e deve
+ter duração igual à soma dos clipes dentro da tolerância (150 ms por padrão);
+diferenças maiores são recusadas antes do render. Sem `source`, `parameters`
+traz `text` (obrigatório) e opcionalmente `voice`/`speed`/`lang`: o workflow
+sintetiza via Kokoro para um WAV temporário, recusa uma narração mais longa que
+a timeline, descarta o WAV e grava o SHA-256 do texto no `RenderManifest`.
+Em ambos os casos a faixa é normalizada para estéreo/48 kHz, preenchida ou
+cortada até a timeline e codificada como AAC. Sem essa operação, o comportamento
+silencioso anterior só é preservado quando também não há música. O MP4 final
+exige exatamente um stream H.264 e, quando há áudio planejado, exatamente um
+stream AAC. Preflight, fingerprints, validação e `RenderManifest` fazem parte da
+mesma execução; `editorial_review` permanece `not_performed`.
 
 Entre captions e narração, uma operação opcional `music` declara um source local
 distinto e `{"duration_policy":"loop_to_timeline","gain_db":N}`. O ganho deve

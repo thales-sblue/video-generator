@@ -196,16 +196,25 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
         index += 1
     if index < len(operations) and operations[index].kind == "narration":
         narration = operations[index]
-        if (
-            narration.source is None
-            or narration.start_seconds is not None
-            or narration.end_seconds is not None
-            or dict(narration.parameters) != {"duration_policy": "match_timeline"}
-        ):
+        params = dict(narration.parameters)
+        if narration.start_seconds is not None or narration.end_seconds is not None:
             return False
-        if music_source is not None and _normalized(narration.source) == _normalized(music_source):
+        if params.get("duration_policy") != "match_timeline":
             return False
-        used_sources.add(narration.source)
+        if narration.source is not None:
+            if set(params) != {"duration_policy"}:
+                return False
+            if music_source is not None and _normalized(narration.source) == _normalized(
+                music_source
+            ):
+                return False
+            used_sources.add(narration.source)
+        else:
+            if set(params) - {"duration_policy", "text", "voice", "speed", "lang"}:
+                return False
+            text = params.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return False
         index += 1
     return (
         index == len(operations)

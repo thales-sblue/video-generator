@@ -1,9 +1,19 @@
 import tempfile
 import unittest
+from hashlib import sha256
 from pathlib import Path
+from unittest.mock import patch
 
-from video_generator.adapters import FFmpegError, MediaProbe, SequenceArtifact, StreamProbe
+from video_generator.adapters import (
+    FFmpegError,
+    KokoroError,
+    MediaProbe,
+    NarrationArtifact,
+    SequenceArtifact,
+    StreamProbe,
+)
 from video_generator.domain import EditOperation, EditPlan
+from video_generator.workflows import sequence as sequence_module
 from video_generator.validation import (
     PreflightReport,
     SequenceValidationIssue,
@@ -245,6 +255,53 @@ def caption_file_preflight(plan):
         (StreamProbe(0, "subtitle", "subrip", None, None, None, None, None),),
     )
     return PreflightReport(plan.plan_id, True, (), (*video, subtitles))
+
+
+def narrated_text_plan(*, params=None):
+    silent = sequence_plan()
+    return EditPlan(
+        silent.plan_id,
+        silent.brief_id,
+        silent.sources,
+        silent.output_path,
+        (
+            *silent.operations,
+            EditOperation(
+                "voice-1",
+                "narration",
+                parameters=params
+                if params is not None
+                else {"duration_policy": "match_timeline", "text": "Hello dark world."},
+            ),
+        ),
+    )
+
+
+def _fake_synth(text, target, *, voice, speed, lang, timeout_seconds):
+    return NarrationArtifact(
+        output_path=str(target),
+        voice=voice,
+        speed=speed,
+        lang=lang,
+        sample_rate_hz=48000,
+        channels=2,
+        text_sha256=sha256(text.encode("utf-8")).hexdigest(),
+        file_size_bytes=2048,
+    )
+
+
+def _probe_of(seconds):
+    def _probe(path):
+        return MediaProbe(
+            str(path),
+            2048,
+            "wav",
+            seconds,
+            None,
+            (StreamProbe(0, "audio", "pcm_s16le", seconds, None, None, 48000, 2),),
+        )
+
+    return _probe
 
 
 class SequenceWorkflowTests(unittest.TestCase):
@@ -875,6 +932,84 @@ class SequenceWorkflowTests(unittest.TestCase):
                 preflight=lambda value: valid_preflight(value),
                 compose=lambda *_args, **_kwargs: bad_artifact,
             )
+
+    def test_synthesises_narration_from_text_and_records_only_the_digest(self):
+        plan = narrated_text_plan()
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen["narration_path"] = kwargs.get("narration_path")
+            return SequenceArtifact(
+                tuple(clip.source_path for clip in clips),
+                plan.output_path,
+                3.5,
+                500,
+                narration_source_path=kwargs.get("narration_path"),
+            )
+
+        with patch.object(sequence_module, "synthesize_narration", side_effect=_fake_synth), \
+                patch.object(sequence_module, "probe_media", side_effect=_probe_of(3.2)):
+            report = run_sequence_workflow(
+                plan,
+                preflight=valid_preflight,
+                compose=compose,
+                validate=lambda artifact, **_k: SequenceValidationReport(
+                    True, artifact, 3.5, 0.15, (), None
+                ),
+            )
+
+        self.assertTrue(report.valid)
+        self.assertIsNotNone(seen["narration_path"])
+        # the transient synthesis path is dropped; the text digest is kept
+        self.assertIsNone(report.artifact.narration_source_path)
+        self.assertEqual(
+            report.artifact.narration_text_sha256,
+            sha256(b"Hello dark world.").hexdigest(),
+        )
+        # the scratch directory next to the output is removed
+        self.assertEqual(
+            list(Path(plan.output_path).parent.glob(".timeline-tts-*")), []
+        )
+
+    def test_rejects_missing_or_unknown_narration_text_parameters(self):
+        for params, message in (
+            ({"duration_policy": "match_timeline"}, "non-empty string"),
+            ({"duration_policy": "match_timeline", "text": "   "}, "non-empty string"),
+            (
+                {"duration_policy": "match_timeline", "text": "hi", "pitch": 3},
+                "text, voice, speed and lang",
+            ),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(SequenceWorkflowError, message):
+                    run_sequence_workflow(
+                        narrated_text_plan(params=params),
+                        preflight=lambda _: self.fail("must not preflight"),
+                        compose=lambda *_a, **_k: self.fail("must not compose"),
+                    )
+
+    def test_rejects_narration_longer_than_the_timeline(self):
+        with patch.object(sequence_module, "synthesize_narration", side_effect=_fake_synth), \
+                patch.object(sequence_module, "probe_media", side_effect=_probe_of(9.0)):
+            with self.assertRaisesRegex(SequenceWorkflowError, "shorten the narration text"):
+                run_sequence_workflow(
+                    narrated_text_plan(),
+                    preflight=valid_preflight,
+                    compose=lambda *_a, **_k: self.fail("must not compose"),
+                )
+
+    def test_wraps_a_narration_synthesis_failure(self):
+        with patch.object(
+            sequence_module,
+            "synthesize_narration",
+            side_effect=KokoroError("Kokoro model files not found under .local-tools/kokoro/"),
+        ):
+            with self.assertRaisesRegex(SequenceWorkflowError, "narration synthesis failed"):
+                run_sequence_workflow(
+                    narrated_text_plan(),
+                    preflight=valid_preflight,
+                    compose=lambda *_a, **_k: self.fail("must not compose"),
+                )
 
     def test_rejects_inconsistent_narration_artifact_metadata(self):
         plan = narrated_plan()

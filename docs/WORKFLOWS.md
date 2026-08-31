@@ -76,16 +76,25 @@ um SRT temporário, queima captions brancas em uma caixa escura via FFmpeg/libas
 e sempre remove o arquivo intermediário. O texto nunca compõe o filter graph,
 evitando que conteúdo editorial seja interpretado como sintaxe do FFmpeg.
 
-Uma operação final opcional
-`narration`, sem tempos e com
-`parameters={"duration_policy":"match_timeline"}`, adiciona um source de áudio
-local a partir de `t=0`. Sua duração deve corresponder à soma dos trechos dentro
-da tolerância (150 ms por padrão); diferença maior falha antes da composição.
-Dentro da tolerância, a narração é normalizada para estéreo/48 kHz, recebe
-silêncio final ou trim até a duração visual e é codificada em AAC. A validação
-exige exatamente um stream H.264 e, quando há áudio planejado, exatamente um
-stream AAC. Sem narração nem música, a timeline silenciosa anterior continua
-suportada.
+Uma operação final opcional `narration`, sem tempos e com
+`duration_policy=match_timeline`, adiciona voz a partir de `t=0`. Duas formas:
+
+- **arquivo:** `source` aponta um áudio local; `parameters` só tem
+  `duration_policy`. A duração deve bater com a soma dos trechos dentro da
+  tolerância (150 ms por padrão); diferença maior falha antes da composição.
+- **texto:** sem `source`; `parameters` adiciona `text` (obrigatório) e,
+  opcionalmente, `voice`, `speed`, `lang`. O workflow chama
+  `synthesize_narration` (Kokoro opcional) para um WAV temporário, recusa uma
+  narração mais longa que a timeline e descarta o WAV depois; o
+  `RenderManifest` guarda o SHA-256 do texto (voz/velocidade/idioma resolvidos
+  no artifact), sem persistir o áudio intermediário. Kokoro ausente falha só
+  esta operação.
+
+Em ambos os casos a narração é normalizada para estéreo/48 kHz, recebe silêncio
+final ou trim até a duração visual e é codificada em AAC. A validação exige
+exatamente um stream H.264 e, quando há áudio planejado, exatamente um stream
+AAC. Sem narração nem música, a timeline silenciosa anterior continua suportada.
+Sucesso técnico não é revisão auditiva.
 
 Antes da narração, uma operação opcional `music` declara um source de áudio
 local, sem tempos próprios, e
@@ -115,7 +124,6 @@ explícito.
 
 Capacidades que ainda faltam para `dark-video` v1:
 
-- gerar narração local a partir de texto fornecido;
 - derivar captions do timing da narração, não de timestamps manuais;
 - executar a primeira produção real completa e registrar sua revisão humana.
 
@@ -126,28 +134,22 @@ Já disponível:
   letter-boxed no canvas dos clipes (sem movimento/Ken Burns nesta v1);
 - `captions` aceita um `.srt`/`.vtt` local como source, além dos itens inline —
   precursor de "captions a partir da narração", que passará a emitir esse arquivo.
-- Kokoro (TTS local, opcional): extra op-in `tts`, resolução fail-closed dos
-  assets em `.local-tools/kokoro/` (ou `KOKORO_HOME`), check no `doctor`, o
-  adapter `synthesize_narration` e a CLI de baixo nível `narrate`
-  (texto -> WAV 48 kHz/estéreo, com voz/velocidade/idioma/SHA-256 do texto no
-  artifact). Sem os assets/pacote nada disso impede contratos ou diagnóstico.
-  **Pendente:** revisão auditiva real com evidência humana.
+- narração local a partir de texto: Kokoro opcional (extra op-in `tts`, assets
+  fail-closed em `.local-tools/kokoro/`, check no `doctor`), o adapter
+  `synthesize_narration`, a CLI de baixo nível `narrate` e o **modo texto da
+  operação `narration`** no `video-sequence` (`text` + `voice`/`speed`/`lang`
+  opcionais; WAV temporário, SHA-256 do texto no `RenderManifest`). Kokoro
+  ausente falha só essa capacidade. **Pendente:** revisão auditiva real.
 
 ### Ordem recomendada dos próximos incrementos
 
 Sequência sugerida (cada item ainda deve passar pela pergunta do menor
 incremento; nada aqui autoriza pular testes ou camadas):
 
-1. **Wire da narração de texto no `EditPlan`** — a operação `narration` do
-   `video-sequence` ganha um modo texto (`narration_text` + voz/velocidade/idioma
-   persistidos) que chama `synthesize_narration` e alimenta o WAV resultante na
-   composição já existente, com fingerprint e `RenderManifest` cobrindo o
-   determinismo (SHA-256 do texto + versões). Ausência do modelo degrada só essa
-   capacidade.
-2. **Captions a partir da narração** — gerar um `.srt` a partir do alinhamento do
+1. **Captions a partir da narração** — gerar um `.srt` a partir do alinhamento do
    TTS (ou de Whisper local) e alimentá-lo pela operação `captions` já existente,
    respeitando `VIDEO_LANGUAGE.md` (timing por unidades de significado).
-3. **Primeiro adapter HyperFrames** — provar `EditPlan -> cena HTML -> MP4` com um
+2. **Primeiro adapter HyperFrames** — provar `EditPlan -> cena HTML -> MP4` com um
    title card / camada de captions. Avaliar se movimento (Ken Burns), fit
    configurável e composição visual rica saem mais baratos por HTML do que por
    `zoompan`/`tpad` no FFmpeg; se sim, HyperFrames passa a ser o caminho de
@@ -155,7 +157,7 @@ incremento; nada aqui autoriza pular testes ou camadas):
    letterbox estático) para o caso simples. HyperFrames exige
    Node e Chrome headless e deve receber um lock de proveniência análogo a
    `config/ffmpeg-lock.json`.
-4. **Primeira produção real completa** com registro de revisão humana — fecha
+3. **Primeira produção real completa** com registro de revisão humana — fecha
    `dark-video` v1.
 
 Pesquisa, roteiro, storyboard e assets automáticos vêm depois do primeiro vídeo

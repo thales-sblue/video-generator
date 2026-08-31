@@ -155,6 +155,18 @@ def build_sequence_render_manifest(
     expected_narration = narration_sources[0] if len(narration_sources) == 1 else None
     if artifact_narration != expected_narration:
         raise ManifestError("workflow artifact narration does not match the plan")
+    narration_text_ops = tuple(
+        operation
+        for operation in plan.operations
+        if operation.kind == "narration" and operation.source is None
+    )
+    expected_text_sha = None
+    if len(narration_text_ops) == 1:
+        expected_text_sha = hashlib.sha256(
+            str(narration_text_ops[0].parameters.get("text", "")).encode("utf-8")
+        ).hexdigest()
+    if report.artifact.narration_text_sha256 != expected_text_sha:
+        raise ManifestError("workflow artifact narration text does not match the plan")
     captions = tuple(
         operation for operation in plan.operations if operation.kind == "captions"
     )

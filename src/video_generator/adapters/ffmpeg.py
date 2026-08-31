@@ -68,6 +68,7 @@ class SequenceArtifact:
     music_source_path: str | None = None
     music_gain_db: float | None = None
     image_count: int = 0
+    narration_text_sha256: str | None = None
 
 
 IMAGE_TIMELINE_FPS = 30
