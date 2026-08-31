@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from functools import lru_cache
 from pathlib import Path
@@ -14,6 +15,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCK_PATH = PROJECT_ROOT / "config" / "ffmpeg-lock.json"
 LOCAL_ROOT = PROJECT_ROOT / ".local-tools" / "ffmpeg"
 SUPPORTED_TOOLS = {"ffmpeg", "ffprobe"}
+
+KOKORO_LOCAL_ROOT = PROJECT_ROOT / ".local-tools" / "kokoro"
+KOKORO_ASSET_NAMES = ("kokoro-v1.0.onnx", "voices-v1.0.bin")
 
 
 class ToolResolutionError(RuntimeError):
@@ -68,6 +72,36 @@ def _validated_local_bin() -> Path | None:
     except (OSError, KeyError, TypeError) as exc:
         raise ToolResolutionError("cannot verify the FFmpeg installation") from exc
     return bin_path
+
+
+def kokoro_assets_root() -> Path:
+    """Return the directory that should hold the local Kokoro model files."""
+
+    override = os.environ.get("KOKORO_HOME")
+    return Path(override).expanduser() if override else KOKORO_LOCAL_ROOT
+
+
+def resolve_kokoro_assets() -> tuple[str, str] | None:
+    """Return ``(model_path, voices_path)`` for the local Kokoro ONNX model.
+
+    Returns ``None`` when the assets directory does not exist at all. Fails
+    closed with :class:`ToolResolutionError` when the directory exists but a
+    required file is missing, empty, or not a regular file, so a partial or
+    tampered install never silently degrades a narration render.
+    """
+
+    root = kokoro_assets_root()
+    if not root.exists():
+        return None
+    resolved: list[str] = []
+    for name in KOKORO_ASSET_NAMES:
+        candidate = root / name
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ToolResolutionError(f"Kokoro asset is missing or not a regular file: {name}")
+        if candidate.stat().st_size == 0:
+            raise ToolResolutionError(f"Kokoro asset is empty: {name}")
+        resolved.append(str(candidate.resolve()))
+    return resolved[0], resolved[1]
 
 
 def resolve_media_tool(

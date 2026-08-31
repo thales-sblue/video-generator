@@ -126,22 +126,27 @@ Já disponível:
   letter-boxed no canvas dos clipes (sem movimento/Ken Burns nesta v1);
 - `captions` aceita um `.srt`/`.vtt` local como source, além dos itens inline —
   precursor de "captions a partir da narração", que passará a emitir esse arquivo.
+- o ambiente já conhece o Kokoro: extra op-in `tts` (`kokoro-onnx`, `soundfile`),
+  resolução fail-closed dos assets em `.local-tools/kokoro/` (ou `KOKORO_HOME`) e
+  um check no `doctor`. Sem os assets/pacote, `doctor` reporta `missing` e nada
+  mais é afetado.
 
 ### Ordem recomendada dos próximos incrementos
 
 Sequência sugerida (cada item ainda deve passar pela pergunta do menor
 incremento; nada aqui autoriza pular testes ou camadas):
 
-1. **Spike do Kokoro no Windows** — validar TTS local (ONNX/CPU, sem torch) antes
-   de comprometer contrato. Kokoro-82M é Apache 2.0 e roda em CPU.
-2. **Adapter Kokoro + narração a partir de texto** — `VideoBrief`/`EditPlan`
-   ganham o texto da narração e voz/seed persistidos; o adapter produz um WAV
-   local que alimenta a operação `narration` já existente. Ausência do modelo
-   degrada só essa capacidade, nunca contratos ou diagnóstico.
-3. **Captions a partir da narração** — gerar um `.srt` a partir do alinhamento do
+1. **Adapter Kokoro + narração a partir de texto** — `VideoBrief`/`EditPlan`
+   ganham o texto da narração e voz/seed persistidos; o adapter usa a resolução
+   de assets já existente, sintetiza localmente e normaliza para o WAV
+   48 kHz/estéreo que a operação `narration` já consome. Ausência do modelo
+   degrada só essa capacidade, nunca contratos ou diagnóstico. Fixar as versões
+   do extra `tts` quando o adapter entrar. Revisão auditiva real fica pendente
+   até haver evidência.
+2. **Captions a partir da narração** — gerar um `.srt` a partir do alinhamento do
    TTS (ou de Whisper local) e alimentá-lo pela operação `captions` já existente,
    respeitando `VIDEO_LANGUAGE.md` (timing por unidades de significado).
-4. **Primeiro adapter HyperFrames** — provar `EditPlan -> cena HTML -> MP4` com um
+3. **Primeiro adapter HyperFrames** — provar `EditPlan -> cena HTML -> MP4` com um
    title card / camada de captions. Avaliar se movimento (Ken Burns), fit
    configurável e composição visual rica saem mais baratos por HTML do que por
    `zoompan`/`tpad` no FFmpeg; se sim, HyperFrames passa a ser o caminho de
@@ -149,7 +154,7 @@ incremento; nada aqui autoriza pular testes ou camadas):
    letterbox estático) para o caso simples. HyperFrames exige
    Node e Chrome headless e deve receber um lock de proveniência análogo a
    `config/ffmpeg-lock.json`.
-5. **Primeira produção real completa** com registro de revisão humana — fecha
+4. **Primeira produção real completa** com registro de revisão humana — fecha
    `dark-video` v1.
 
 Pesquisa, roteiro, storyboard e assets automáticos vêm depois do primeiro vídeo

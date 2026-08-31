@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import platform
@@ -12,7 +13,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from video_generator.config import AppConfig
-from video_generator.tooling import ToolResolutionError, resolve_media_tool
+from video_generator.tooling import (
+    KOKORO_ASSET_NAMES,
+    ToolResolutionError,
+    kokoro_assets_root,
+    resolve_kokoro_assets,
+    resolve_media_tool,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +155,39 @@ def _hyperframes_status(node_status: ToolStatus) -> ToolStatus:
     )
 
 
+def _kokoro_status() -> ToolStatus:
+    """Report readiness of the optional local Kokoro TTS (model files + package)."""
+
+    package_ready = importlib.util.find_spec("kokoro_onnx") is not None
+    try:
+        assets = resolve_kokoro_assets()
+    except ToolResolutionError as exc:
+        return ToolStatus(name="Kokoro", available=False, note=f"local model rejected: {exc}")
+    if assets is None:
+        return ToolStatus(
+            name="Kokoro",
+            available=False,
+            note=(
+                f"optional TTS not set up; add {' and '.join(KOKORO_ASSET_NAMES)} under "
+                f"{kokoro_assets_root()}"
+                + ("" if package_ready else " and install the 'tts' extra")
+            ),
+        )
+    if not package_ready:
+        return ToolStatus(
+            name="Kokoro",
+            available=False,
+            path=str(Path(assets[0]).parent),
+            note="model files present; install the 'tts' extra (kokoro-onnx, soundfile)",
+        )
+    return ToolStatus(
+        name="Kokoro",
+        available=True,
+        path=str(Path(assets[0]).parent),
+        note="local ONNX model and kokoro-onnx package detected",
+    )
+
+
 def run_doctor(config: AppConfig) -> DoctorReport:
     node = _command_status("Node", "node", ("--version",))
     tools = (
@@ -157,6 +197,7 @@ def run_doctor(config: AppConfig) -> DoctorReport:
         _media_tool_status("ffprobe", "ffprobe"),
         _command_status("Git", "git", ("--version",)),
         _hyperframes_status(node),
+        _kokoro_status(),
     )
     return DoctorReport(
         operating_system=platform.system(),

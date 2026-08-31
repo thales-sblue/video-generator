@@ -10,6 +10,13 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+# Opt-in local text-to-speech. Not required for contracts, planning, inspection
+# or diagnosis; `doctor` reports Kokoro as missing until this extra and the model
+# files under .local-tools/kokoro/ are present. Versions are pinned when the
+# narration adapter that uses them lands.
+tts = ["kokoro-onnx", "soundfile"]
+
 [project.scripts]
 video-generator = "video_generator.cli:main"
 

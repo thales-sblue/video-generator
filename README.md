@@ -33,9 +33,15 @@ implementado.
 
 - Python 3.11 ou superior;
 - Git para desenvolvimento;
-- Node, FFmpeg, ffprobe e HyperFrames são detectados pelo `doctor`; FFmpeg é
-  necessário apenas para operações de mídia e ffprobe para inspeção, preflight e
-  validação técnica.
+- Node, FFmpeg, ffprobe, HyperFrames e Kokoro são detectados pelo `doctor`;
+  FFmpeg é necessário apenas para operações de mídia e ffprobe para inspeção,
+  preflight e validação técnica.
+
+Nenhuma dependência Python de runtime é necessária. A narração local a partir de
+texto (futura) é opt-in: `pip install -e .[tts]` instala `kokoro-onnx` e
+`soundfile`, e os arquivos do modelo (`kokoro-v1.0.onnx`, `voices-v1.0.bin`) vão
+em `.local-tools/kokoro/` (ou no diretório de `KOKORO_HOME`). Enquanto faltarem,
+`doctor` reporta Kokoro como `missing` e nada mais é afetado.
 
 O Windows x64 deste ambiente usa o build `n8.1.2-50-g1a748fe2cd-20260829` do
 ramo estável 8.1, LGPL/shared, instalado somente em `.local-tools/` e ignorado
@@ -47,8 +53,6 @@ de binários Windows indicados pela página oficial de
 hashes/tamanhos de todos os executáveis e DLLs. O projeto prefere essa instalação
 local, confere integralmente o lock uma vez por processo e falha fechado diante
 de arquivo ausente, adicional ou alterado; nada é adicionado ao `PATH` global.
-
-Nenhuma dependência Python de runtime é necessária.
 
 ## Uso local
 

@@ -80,5 +80,41 @@ class LocalToolResolutionTests(unittest.TestCase):
         self.assertEqual(resolved, "PATH/ffmpeg")
 
 
+class KokoroAssetResolutionTests(unittest.TestCase):
+    def test_returns_none_when_the_assets_directory_is_absent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(tooling, "KOKORO_LOCAL_ROOT", Path(directory) / "kokoro"):
+                self.assertIsNone(tooling.resolve_kokoro_assets())
+
+    def test_resolves_both_files_and_fails_closed_on_a_partial_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "kokoro"
+            root.mkdir()
+            model = root / "kokoro-v1.0.onnx"
+            voices = root / "voices-v1.0.bin"
+            model.write_bytes(b"onnx-bytes")
+            with patch.object(tooling, "KOKORO_LOCAL_ROOT", root):
+                with self.assertRaisesRegex(tooling.ToolResolutionError, "voices-v1.0.bin"):
+                    tooling.resolve_kokoro_assets()
+                voices.write_bytes(b"")
+                with self.assertRaisesRegex(tooling.ToolResolutionError, "empty"):
+                    tooling.resolve_kokoro_assets()
+                voices.write_bytes(b"voice-bytes")
+                self.assertEqual(
+                    tooling.resolve_kokoro_assets(),
+                    (str(model.resolve()), str(voices.resolve())),
+                )
+
+    def test_honours_the_kokoro_home_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "elsewhere"
+            root.mkdir()
+            for name in tooling.KOKORO_ASSET_NAMES:
+                (root / name).write_bytes(b"x")
+            with patch.dict("os.environ", {"KOKORO_HOME": str(root)}, clear=False):
+                self.assertEqual(tooling.kokoro_assets_root(), root)
+                self.assertIsNotNone(tooling.resolve_kokoro_assets())
+
+
 if __name__ == "__main__":
     unittest.main()

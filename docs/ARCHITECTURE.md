@@ -99,6 +99,13 @@ de EXEs/DLLs, tamanhos e hashes SHA-256 com o lock versionado em
 recusada; somente quando ela não existe o resolver consulta o `PATH`. Assim, uma
 dependência local corrompida ou adulterada não vira fallback silencioso.
 
+O Kokoro (TTS local, futuro) segue o mesmo princípio: `tooling.resolve_kokoro_assets`
+procura `kokoro-v1.0.onnx` e `voices-v1.0.bin` em `.local-tools/kokoro/` (ou
+`KOKORO_HOME`), devolve `None` quando o diretório inexiste e falha fechado quando
+um arquivo está ausente, vazio ou não é regular. O `doctor` combina isso com a
+presença do pacote `kokoro-onnx` (extra op-in `tts`) e reporta o estado sem
+instalar nada.
+
 ComfyUI é uma possibilidade futura opcional e não pertence ao MVP. Dependências
 opcionais ausentes devem degradar capacidades específicas, não o núcleo.
 

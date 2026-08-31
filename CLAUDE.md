@@ -40,8 +40,10 @@ Microsoft Store no `PATH` não serve.
   contra `config/ffmpeg-lock.json`. É ignorada pelo Git — se `.local-tools/`
   sumir, copie de outra checkout ou rebaixe conforme `README.md`. Nada é
   adicionado ao `PATH` global.
-- Node e HyperFrames são opcionais e hoje ausentes; sua falta degrada só
-  capacidades específicas, nunca contratos/planejamento/diagnóstico.
+- Node, HyperFrames e Kokoro (TTS local) são opcionais e hoje ausentes; sua
+  falta degrada só capacidades específicas, nunca contratos/planejamento/
+  diagnóstico. Kokoro: extra op-in `pip install -e .[tts]` + arquivos do modelo
+  em `.local-tools/kokoro/` (ou `KOKORO_HOME`); `doctor` reporta o estado.
 
 ## Comandos essenciais
 
