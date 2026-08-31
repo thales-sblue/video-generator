@@ -59,7 +59,8 @@ antes de escrever mídia.
 `video-sequence` compõe ao menos dois segmentos ordenados no `EditPlan` — com ao
 menos um `sequence_clip` (trecho de vídeo) e, opcionalmente, `image_clip`
 (imagem local com `duration_seconds`). Pode queimar uma faixa `captions` — cues
-inline ou de um `.srt`/`.vtt` local —, repetir uma faixa `music` com ganho
+inline, de um `.srt`/`.vtt` local, ou derivados do texto da narração
+(`from=narration`, timing aproximado) —, repetir uma faixa `music` com ganho
 explícito e receber uma operação final `narration` (de um áudio local ou
 sintetizada de `text` via Kokoro, com o SHA-256 do texto no manifest). O
 workflow executa preflight, confere dimensões, tempos, streams e políticas

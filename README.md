@@ -149,8 +149,11 @@ qualquer tamanho são escaladas e letter-boxed nele e, havendo qualquer imagem, 
 segmentos são normalizados para 30 fps. Após os segmentos, uma
 operação opcional `captions` pode persistir uma faixa com estilo fixo
 `bottom_box`. Os cues vêm de itens inline (texto, início e fim relativos à
-timeline) ou de um `.srt`/`.vtt` local apontado por `source` e declarado entre os
-sources do plano. Em ambos os casos os cues devem estar ordenados, não podem se
+timeline), de um `.srt`/`.vtt` local apontado por `source` e declarado entre os
+sources, ou de `{"style":"bottom_box","from":"narration"}` — que divide o texto
+da narração (modo texto) em frases e as distribui sobre a duração real da
+narração por peso de caracteres (timing aproximado; alinhamento real por Whisper
+é futuro). Em todos os casos os cues devem estar ordenados, não podem se
 sobrepor, duram ao menos 1 ms, usam no máximo 160 caracteres, recusam markup de
 subtitles e não podem ultrapassar o vídeo. O texto é escrito em um SRT
 temporário, queimado localmente via FFmpeg/libass e removido após a execução; ele

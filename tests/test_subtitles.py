@@ -1,6 +1,45 @@
 import unittest
 
-from video_generator.subtitles import SubtitleParseError, parse_subtitle_cues
+from video_generator.subtitles import (
+    SubtitleParseError,
+    captions_from_text,
+    parse_subtitle_cues,
+)
+
+
+class CaptionsFromTextTests(unittest.TestCase):
+    def test_distributes_sentences_over_the_duration_by_length(self):
+        cues = captions_from_text(
+            "Hello dark world. This is a longer second sentence with more words. End.",
+            10.0,
+        )
+        self.assertGreaterEqual(len(cues), 2)
+        self.assertEqual(cues[0][1], 0.0)
+        self.assertAlmostEqual(cues[-1][2], 10.0, places=6)
+        # ordered, non-overlapping, non-zero
+        prev = 0.0
+        for text, start, end in cues:
+            self.assertGreaterEqual(start, prev)
+            self.assertGreater(end, start)
+            self.assertLessEqual(len(text), 160)
+            prev = end
+
+    def test_wraps_a_sentence_longer_than_the_cue_limit(self):
+        long_sentence = " ".join(["word"] * 60) + "."  # ~305 chars, no enders
+        cues = captions_from_text(long_sentence, 12.0)
+        self.assertGreater(len(cues), 1)
+        self.assertTrue(all(len(text) <= 160 for text, _, _ in cues))
+
+    def test_rejects_empty_text_bad_duration_and_overpacking(self):
+        with self.assertRaisesRegex(SubtitleParseError, "no caption-able content"):
+            captions_from_text("   ", 5.0)
+        with self.assertRaisesRegex(SubtitleParseError, "duration must be positive"):
+            captions_from_text("Hi there.", 0)
+        crowded = " ".join(
+            ["This sentence is clearly longer than forty characters."] * 5
+        )
+        with self.assertRaisesRegex(SubtitleParseError, "more cues than its duration"):
+            captions_from_text(crowded, 0.002)
 
 
 class SubtitleParsingTests(unittest.TestCase):

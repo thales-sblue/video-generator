@@ -61,16 +61,22 @@ por `scale`/`pad` e, quando há qualquer imagem na timeline, todos os segmentos
 são normalizados para 30 fps e `yuv420p` para manter o concat determinístico. O
 áudio original dos clipes não entra na timeline. Depois dos segmentos, uma
 operação opcional `captions` representa uma faixa inteira. Os cues vêm de uma de
-duas formas:
+três formas:
 
 - **inline:** sem source, `parameters` com `style=bottom_box` e de 1 a 500 itens
   com texto e tempos relativos à timeline;
 - **arquivo:** `source` aponta um `.srt` ou `.vtt` local (declarado como source
   do plano, portanto com fingerprint no `RenderManifest`) e `parameters` contém
   apenas `style=bottom_box`. O arquivo é lido como UTF-8 e convertido em cues;
-  tags de estilo e posicionamento (`<`, `>`, `{`, `}`) são recusadas.
+  tags de estilo e posicionamento (`<`, `>`, `{`, `}`) são recusadas;
+- **da narração:** sem source, `parameters={"style":"bottom_box","from":"narration"}`.
+  Exige uma operação `narration` em modo texto no mesmo plano. Depois da síntese,
+  o texto é dividido em frases e distribuído sobre a duração real da narração por
+  peso de caracteres. O timing é **aproximado** (segue o comprimento do texto,
+  não a fala medida); alinhamento real por Whisper é incremento futuro. O
+  `RenderManifest` já cobre isso pelo SHA-256 do texto da narração.
 
-Em ambos os casos cada texto tem até 160 caracteres; cues são ordenados, não
+Em todos os casos cada texto tem até 160 caracteres; cues são ordenados, não
 sobrepostos, duram ao menos 1 ms e são limitados à duração visual. O adapter cria
 um SRT temporário, queima captions brancas em uma caixa escura via FFmpeg/libass
 e sempre remove o arquivo intermediário. O texto nunca compõe o filter graph,
@@ -124,7 +130,6 @@ explícito.
 
 Capacidades que ainda faltam para `dark-video` v1:
 
-- derivar captions do timing da narração, não de timestamps manuais;
 - executar a primeira produção real completa e registrar sua revisão humana.
 
 Já disponível:
@@ -132,8 +137,9 @@ Já disponível:
 - `image_clip` insere imagens locais com duração explícita na timeline de
   `video-sequence`; qualquer dimensão é aceita e a imagem é escalada e
   letter-boxed no canvas dos clipes (sem movimento/Ken Burns nesta v1);
-- `captions` aceita um `.srt`/`.vtt` local como source, além dos itens inline —
-  precursor de "captions a partir da narração", que passará a emitir esse arquivo.
+- `captions` aceita itens inline, um `.srt`/`.vtt` local como source, ou
+  `from=narration` (deriva cues do texto da narração por peso de caracteres,
+  timing aproximado);
 - narração local a partir de texto: Kokoro opcional (extra op-in `tts`, assets
   fail-closed em `.local-tools/kokoro/`, check no `doctor`), o adapter
   `synthesize_narration`, a CLI de baixo nível `narrate` e o **modo texto da
@@ -146,10 +152,14 @@ Já disponível:
 Sequência sugerida (cada item ainda deve passar pela pergunta do menor
 incremento; nada aqui autoriza pular testes ou camadas):
 
-1. **Captions a partir da narração** — gerar um `.srt` a partir do alinhamento do
-   TTS (ou de Whisper local) e alimentá-lo pela operação `captions` já existente,
-   respeitando `VIDEO_LANGUAGE.md` (timing por unidades de significado).
-2. **Primeiro adapter HyperFrames** — provar `EditPlan -> cena HTML -> MP4` com um
+1. **Primeira produção real completa** — script -> narração (`narration` texto) ->
+   timeline (clipes + imagens) -> captions (`from=narration`) -> música -> MP4,
+   com assets locais reais, e registrar a revisão humana visual/auditiva. É o
+   marco que fecha `dark-video` v1; exige o modelo Kokoro instalado.
+2. **Captions com alinhamento real (Whisper local)** — melhorar o timing de
+   `from=narration` de "peso de caracteres" para alinhamento por fala, seguindo o
+   padrão do Kokoro (spike -> adapter -> wire). Qualidade, não pré-requisito de v1.
+3. **Primeiro adapter HyperFrames** — provar `EditPlan -> cena HTML -> MP4` com um
    title card / camada de captions. Avaliar se movimento (Ken Burns), fit
    configurável e composição visual rica saem mais baratos por HTML do que por
    `zoompan`/`tpad` no FFmpeg; se sim, HyperFrames passa a ser o caminho de
@@ -157,8 +167,6 @@ incremento; nada aqui autoriza pular testes ou camadas):
    letterbox estático) para o caso simples. HyperFrames exige
    Node e Chrome headless e deve receber um lock de proveniência análogo a
    `config/ffmpeg-lock.json`.
-3. **Primeira produção real completa** com registro de revisão humana — fecha
-   `dark-video` v1.
 
 Pesquisa, roteiro, storyboard e assets automáticos vêm depois do primeiro vídeo
 completo. O workflow de creator/talking-head permanece futuro e deverá reutilizar

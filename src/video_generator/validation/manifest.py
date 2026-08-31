@@ -136,6 +136,8 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
                 return False
             used_sources.add(captions.source)
             items = ()
+        elif parameters == {"style": "bottom_box", "from": "narration"}:
+            items = ()
         elif (
             set(parameters) != {"style", "items"}
             or parameters.get("style") != "bottom_box"

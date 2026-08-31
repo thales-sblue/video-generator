@@ -170,9 +170,14 @@ def build_sequence_render_manifest(
     captions = tuple(
         operation for operation in plan.operations if operation.kind == "captions"
     )
-    # A captions file (declared as a source) resolves its cue count only at
-    # execution time; the source fingerprint already guards the burned track.
-    if len(captions) == 1 and captions[0].source is None:
+    # A captions file (a declared source) or a narration-derived track resolves
+    # its cue count only at execution time; the source fingerprint or the
+    # narration text digest already guards the burned track.
+    if (
+        len(captions) == 1
+        and captions[0].source is None
+        and captions[0].parameters.get("from") != "narration"
+    ):
         items = captions[0].parameters.get("items")
         expected_caption_count = len(items) if isinstance(items, (list, tuple)) else 0
         if report.artifact.caption_count != expected_caption_count:

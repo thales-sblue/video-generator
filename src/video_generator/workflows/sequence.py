@@ -26,7 +26,11 @@ from video_generator.adapters import (
     synthesize_narration,
 )
 from video_generator.domain import EditPlan
-from video_generator.subtitles import SubtitleParseError, parse_subtitle_cues
+from video_generator.subtitles import (
+    SubtitleParseError,
+    captions_from_text,
+    parse_subtitle_cues,
+)
 from video_generator.validation import (
     PreflightReport,
     SequenceValidationReport,
@@ -249,6 +253,7 @@ def _operations_from_plan(
     NarrationTextSpec | None,
     tuple[CaptionCue, ...],
     str | None,
+    bool,
     str | None,
     float | None,
 ]:
@@ -262,6 +267,7 @@ def _operations_from_plan(
     narration_text: NarrationTextSpec | None = None
     captions: tuple[CaptionCue, ...] = ()
     caption_source: str | None = None
+    captions_from_narration = False
     captions_seen = False
     music_path: str | None = None
     music_gain_db: float | None = None
@@ -322,6 +328,8 @@ def _operations_from_plan(
                     )
                 caption_source = operation.source
                 used_sources.add(operation.source)
+            elif dict(operation.parameters) == {"style": CAPTIONS_STYLE, "from": "narration"}:
+                captions_from_narration = True
             else:
                 captions = _validate_caption_cues(
                     _inline_caption_triples(operation.parameters)
@@ -379,6 +387,10 @@ def _operations_from_plan(
         raise SequenceWorkflowError("video-sequence requires at least two timeline segments")
     if not any(isinstance(segment, SequenceClip) for segment in segments):
         raise SequenceWorkflowError("video-sequence requires at least one sequence_clip")
+    if captions_from_narration and narration_text is None:
+        raise SequenceWorkflowError(
+            "captions from=narration require a narration text operation"
+        )
     if used_sources != set(plan.sources):
         raise SequenceWorkflowError("every declared source must be used by the sequence")
     if (
@@ -393,6 +405,7 @@ def _operations_from_plan(
         narration_text,
         captions,
         caption_source,
+        captions_from_narration,
         music_path,
         music_gain_db,
     )
@@ -448,8 +461,8 @@ def _synthesise_narration(
     expected_duration: float,
     tolerance: float,
     timeout: float,
-) -> tuple[str, str, str]:
-    """Render narration text to a temp WAV; return (path, text_sha256, temp_dir)."""
+) -> tuple[str, str, str, float]:
+    """Render narration text to a temp WAV; return (path, text_sha256, temp_dir, seconds)."""
 
     parent = Path(output_path).expanduser().resolve().parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -481,7 +494,7 @@ def _synthesise_narration(
                 f"synthesised narration is {seconds:.3f}s but the timeline is "
                 f"{expected_duration:.3f}s; shorten the narration text"
             )
-        return artifact.output_path, artifact.text_sha256, synth_dir
+        return artifact.output_path, artifact.text_sha256, synth_dir, float(seconds)
     except BaseException:
         shutil.rmtree(synth_dir, ignore_errors=True)
         raise
@@ -556,6 +569,7 @@ def run_sequence_workflow(
         narration_text,
         captions,
         caption_source,
+        captions_from_narration,
         music_path,
         music_gain_db,
     ) = _operations_from_plan(plan)
@@ -582,9 +596,28 @@ def run_sequence_workflow(
     narration_text_sha256: str | None = None
     try:
         if narration_text is not None:
-            narration_path, narration_text_sha256, synth_dir = _synthesise_narration(
+            (
+                narration_path,
+                narration_text_sha256,
+                synth_dir,
+                narration_seconds,
+            ) = _synthesise_narration(
                 narration_text, plan.output_path, expected_duration, tolerance, timeout
             )
+            if captions_from_narration:
+                span = min(narration_seconds, expected_duration)
+                try:
+                    captions = _validate_caption_cues(
+                        captions_from_text(narration_text.text, span)
+                    )
+                except SubtitleParseError as exc:
+                    raise SequenceWorkflowError(
+                        f"could not derive captions from the narration: {exc}"
+                    ) from exc
+                if captions and captions[-1].end_seconds > expected_duration:
+                    raise SequenceWorkflowError(
+                        "derived caption end_seconds must not exceed the sequence duration"
+                    )
         elif narration_path is not None:
             _validate_narration(probes, narration_path, expected_duration, tolerance)
         if music_path is not None:
