@@ -92,12 +92,41 @@ def _cleanup(path: Path) -> None:
         pass
 
 
-def _srt_timestamp(seconds: float) -> str:
-    total_milliseconds = round(seconds * 1000)
-    hours, remainder = divmod(total_milliseconds, 3_600_000)
-    minutes, remainder = divmod(remainder, 60_000)
-    whole_seconds, milliseconds = divmod(remainder, 1000)
-    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d},{milliseconds:03d}"
+def _ass_timestamp(seconds: float) -> str:
+    total_centiseconds = round(seconds * 100)
+    hours, remainder = divmod(total_centiseconds, 360_000)
+    minutes, remainder = divmod(remainder, 6_000)
+    whole_seconds, centiseconds = divmod(remainder, 100)
+    return f"{hours:d}:{minutes:02d}:{whole_seconds:02d}.{centiseconds:02d}"
+
+
+# Advanced SubStation script rendered by libass. PlayResX/Y are pinned to the
+# real frame so FontSize and every margin below are plain 1280x720 pixels: one
+# readable line, held inside a platform-safe band (MarginV ~10% of the height)
+# and kept clear of the frame edges. The text is drawn with a thick outline plus
+# a soft shadow (BorderStyle 1) instead of an opaque box, so it stays legible on
+# dark footage without a black bar across the frame. Caption text carries no
+# override braces (the workflow already rejects "<>{}"), so it can never become
+# script syntax.
+_CAPTION_ASS_HEADER = (
+    "[Script Info]\n"
+    "ScriptType: v4.00+\n"
+    "WrapStyle: 2\n"
+    "ScaledBorderAndShadow: yes\n"
+    "PlayResX: {width}\n"
+    "PlayResY: {height}\n"
+    "\n"
+    "[V4+ Styles]\n"
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+    "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
+    "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
+    "MarginR, MarginV, Encoding\n"
+    "Style: Caption,Sans,32,&H00FFFFFF,&H00FFFFFF,&H00101010,&H80000000,"
+    "0,0,0,0,100,100,0,0,1,3,1,2,140,140,72,1\n"
+    "\n"
+    "[Events]\n"
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+)
 
 
 def _escape_filter_path(path: Path) -> str:
@@ -422,7 +451,7 @@ def compose_video_sequence(
     duration = sum(end - start for _, _, start, end in resolved_clips)
     has_images = any(kind == "image" for kind, _, _, _ in resolved_clips)
     canvas_size: tuple[int, int] | None = None
-    if has_images:
+    if canvas is not None:
         if (
             not isinstance(canvas, tuple)
             or len(canvas) != 2
@@ -431,8 +460,10 @@ def compose_video_sequence(
                 for value in canvas
             )
         ):
-            raise FFmpegError("a timeline with images requires a positive (width, height) canvas")
+            raise FFmpegError("canvas must be a positive (width, height) tuple")
         canvas_size = (int(canvas[0]), int(canvas[1]))
+    if has_images and canvas_size is None:
+        raise FFmpegError("a timeline with images requires a positive (width, height) canvas")
     resolved_captions: list[tuple[str, float, float]] = []
     previous_end = 0.0
     for cue in normalized_captions:
@@ -455,6 +486,8 @@ def compose_video_sequence(
             raise FFmpegError("caption end_seconds must not exceed the sequence duration")
         resolved_captions.append((text, start, end))
         previous_end = end
+    if resolved_captions and canvas_size is None:
+        raise FFmpegError("captions require a (width, height) canvas for pixel-accurate layout")
     narration: Path | None = None
     if narration_path is not None:
         narration = Path(narration_path).expanduser().resolve()
@@ -510,18 +543,23 @@ def compose_video_sequence(
         ) as reserved:
             temporary = Path(reserved.name)
         if resolved_captions:
+            caption_width, caption_height = canvas_size  # type: ignore[misc]
             with tempfile.NamedTemporaryFile(
                 mode="w",
                 encoding="utf-8",
                 prefix=f".{output.stem}-captions-",
-                suffix=".srt",
+                suffix=".ass",
                 dir=output.parent,
                 delete=False,
             ) as caption_stream:
                 caption_file = Path(caption_stream.name)
-                for index, (text, start, end) in enumerate(resolved_captions, start=1):
+                caption_stream.write(
+                    _CAPTION_ASS_HEADER.format(width=caption_width, height=caption_height)
+                )
+                for text, start, end in resolved_captions:
                     caption_stream.write(
-                        f"{index}\n{_srt_timestamp(start)} --> {_srt_timestamp(end)}\n{text}\n\n"
+                        f"Dialogue: 0,{_ass_timestamp(start)},{_ass_timestamp(end)},"
+                        f"Caption,,0,0,0,,{text}\n"
                     )
     except OSError as exc:
         if temporary is not None:
@@ -569,13 +607,10 @@ def compose_video_sequence(
     )
     if caption_file is not None:
         caption_path = _escape_filter_path(caption_file)
-        style = (
-            "FontName=Sans,FontSize=24,PrimaryColour=&H00FFFFFF,"
-            "OutlineColour=&H00000000,BackColour=&H99000000,"
-            "BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=24"
-        )
+        # The .ass script already carries the style and a frame-matched PlayRes,
+        # so libass lays the text out in real pixels with no force_style guesswork.
         filters.append(
-            f"[basev]subtitles=filename='{caption_path}':force_style='{style}'[outv]"
+            f"[basev]subtitles=filename='{caption_path}'[outv]"
         )
     narration_index = len(resolved_clips) if narration is not None else None
     music_index = len(resolved_clips) + (1 if narration is not None else 0) if music is not None else None
@@ -600,15 +635,21 @@ def compose_video_sequence(
             )
         bed += f",atrim=duration={format(duration, '.15g')},asetpts=PTS-STARTPTS[bed]"
         filters.append(bed)
+    # Master chain shared by every audio branch: a short fade-in kills any start
+    # click, then EBU R128 loudness normalisation brings the mix to a comfortable
+    # online-publishing target (-14 LUFS, true peak -1.5 dBTP) with no clipping.
+    # loudnorm resamples internally, so pin 48 kHz again afterwards.
+    master = "" if duration <= 1.0 else "afade=t=in:st=0:d=0.3,"
+    master += "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"
     if narration_index is not None and music_index is not None:
         filters.append(
             "[voice][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
-            "alimiter=limit=0.95:latency=1[outa]"
+            f"alimiter=limit=0.95:latency=1,{master}[outa]"
         )
     elif narration_index is not None:
-        filters.append("[voice]anull[outa]")
+        filters.append(f"[voice]{master}[outa]")
     elif music_index is not None:
-        filters.append("[bed]alimiter=limit=0.95:latency=1[outa]")
+        filters.append(f"[bed]alimiter=limit=0.95:latency=1,{master}[outa]")
     command.extend(["-filter_complex", ";".join(filters), "-map", "[outv]"])
     if narration is None and music is None:
         command.append("-an")
@@ -620,8 +661,10 @@ def compose_video_sequence(
             "-dn",
             "-c:v",
             "libopenh264",
+            # libopenh264 has no CRF mode; a generous 720p bitrate keeps smooth
+            # dark gradients from blocking after the clip -> timeline re-encode.
             "-b:v",
-            "5M",
+            "10M",
             "-pix_fmt",
             "yuv420p",
             "-movflags",

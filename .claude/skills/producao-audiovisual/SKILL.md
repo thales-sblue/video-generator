@@ -36,7 +36,7 @@ execução; ela não substitui essas regras nem autoriza pular testes.
 ```powershell
 $py = ".\.venv\Scripts\python.exe"
 & $py -m video_generator doctor            # confere FFmpeg/ffprobe/Node
-$env:PYTHONPATH = "src"; & $py -m unittest discover -s tests -v   # 121 testes, antes e depois
+$env:PYTHONPATH = "src"; & $py -m unittest discover -s tests -v   # suíte completa, antes e depois
 ```
 
 ## Passos
@@ -53,8 +53,10 @@ $env:PYTHONPATH = "src"; & $py -m unittest discover -s tests -v   # 121 testes, 
    ≥1 `sequence_clip` e, opcionalmente, `image_clip` com `duration_seconds` +
    `captions`/`music`/`narration` opcionais).
 5. **Fala local quando relevante**: `extract-audio` para separar faixa; narração
-   a partir de texto (Kokoro) ainda não está implementada — se o pedido exigir,
-   pare e trate como próximo incremento (ver `docs/WORKFLOWS.md`).
+   a partir de texto via Kokoro (extra op-in `tts` + modelo em `.local-tools/kokoro/`)
+   já existe — CLI `narrate` e o modo texto da operação `narration` no
+   `video-sequence` (`text` + `voice`/`speed`/`lang`); `doctor` reporta se Kokoro
+   está disponível. Kokoro ausente falha só essa capacidade.
 6. **Persistir contratos** em `projects/<id>/`: `video-request.json`,
    `video-brief.json`, `edit-plan.json` conforme os schemas em `schemas/`.
 7. **Validar o plano** antes de qualquer escrita de mídia:

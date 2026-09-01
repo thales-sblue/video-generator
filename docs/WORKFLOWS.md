@@ -71,16 +71,22 @@ três formas:
   tags de estilo e posicionamento (`<`, `>`, `{`, `}`) são recusadas;
 - **da narração:** sem source, `parameters={"style":"bottom_box","from":"narration"}`.
   Exige uma operação `narration` em modo texto no mesmo plano. Depois da síntese,
-  o texto é dividido em frases e distribuído sobre a duração real da narração por
-  peso de caracteres. O timing é **aproximado** (segue o comprimento do texto,
-  não a fala medida); alinhamento real por Whisper é incremento futuro. O
+  o texto é dividido em linhas curtas (até ~50 caracteres, quebrando em fronteiras
+  de frase e de oração) e distribuído sobre a duração real da narração por peso de
+  sílabas e pausas estimadas, com a última linha terminando exatamente com a voz.
+  O timing é **aproximado** (modela o ritmo da fala, não mede o áudio
+  renderizado); alinhamento por fala com Whisper é incremento futuro. O
   `RenderManifest` já cobre isso pelo SHA-256 do texto da narração.
 
 Em todos os casos cada texto tem até 160 caracteres; cues são ordenados, não
 sobrepostos, duram ao menos 1 ms e são limitados à duração visual. O adapter cria
-um SRT temporário, queima captions brancas em uma caixa escura via FFmpeg/libass
-e sempre remove o arquivo intermediário. O texto nunca compõe o filter graph,
-evitando que conteúdo editorial seja interpretado como sintaxe do FFmpeg.
+um `.ass` temporário com `PlayResX/Y` igual ao quadro — de modo que fonte e
+margens são pixels reais: captions brancas com contorno e sombra (sem caixa),
+uma linha, numa faixa segura de plataforma (MarginV ~10% da altura) afastada das
+bordas — queima via
+FFmpeg/libass e sempre remove o arquivo intermediário. O texto nunca compõe o
+filter graph nem carrega chaves de override, evitando que conteúdo editorial seja
+interpretado como sintaxe do FFmpeg ou do libass.
 
 Uma operação final opcional `narration`, sem tempos e com
 `duration_policy=match_timeline`, adiciona voz a partir de `t=0`. Duas formas:
@@ -110,8 +116,11 @@ duração visual). O ganho aceita valores de -60 a 0 dB. O source deve ter
 exatamente um stream de áudio e duração positiva; não precisa corresponder à
 timeline, pois FFmpeg o repete e corta no fim visual. A faixa recebe `afade` de
 entrada/saída antes do corte, é convertida para estéreo/48 kHz com a voz e
-mixada com `normalize=0`, limitada a 0,95 antes da codificação AAC. Sem voz, a
-música sozinha ocupa a faixa AAC. O áudio original dos clipes nunca entra no
+mixada com `normalize=0`, limitada a 0,95. A mixagem final ainda recebe um
+fade-in curto anticlique e normalização de loudness EBU R128 para -14 LUFS
+integrado / true peak -1,5 dBTP (reamostrada a 48 kHz) antes da codificação AAC —
+o mesmo caminho para voz+música, só voz ou só música. Sem voz, a música sozinha
+ocupa a faixa AAC. O áudio original dos clipes nunca entra no
 mix. O `RenderManifest` guarda ganho e fades.
 
 Esse escopo prova `EditPlan -> timeline -> captions/áudio -> composição -> MP4`
@@ -133,7 +142,11 @@ explícito.
 
 Capacidades que ainda faltam para `dark-video` v1:
 
-- executar a primeira produção real completa e registrar sua revisão humana.
+- registrar a revisão humana visual/auditiva da primeira produção real. O sample
+  `projects/prod/` já roda de ponta a ponta pelo pipeline oficial e passou por
+  uma rodada de correção editorial (luminância, densidade e posição das captions,
+  loudness, pacing); falta a escuta/observação humana com evidência —
+  `editorial_review` continua `not_performed`.
 
 Já disponível:
 
@@ -141,8 +154,9 @@ Já disponível:
   `video-sequence`; qualquer dimensão é aceita e a imagem é escalada e
   letter-boxed no canvas dos clipes (sem movimento/Ken Burns nesta v1);
 - `captions` aceita itens inline, um `.srt`/`.vtt` local como source, ou
-  `from=narration` (deriva cues do texto da narração por peso de caracteres,
-  timing aproximado);
+  `from=narration` (linhas curtas de uma linha, quebra por frase/oração, timing
+  por peso de sílabas e pausas estimadas — aproximado; queimadas de um `.ass` com
+  `PlayRes` igual ao quadro, em faixa segura de plataforma);
 - narração local a partir de texto: Kokoro opcional (extra op-in `tts`, assets
   fail-closed em `.local-tools/kokoro/`, check no `doctor`), o adapter
   `synthesize_narration`, a CLI de baixo nível `narrate` e o **modo texto da

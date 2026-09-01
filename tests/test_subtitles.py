@@ -1,6 +1,7 @@
 import unittest
 
 from video_generator.subtitles import (
+    CAPTION_CHUNK_MAX_CHARS,
     SubtitleParseError,
     captions_from_text,
     parse_subtitle_cues,
@@ -8,33 +9,54 @@ from video_generator.subtitles import (
 
 
 class CaptionsFromTextTests(unittest.TestCase):
-    def test_distributes_sentences_over_the_duration_by_length(self):
+    def test_produces_short_ordered_chunks_spanning_the_whole_duration(self):
         cues = captions_from_text(
             "Hello dark world. This is a longer second sentence with more words. End.",
             10.0,
         )
         self.assertGreaterEqual(len(cues), 2)
         self.assertEqual(cues[0][1], 0.0)
+        # the last chunk ends exactly at the narration length: nothing lingers past it
         self.assertAlmostEqual(cues[-1][2], 10.0, places=6)
-        # ordered, non-overlapping, non-zero
         prev = 0.0
         for text, start, end in cues:
             self.assertGreaterEqual(start, prev)
             self.assertGreater(end, start)
-            self.assertLessEqual(len(text), 160)
+            self.assertLessEqual(len(text), CAPTION_CHUNK_MAX_CHARS)
             prev = end
 
-    def test_wraps_a_sentence_longer_than_the_cue_limit(self):
+    def test_breaks_long_sentences_at_clause_boundaries(self):
+        cues = captions_from_text(
+            "It is full of eyes that have learned not to shine, "
+            "and every civilization made the same quiet discovery.",
+            8.0,
+        )
+        self.assertTrue(all(len(text) <= CAPTION_CHUNK_MAX_CHARS for text, _, _ in cues))
+        # the clause comma is a natural split point, so a chunk ends on it
+        self.assertTrue(any(text.rstrip().endswith(",") for text, _, _ in cues))
+
+    def test_timing_follows_speaking_time_not_character_count(self):
+        # two chunks with similar character counts but very different syllable
+        # load: the denser line must be given more of the timeline.
+        cues = captions_from_text("Individualisation immediately. Go now sir.", 10.0)
+        self.assertEqual(len(cues), 2)
+        heavy = cues[0][2] - cues[0][1]
+        light = cues[1][2] - cues[1][1]
+        self.assertGreater(heavy, light)
+
+    def test_wraps_a_run_on_sentence_with_no_punctuation(self):
         long_sentence = " ".join(["word"] * 60) + "."  # ~305 chars, no enders
         cues = captions_from_text(long_sentence, 12.0)
         self.assertGreater(len(cues), 1)
-        self.assertTrue(all(len(text) <= 160 for text, _, _ in cues))
+        self.assertTrue(all(len(text) <= CAPTION_CHUNK_MAX_CHARS for text, _, _ in cues))
 
     def test_rejects_empty_text_bad_duration_and_overpacking(self):
         with self.assertRaisesRegex(SubtitleParseError, "no caption-able content"):
             captions_from_text("   ", 5.0)
         with self.assertRaisesRegex(SubtitleParseError, "duration must be positive"):
             captions_from_text("Hi there.", 0)
+        with self.assertRaisesRegex(SubtitleParseError, "duration must be positive"):
+            captions_from_text("Hi there.", True)
         crowded = " ".join(
             ["This sentence is clearly longer than forty characters."] * 5
         )

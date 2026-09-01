@@ -657,8 +657,9 @@ def run_sequence_workflow(
                 compose_kwargs["music_gain_db"] = music.gain_db
                 compose_kwargs["music_fade_in_seconds"] = music.fade_in_seconds
                 compose_kwargs["music_fade_out_seconds"] = music.fade_out_seconds
-            if expected_image_count:
-                compose_kwargs["canvas"] = canvas
+            # the clip canvas is always forwarded: images letter-box onto it and
+            # captions use it as the pixel-accurate layout frame.
+            compose_kwargs["canvas"] = canvas
             artifact = create_artifact(segments, plan.output_path, **compose_kwargs)
         except FFmpegError as exc:
             raise SequenceWorkflowError(f"video sequence composition failed: {exc}") from exc

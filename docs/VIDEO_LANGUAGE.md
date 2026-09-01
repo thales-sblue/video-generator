@@ -22,10 +22,23 @@ transformar preferências contextuais em automações universais.
 ## Captions
 
 - Priorizar legibilidade, contraste e tempo de leitura.
-- Respeitar safe areas e interfaces sobrepostas de cada plataforma.
-- Evitar cobrir rostos, gestos e informações importantes.
+- Blocos curtos: uma ou duas linhas, quebradas em unidades de significado, nunca
+  vários períodos agrupados.
+- Respeitar safe areas e interfaces sobrepostas de cada plataforma; manter
+  distância confortável da borda inferior.
+- Evitar cobrir rostos, gestos e informações importantes; não deixar a caption
+  dominar o quadro.
 - Destaques de palavras devem ser seletivos e semanticamente úteis.
-- Timing deve acompanhar unidades de significado, não apenas timestamps brutos.
+- Timing deve acompanhar unidades de significado, não apenas timestamps brutos;
+  nenhuma caption deve permanecer depois da fala correspondente.
+
+## Áudio
+
+- Mixagem final em um alvo de loudness confortável para publicação online, sem
+  clipping, com narração inteligível e trilha perceptível como atmosfera sob a
+  voz.
+- Início e fim com fades naturais; evitar sobra de silêncio ou de imagem sem
+  função no encerramento.
 
 ## B-roll
 

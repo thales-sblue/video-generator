@@ -155,13 +155,17 @@ operação opcional `captions` pode persistir uma faixa com estilo fixo
 `bottom_box`. Os cues vêm de itens inline (texto, início e fim relativos à
 timeline), de um `.srt`/`.vtt` local apontado por `source` e declarado entre os
 sources, ou de `{"style":"bottom_box","from":"narration"}` — que divide o texto
-da narração (modo texto) em frases e as distribui sobre a duração real da
-narração por peso de caracteres (timing aproximado; alinhamento real por Whisper
-é futuro). Em todos os casos os cues devem estar ordenados, não podem se
-sobrepor, duram ao menos 1 ms, usam no máximo 160 caracteres, recusam markup de
-subtitles e não podem ultrapassar o vídeo. O texto é escrito em um SRT
-temporário, queimado localmente via FFmpeg/libass e removido após a execução; ele
-não é interpolado no filter graph.
+da narração (modo texto) em linhas curtas (até ~50 caracteres, quebra em
+fronteiras de frase e oração) e as distribui sobre a duração real da narração por
+peso de sílabas e pausas estimadas, de modo que a última linha termina exatamente
+com a voz (timing **aproximado**: modela o ritmo, não mede o áudio; alinhamento
+por fala com Whisper é futuro). Em todos os casos os cues devem estar ordenados,
+não podem se sobrepor, duram ao menos 1 ms, usam no máximo 160 caracteres,
+recusam markup de subtitles e não podem ultrapassar o vídeo. O texto é escrito em
+um `.ass` temporário com `PlayResX/Y` igual ao quadro — assim o corpo da fonte e
+as margens são pixels reais e a caption fica em uma linha, numa faixa segura de
+plataforma (MarginV ~10% da altura) longe das bordas — queimado via
+FFmpeg/libass e removido após a execução; ele não é interpolado no filter graph.
 
 Opcionalmente, a última operação pode ser uma `narration` com
 `duration_policy=match_timeline`. Com `source` local, ela começa em zero e deve
@@ -182,9 +186,12 @@ distinto e `{"duration_policy":"loop_to_timeline","gain_db":N}`, com
 `fade_in_seconds`/`fade_out_seconds` opcionais (≥ 0, soma ≤ duração visual). O
 ganho fica entre -60 e 0 dB. A faixa é repetida até a duração visual, recebe
 `afade` de entrada/saída, é convertida para estéreo/48 kHz e, quando há voz,
-mixada sem normalização automática; um limiter evita picos acima de 0,95. Música
-sem narração também é suportada. O áudio original dos clipes permanece excluído e
-o output continua contendo uma única faixa AAC.
+mixada sem normalização de somatório; um limiter evita picos acima de 0,95.
+Música sem narração também é suportada. Toda a mixagem final passa por um
+fade-in curto anticlique e por normalização de loudness EBU R128 para um alvo de
+publicação online (-14 LUFS integrado, true peak -1,5 dBTP), reamostrada de volta
+a 48 kHz. O áudio original dos clipes permanece excluído e o output continua
+contendo uma única faixa AAC.
 
 Para publicação, `execute-final-sequence-plan` exige que o `output_path`
 persistido termine exatamente em `final.mp4`. O render é criado em um diretório

@@ -55,11 +55,14 @@ class FFmpegAdapterTests(unittest.TestCase):
             self.assertIn("[3:a:0]aresample=48000", filter_graph)
             self.assertIn("volume=-18dB", filter_graph)
             self.assertIn("[voice][bed]amix=inputs=2", filter_graph)
-            self.assertIn("alimiter=limit=0.95:latency=1[outa]", filter_graph)
+            self.assertIn("alimiter=limit=0.95:latency=1,", filter_graph)
+            # master chain: anti-click fade + EBU R128 normalisation to a publish
+            # target, then a resample back to 48 kHz, terminating the audio graph.
+            self.assertIn("afade=t=in:st=0:d=0.3,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[outa]", filter_graph)
             self.assertEqual(artifact.music_source_path, str(music.resolve()))
             self.assertEqual(artifact.music_gain_db, -18.0)
 
-    def test_burns_caption_cues_from_a_temporary_srt_without_filter_injection(self):
+    def test_burns_caption_cues_from_a_temporary_ass_without_filter_injection(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             first = root / "first.mp4"
@@ -67,12 +70,12 @@ class FFmpegAdapterTests(unittest.TestCase):
             output = root / "captioned.mp4"
             first.write_bytes(b"first")
             second.write_bytes(b"second")
-            captured_srt = []
+            captured_ass = []
 
             def succeed(command, **kwargs):
-                caption_files = list(root.glob(".*-captions-*.srt"))
+                caption_files = list(root.glob(".*-captions-*.ass"))
                 self.assertEqual(len(caption_files), 1)
-                captured_srt.append(caption_files[0].read_text(encoding="utf-8"))
+                captured_ass.append(caption_files[0].read_text(encoding="utf-8"))
                 Path(command[-1]).write_bytes(b"captioned sequence")
                 return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -84,17 +87,24 @@ class FFmpegAdapterTests(unittest.TestCase):
             with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
                 "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
             ) as execute:
-                artifact = compose_video_sequence(clips, output, captions=cues)
+                artifact = compose_video_sequence(
+                    clips, output, captions=cues, canvas=(1280, 720)
+                )
 
             command = execute.call_args.args[0]
             filter_graph = command[command.index("-filter_complex") + 1]
             self.assertIn("[basev]subtitles=filename=", filter_graph)
-            self.assertIn("BorderStyle=3", filter_graph)
             self.assertNotIn(cues[0].text, filter_graph)
-            self.assertIn("00:00:00,000 --> 00:00:01,000", captured_srt[0])
-            self.assertIn(cues[0].text, captured_srt[0])
+            # style + a frame-matched PlayRes live in the .ass script, not the graph
+            self.assertIn("PlayResX: 1280", captured_ass[0])
+            self.assertIn("PlayResY: 720", captured_ass[0])
+            self.assertIn("Style: Caption,Sans,32", captured_ass[0])
+            # outline+shadow (BorderStyle 1), not an opaque box; safe margins
+            self.assertIn(",1,3,1,2,140,140,72,1", captured_ass[0])
+            self.assertIn("Dialogue: 0,0:00:00.00,0:00:01.00,Caption,,0,0,0,,", captured_ass[0])
+            self.assertIn(cues[0].text, captured_ass[0])
             self.assertEqual(artifact.caption_count, 2)
-            self.assertEqual(list(root.glob(".*-captions-*.srt")), [])
+            self.assertEqual(list(root.glob(".*-captions-*.ass")), [])
 
     def test_composes_video_with_narration_after_clip_inputs_and_expected_codecs(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -416,6 +426,12 @@ class FFmpegAdapterTests(unittest.TestCase):
                         root / "out.mp4",
                         captions=(CaptionCue("{\\an8}Injected style", 0, 1),),
                     )
+                with self.assertRaisesRegex(FFmpegError, "captions require a .*canvas"):
+                    compose_video_sequence(
+                        (SequenceClip(str(source), 0, 1), SequenceClip(str(other), 0, 1)),
+                        root / "out.mp4",
+                        captions=(CaptionCue("No canvas", 0, 1),),
+                    )
             resolve.assert_not_called()
 
     def test_narrated_sequence_removes_partial_or_empty_artifacts(self):
@@ -441,6 +457,7 @@ class FFmpegAdapterTests(unittest.TestCase):
                         root / "failed.mp4",
                         narration_path=narration,
                         captions=(CaptionCue("Caption", 0, 2),),
+                        canvas=(1280, 720),
                     )
             with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"), patch(
                 "video_generator.adapters.ffmpeg.subprocess.run",

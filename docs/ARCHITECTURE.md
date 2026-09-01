@@ -82,9 +82,12 @@ está persistida como `mode=precise`, reencode MP4 H.264/AAC com seek após o in
 Ele também separa a primeira faixa de áudio em WAV PCM 16-bit, 48 kHz estéreo,
 como artifact local previsível para análise e processamento posterior. Todas as
 operações publicam um arquivo novo sem overwrite e limpam artifacts parciais;
-para captions, gera um SRT temporário a partir de cues já validados, usa libass
-com estilo mínimo fixo e remove o intermediário em sucesso ou falha. Os demais entram
-conforme casos funcionais exigirem:
+para captions, gera um `.ass` temporário a partir de cues já validados, com
+`PlayResX/Y` igual ao quadro (fonte e margens em pixels reais, uma linha, faixa
+segura de plataforma), e remove o intermediário em sucesso ou falha. A mixagem
+de áudio termina com fade-in anticlique e normalização de loudness EBU R128 para
+um alvo de publicação (-14 LUFS / true peak -1,5 dBTP). Os demais entram conforme
+casos funcionais exigirem:
 
 - ffprobe para inspeção técnica;
 - FFmpeg para cortes, concatenação, áudio, codecs e transformações;
