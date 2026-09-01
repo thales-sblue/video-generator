@@ -98,6 +98,54 @@ _VOWEL_GROUP = re.compile(r"[aeiouy]+")
 _ENDERS = ".!?…"
 _CLAUSE_MARKS = ",;:—–"
 
+# Closed-class function words (pt-BR plus common English) that should not be left
+# at the end of a caption line: the eye expects the next word, so a break here
+# reads as broken. Used to nudge a lone trailing article/preposition/conjunction
+# onto the following line when there is room.
+_WEAK_TRAILING_WORDS = frozenset(
+    {
+        "a", "o", "e", "ou", "de", "do", "da", "dos", "das", "no", "na", "nos",
+        "nas", "em", "num", "numa", "um", "uma", "uns", "umas", "que", "se",
+        "com", "por", "para", "pra", "ao", "aos", "à", "às", "seu", "sua",
+        "seus", "suas", "meu", "minha", "nosso", "nossa",
+        "the", "an", "of", "to", "in", "on", "and", "or", "for", "with", "that",
+        "as", "at", "by",
+    }
+)
+
+
+def _rebalance_weak_breaks(pieces: list[str], max_chars: int) -> list[str]:
+    """Shift a lone trailing function word onto the next piece when it fits.
+
+    A line or chunk that ends on a bare article, preposition or conjunction
+    ("...olha para" | "o céu") reads as broken. Pieces that already end on
+    sentence or clause punctuation are left alone, and a word is only moved when
+    the receiving piece stays within ``max_chars`` and the donor keeps a word.
+    Runs a few left-to-right passes so a short run of function words unwinds.
+    """
+
+    for _ in range(3):
+        changed = False
+        for index in range(len(pieces) - 1):
+            words = pieces[index].split()
+            if len(words) < 2:
+                continue
+            tail = words[-1]
+            if tail.rstrip(_ENDERS + _CLAUSE_MARKS) != tail:
+                continue  # ends on punctuation, not a bare word
+            if tail.lower() not in _WEAK_TRAILING_WORDS:
+                continue
+            moved = f"{tail} {pieces[index + 1]}"
+            if len(moved) > max_chars:
+                continue
+            pieces[index] = " ".join(words[:-1])
+            pieces[index + 1] = moved
+            changed = True
+        if not changed:
+            break
+    return pieces
+
+
 # Weights are in "syllable-equivalents": a spoken pause after a sentence or a
 # clause costs roughly this many syllables of time.
 _PAUSE_ENDER = 3.0
@@ -156,7 +204,7 @@ def _wrap_words(piece: str) -> list[str]:
             fixed.append(head)
             part = f"{tail}{part[CAPTION_CHUNK_MAX_CHARS:]}"
         fixed.append(part)
-    return fixed
+    return _rebalance_weak_breaks(fixed, CAPTION_CHUNK_MAX_CHARS)
 
 
 def _pack_sentence(sentence: str) -> list[str]:
@@ -190,10 +238,13 @@ def captions_from_text(
     """Lay ``text`` out as short cues spanning ``[0, total_seconds]``.
 
     The text is split into one-line chunks at sentence and clause boundaries
-    (never wider than :data:`CAPTION_CHUNK_MAX_CHARS`). Each chunk's slice of the
-    timeline is proportional to an estimated speaking time -- syllable count plus
-    a pause allowance for sentence- and clause-final punctuation -- so a slow,
-    punctuated line holds longer than a short brisk one. The last chunk always
+    (never wider than :data:`CAPTION_CHUNK_MAX_CHARS`), then a lone article,
+    preposition or conjunction left at a chunk's end is nudged onto the next
+    chunk when it fits, so a break never lands on a function word. Each chunk's
+    slice of the timeline is proportional to an estimated speaking time --
+    syllable count plus a pause allowance for sentence- and clause-final
+    punctuation -- so a slow, punctuated line holds longer than a short brisk
+    one. The last chunk always
     ends exactly at ``total_seconds`` (the real narration length passed by the
     workflow), so no caption lingers past the voice.
 
@@ -214,6 +265,7 @@ def captions_from_text(
         chunks.extend(_pack_sentence(sentence))
     if not chunks:
         raise SubtitleParseError("narration text has no caption-able content")
+    chunks = _rebalance_weak_breaks(chunks, CAPTION_CHUNK_MAX_CHARS)
     if any(len(chunk) > CAPTION_MAX_CHARS for chunk in chunks):
         raise SubtitleParseError("a derived caption chunk exceeds the 160-character ceiling")
     weights = [_chunk_weight(chunk) for chunk in chunks]

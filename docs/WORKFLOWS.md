@@ -72,8 +72,10 @@ três formas:
 - **da narração:** sem source, `parameters={"style":"bottom_box","from":"narration"}`.
   Exige uma operação `narration` em modo texto no mesmo plano. Depois da síntese,
   o texto é dividido em linhas curtas (até ~50 caracteres, quebrando em fronteiras
-  de frase e de oração) e distribuído sobre a duração real da narração por peso de
-  sílabas e pausas estimadas, com a última linha terminando exatamente com a voz.
+  de frase e de oração; um artigo, preposição ou conjunção sozinho no fim de uma
+  linha é empurrado para a linha seguinte quando cabe) e distribuído sobre a
+  duração real da narração por peso de sílabas e pausas estimadas, com a última
+  linha terminando exatamente com a voz.
   O timing é **aproximado** (modela o ritmo da fala, não mede o áudio
   renderizado); alinhamento por fala com Whisper é incremento futuro. O
   `RenderManifest` já cobre isso pelo SHA-256 do texto da narração.

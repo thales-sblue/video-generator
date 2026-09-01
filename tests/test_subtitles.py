@@ -50,6 +50,28 @@ class CaptionsFromTextTests(unittest.TestCase):
         self.assertGreater(len(cues), 1)
         self.assertTrue(all(len(text) <= CAPTION_CHUNK_MAX_CHARS for text, _, _ in cues))
 
+    def test_does_not_end_a_chunk_on_a_trailing_function_word(self):
+        # the two weak breaks flagged by the first real production's review:
+        # "...olha para" | "o céu..." and "...só uma" | "sala...".
+        narration = (
+            "Toda civilização que olha para o céu chega à mesma conclusão: "
+            "ser visto é ser um alvo. O céu que chamamos de calmo é só uma "
+            "sala cheia de gente prendendo a respiração."
+        )
+        cues = captions_from_text(narration, 20.0)
+        weak = {"para", "o", "a", "de", "que", "uma", "um", "e", "à"}
+        for text, _, _ in cues:
+            last = text.rstrip().rstrip(".,;:!?…").split()[-1].lower()
+            self.assertNotIn(last, weak, f"chunk ends on a function word: {text!r}")
+        self.assertTrue(all(len(text) <= CAPTION_CHUNK_MAX_CHARS for text, _, _ in cues))
+
+    def test_keeps_a_trailing_function_word_when_the_next_chunk_is_full(self):
+        # no room to shift: the layout must still be valid, not crash.
+        narration = " ".join(["alpha"] * 9 + ["de"] + ["bravo"] * 9) + "."
+        cues = captions_from_text(narration, 12.0)
+        self.assertTrue(all(len(text) <= CAPTION_CHUNK_MAX_CHARS for text, _, _ in cues))
+        self.assertAlmostEqual(cues[-1][2], 12.0, places=6)
+
     def test_rejects_empty_text_bad_duration_and_overpacking(self):
         with self.assertRaisesRegex(SubtitleParseError, "no caption-able content"):
             captions_from_text("   ", 5.0)

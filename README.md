@@ -156,7 +156,8 @@ operação opcional `captions` pode persistir uma faixa com estilo fixo
 timeline), de um `.srt`/`.vtt` local apontado por `source` e declarado entre os
 sources, ou de `{"style":"bottom_box","from":"narration"}` — que divide o texto
 da narração (modo texto) em linhas curtas (até ~50 caracteres, quebra em
-fronteiras de frase e oração) e as distribui sobre a duração real da narração por
+fronteiras de frase e oração e não deixa artigo, preposição ou conjunção sozinho
+no fim da linha) e as distribui sobre a duração real da narração por
 peso de sílabas e pausas estimadas, de modo que a última linha termina exatamente
 com a voz (timing **aproximado**: modela o ritmo, não mede o áudio; alinhamento
 por fala com Whisper é futuro). Em todos os casos os cues devem estar ordenados,
