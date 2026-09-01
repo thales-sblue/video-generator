@@ -40,6 +40,7 @@ timeline renderizada:
 ```text
 EditPlan com sequence_clip / image_clip ordenados -> preflight -> FFmpeg concat filter
               + captions opcionais
+              + fade de abertura/encerramento opcional
               + music opcional
               + narration opcional   -> ffprobe -> RenderManifest -> MP4
 ```
@@ -125,6 +126,17 @@ o mesmo caminho para voz+música, só voz ou só música. Sem voz, a música soz
 ocupa a faixa AAC. O áudio original dos clipes nunca entra no
 mix. O `RenderManifest` guarda ganho e fades.
 
+Depois de todos os segmentos da timeline, uma operação opcional `fade` — sem
+source e sem tempos próprios — abre a imagem a partir do preto e/ou a fecha no
+preto: `parameters={"from_black_seconds":X,"to_black_seconds":Y}`, cada campo
+opcional e ≥ 0, ao menos um presente, com `X + Y` ≤ duração visual. No máximo uma
+`fade` por plano, e ela deve seguir todos os `sequence_clip`/`image_clip`. O
+adapter aplica `fade=t=in` / `fade=t=out` sobre o quadro já concatenado e depois
+das captions queimadas, então o texto escurece junto com a imagem; o áudio tem os
+próprios fades (via `music` e a normalização final). Como os valores vêm do plano,
+o `plan_sha256` e os fingerprints de source já preservam a reprodutibilidade — o
+`RenderManifest` apenas cruza os spans do artifact contra a operação `fade`.
+
 Esse escopo prova `EditPlan -> timeline -> captions/áudio -> composição -> MP4`
 sem substituir HyperFrames, que permanece o compositor planejado para imagens,
 layout, motion e captions avançadas. O próximo gap deve ampliar este caminho
@@ -173,7 +185,11 @@ Já disponível:
   `synthesize_narration`, a CLI de baixo nível `narrate` e o **modo texto da
   operação `narration`** no `video-sequence` (`text` + `voice`/`speed`/`lang`
   opcionais; WAV temporário, SHA-256 do texto no `RenderManifest`). Kokoro
-  ausente falha só essa capacidade. **Pendente:** revisão auditiva real.
+  ausente falha só essa capacidade. **Pendente:** revisão auditiva real;
+- operação `fade` no `video-sequence`: abre a imagem do preto e/ou a fecha no
+  preto (`from_black_seconds`/`to_black_seconds`, soma ≤ duração visual),
+  aplicada depois do concat e das captions queimadas. **Pendente:** revisão
+  visual real do ritmo dos fades.
 
 ### Ordem recomendada dos próximos incrementos
 

@@ -71,6 +71,8 @@ class SequenceArtifact:
     narration_text_sha256: str | None = None
     music_fade_in_seconds: float = 0.0
     music_fade_out_seconds: float = 0.0
+    video_fade_in_seconds: float = 0.0
+    video_fade_out_seconds: float = 0.0
 
 
 IMAGE_TIMELINE_FPS = 30
@@ -390,6 +392,8 @@ def compose_video_sequence(
     music_gain_db: float | None = None,
     music_fade_in_seconds: float = 0.0,
     music_fade_out_seconds: float = 0.0,
+    video_fade_in_seconds: float = 0.0,
+    video_fade_out_seconds: float = 0.0,
     canvas: tuple[int, int] | None = None,
     timeout_seconds: float = 300,
 ) -> SequenceArtifact:
@@ -521,6 +525,10 @@ def compose_video_sequence(
         gain = float(music_gain_db)
         if fade_in + fade_out > duration:
             raise FFmpegError("music fades must not exceed the sequence duration")
+    video_fade_in = _time(video_fade_in_seconds, "video_fade_in_seconds")
+    video_fade_out = _time(video_fade_out_seconds, "video_fade_out_seconds")
+    if video_fade_in + video_fade_out > duration:
+        raise FFmpegError("video fades must not exceed the sequence duration")
     if output.exists():
         raise FFmpegError(f"output already exists: {output}")
 
@@ -601,17 +609,33 @@ def compose_video_sequence(
                 chain += f",fps={IMAGE_TIMELINE_FPS},setsar=1,format=yuv420p"
             filters.append(f"{chain}[{label}]")
         labels.append(f"[{label}]")
-    video_output_label = "basev" if caption_file is not None else "outv"
+    has_video_fades = video_fade_in > 0 or video_fade_out > 0
+    concat_label = "basev" if (caption_file is not None or has_video_fades) else "outv"
     filters.append(
-        f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[{video_output_label}]"
+        f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[{concat_label}]"
     )
+    current_video = concat_label
     if caption_file is not None:
         caption_path = _escape_filter_path(caption_file)
+        caption_label = "capv" if has_video_fades else "outv"
         # The .ass script already carries the style and a frame-matched PlayRes,
         # so libass lays the text out in real pixels with no force_style guesswork.
         filters.append(
-            f"[basev]subtitles=filename='{caption_path}'[outv]"
+            f"[{current_video}]subtitles=filename='{caption_path}'[{caption_label}]"
         )
+        current_video = caption_label
+    if has_video_fades:
+        # A gentle open from black and close to black over the whole picture,
+        # captions included. loudnorm already gives the audio its own fades.
+        fade_parts = []
+        if video_fade_in > 0:
+            fade_parts.append(f"fade=t=in:st=0:d={format(video_fade_in, '.15g')}")
+        if video_fade_out > 0:
+            fade_parts.append(
+                f"fade=t=out:st={format(duration - video_fade_out, '.15g')}:"
+                f"d={format(video_fade_out, '.15g')}"
+            )
+        filters.append(f"[{current_video}]{','.join(fade_parts)}[outv]")
     narration_index = len(resolved_clips) if narration is not None else None
     music_index = len(resolved_clips) + (1 if narration is not None else 0) if music is not None else None
     if narration_index is not None:
@@ -721,4 +745,6 @@ def compose_video_sequence(
         image_count=sum(1 for kind, _, _, _ in resolved_clips if kind == "image"),
         music_fade_in_seconds=fade_in if music is not None else 0.0,
         music_fade_out_seconds=fade_out if music is not None else 0.0,
+        video_fade_in_seconds=video_fade_in,
+        video_fade_out_seconds=video_fade_out,
     )

@@ -44,6 +44,19 @@ class SequenceWorkflowSummaryTests(unittest.TestCase):
             ),
         )
 
+    def test_fade_line_reports_the_black_spans(self):
+        self.assertIn(
+            "Fades: not applied",
+            _format_sequence_workflow(self._report(), Path("m.json")),
+        )
+        self.assertIn(
+            "Fades: from black 1.0s / to black 1.5s",
+            _format_sequence_workflow(
+                self._report(video_fade_in_seconds=1.0, video_fade_out_seconds=1.5),
+                Path("m.json"),
+            ),
+        )
+
 
 class SequenceWorkflowCliTests(unittest.TestCase):
     def test_removes_a_final_when_manifest_creation_fails(self):

@@ -245,6 +245,92 @@ class FFmpegAdapterTests(unittest.TestCase):
                         music_fade_out_seconds=1.5,
                     )
 
+    def test_fades_the_composed_video_from_and_to_black_and_records_the_spans(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            output = root / "faded.mp4"
+            for path in (first, second):
+                path.write_bytes(path.stem.encode("utf-8"))
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"faded sequence")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            clips = (SequenceClip(str(first), 0, 2), SequenceClip(str(second), 0, 2))
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                artifact = compose_video_sequence(
+                    clips,
+                    output,
+                    video_fade_in_seconds=1,
+                    video_fade_out_seconds=1.5,
+                )
+
+            filter_graph = execute.call_args.args[0][
+                execute.call_args.args[0].index("-filter_complex") + 1
+            ]
+            self.assertIn("concat=n=2:v=1:a=0[basev]", filter_graph)
+            # 4 s timeline, 1.5 s tail fade -> starts at 2.5 s, on the concatenated video
+            self.assertIn(
+                "[basev]fade=t=in:st=0:d=1,fade=t=out:st=2.5:d=1.5[outv]", filter_graph
+            )
+            self.assertEqual(artifact.video_fade_in_seconds, 1.0)
+            self.assertEqual(artifact.video_fade_out_seconds, 1.5)
+
+    def test_video_fades_apply_after_captions_and_must_fit_the_timeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            for path in (first, second):
+                path.write_bytes(path.stem.encode("utf-8"))
+            clips = (SequenceClip(str(first), 0, 1), SequenceClip(str(second), 0, 1))
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"faded")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                compose_video_sequence(
+                    clips,
+                    root / "out.mp4",
+                    captions=(CaptionCue("hi", 0, 1),),
+                    canvas=(1280, 720),
+                    video_fade_in_seconds=0.5,
+                )
+
+            filter_graph = execute.call_args.args[0][
+                execute.call_args.args[0].index("-filter_complex") + 1
+            ]
+            self.assertIn("subtitles=filename=", filter_graph)
+            self.assertIn("[capv]fade=t=in:st=0:d=0.5[outv]", filter_graph)
+
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ):
+                with self.assertRaisesRegex(FFmpegError, "video fades must not exceed"):
+                    compose_video_sequence(
+                        clips,
+                        root / "out2.mp4",
+                        video_fade_in_seconds=1.5,
+                        video_fade_out_seconds=1,
+                    )
+                with self.assertRaisesRegex(
+                    FFmpegError, "must be a finite non-negative number"
+                ):
+                    compose_video_sequence(
+                        clips, root / "out3.mp4", video_fade_in_seconds=-1
+                    )
+
     def test_composes_a_still_image_between_video_clips(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

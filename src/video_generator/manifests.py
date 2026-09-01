@@ -209,6 +209,24 @@ def build_sequence_render_manifest(
         or report.artifact.music_fade_out_seconds != expected_fade_out
     ):
         raise ManifestError("workflow artifact music does not match the plan")
+    fade_operations = tuple(
+        operation for operation in plan.operations if operation.kind == "fade"
+    )
+    expected_video_fade_in = 0.0
+    expected_video_fade_out = 0.0
+    if len(fade_operations) == 1:
+        fade_parameters = fade_operations[0].parameters
+        expected_video_fade_in = float(
+            fade_parameters.get("from_black_seconds", 0.0) or 0.0
+        )
+        expected_video_fade_out = float(
+            fade_parameters.get("to_black_seconds", 0.0) or 0.0
+        )
+    if (
+        report.artifact.video_fade_in_seconds != expected_video_fade_in
+        or report.artifact.video_fade_out_seconds != expected_video_fade_out
+    ):
+        raise ManifestError("workflow artifact fade does not match the plan")
     if report.validation.artifact != report.artifact:
         raise ManifestError("workflow validation does not match the artifact")
     if not doctor.local_only or doctor.external_services_allowed or not doctor.preserve_sources:

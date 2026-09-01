@@ -54,6 +54,8 @@ CAPTIONS_STYLE = "bottom_box"
 CAPTION_SUBTITLE_FORMATS = {".srt": "srt", ".vtt": "vtt"}
 MUSIC_KIND = "music"
 MUSIC_DURATION_POLICY = "loop_to_timeline"
+FADE_KIND = "fade"
+FADE_KEYS = {"from_black_seconds", "to_black_seconds"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +71,12 @@ class MusicSpec:
     gain_db: float
     fade_in_seconds: float
     fade_out_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class FadeSpec:
+    from_black_seconds: float
+    to_black_seconds: float
 
 
 class SequenceWorkflowError(RuntimeError):
@@ -241,6 +249,25 @@ def _music_spec(parameters: Mapping[str, object]) -> MusicSpec:
     return MusicSpec(float(gain), fade_in, fade_out)
 
 
+def _fade_spec(parameters: Mapping[str, object]) -> FadeSpec:
+    values = dict(parameters)
+    if not values or set(values) - FADE_KEYS:
+        raise SequenceWorkflowError(
+            "fade accepts only from_black_seconds and to_black_seconds"
+        )
+    from_black = _runtime_number(
+        values.get("from_black_seconds", 0.0), "fade from_black_seconds", allow_zero=True
+    )
+    to_black = _runtime_number(
+        values.get("to_black_seconds", 0.0), "fade to_black_seconds", allow_zero=True
+    )
+    if from_black == 0.0 and to_black == 0.0:
+        raise SequenceWorkflowError(
+            "fade requires a positive from_black_seconds or to_black_seconds"
+        )
+    return FadeSpec(from_black, to_black)
+
+
 def _image_duration(parameters: Mapping[str, object]) -> float:
     values = dict(parameters)
     if set(values) != {"duration_seconds"}:
@@ -272,6 +299,7 @@ def _operations_from_plan(
     bool,
     str | None,
     MusicSpec | None,
+    FadeSpec | None,
 ]:
     if len(plan.operations) < 2:
         raise SequenceWorkflowError("video-sequence requires at least two operations")
@@ -287,6 +315,7 @@ def _operations_from_plan(
     captions_seen = False
     music_path: str | None = None
     music: MusicSpec | None = None
+    fade: FadeSpec | None = None
     for index, operation in enumerate(plan.operations):
         if operation.kind == NARRATION_KIND:
             if index != len(plan.operations) - 1:
@@ -365,10 +394,21 @@ def _operations_from_plan(
             music_path = operation.source
             used_sources.add(operation.source)
             continue
+        if operation.kind == FADE_KIND:
+            if fade is not None:
+                raise SequenceWorkflowError("video-sequence accepts at most one fade operation")
+            if len(segments) < 2:
+                raise SequenceWorkflowError("fade must follow all timeline segments")
+            if operation.source is not None:
+                raise SequenceWorkflowError("fade does not take a source")
+            if operation.start_seconds is not None or operation.end_seconds is not None:
+                raise SequenceWorkflowError("fade has no timeline range")
+            fade = _fade_spec(operation.parameters)
+            continue
         if operation.kind == IMAGE_KIND:
-            if captions_seen or music_path is not None:
+            if captions_seen or music_path is not None or fade is not None:
                 raise SequenceWorkflowError(
-                    "all timeline segments must precede captions and music"
+                    "all timeline segments must precede captions, music and fades"
                 )
             if operation.source is None:
                 raise SequenceWorkflowError("image_clip must declare a source")
@@ -385,9 +425,9 @@ def _operations_from_plan(
             raise SequenceWorkflowError(
                 f"video-sequence does not support operation kind: {operation.kind}"
             )
-        if captions_seen or music_path is not None:
+        if captions_seen or music_path is not None or fade is not None:
             raise SequenceWorkflowError(
-                "all timeline segments must precede captions and music"
+                "all timeline segments must precede captions, music and fades"
             )
         if operation.source is None:
             raise SequenceWorkflowError("sequence_clip must declare a source")
@@ -424,6 +464,7 @@ def _operations_from_plan(
         captions_from_narration,
         music_path,
         music,
+        fade,
     )
 
 
@@ -588,11 +629,19 @@ def run_sequence_workflow(
         captions_from_narration,
         music_path,
         music,
+        fade,
     ) = _operations_from_plan(plan)
     if caption_source is not None:
         captions = _caption_cues_from_file(caption_source)
     expected_duration = sum(_segment_duration(segment) for segment in segments)
     expected_image_count = sum(1 for segment in segments if isinstance(segment, SequenceImage))
+    if (
+        fade is not None
+        and fade.from_black_seconds + fade.to_black_seconds > expected_duration
+    ):
+        raise SequenceWorkflowError(
+            "fade must not be longer than the sequence duration"
+        )
     if music is not None and music.fade_in_seconds + music.fade_out_seconds > expected_duration:
         raise SequenceWorkflowError(
             "music fades must not be longer than the sequence duration"
@@ -657,6 +706,9 @@ def run_sequence_workflow(
                 compose_kwargs["music_gain_db"] = music.gain_db
                 compose_kwargs["music_fade_in_seconds"] = music.fade_in_seconds
                 compose_kwargs["music_fade_out_seconds"] = music.fade_out_seconds
+            if fade is not None:
+                compose_kwargs["video_fade_in_seconds"] = fade.from_black_seconds
+                compose_kwargs["video_fade_out_seconds"] = fade.to_black_seconds
             # the clip canvas is always forwarded: images letter-box onto it and
             # captions use it as the pixel-accurate layout frame.
             compose_kwargs["canvas"] = canvas
@@ -699,6 +751,13 @@ def run_sequence_workflow(
             or artifact.music_fade_out_seconds != expected_fade_out
         ):
             raise SequenceWorkflowError("compose returned unexpected music metadata")
+        expected_video_fade_in = fade.from_black_seconds if fade is not None else 0.0
+        expected_video_fade_out = fade.to_black_seconds if fade is not None else 0.0
+        if (
+            artifact.video_fade_in_seconds != expected_video_fade_in
+            or artifact.video_fade_out_seconds != expected_video_fade_out
+        ):
+            raise SequenceWorkflowError("compose returned unexpected fade metadata")
         if artifact.duration_seconds != expected_duration or artifact.file_size_bytes <= 0:
             raise SequenceWorkflowError("compose returned inconsistent artifact metadata")
 

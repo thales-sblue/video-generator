@@ -13,8 +13,8 @@ VideoRequest -> VideoBrief -> EditPlan -> execução local -> RenderManifest
 O projeto já inspeciona mídia com `ffprobe`, extrai segmentos e áudio com FFmpeg
 e executa workflows estritos a partir de `EditPlan`. `video-sequence` monta
 trechos de vídeo e imagens locais com duração fixa em ordem, pode queimar
-captions e incorporar uma narração e música local, produzindo H.264/AAC validado
-e registrado em `RenderManifest`. Um modo final separado publica `final.mp4`
+captions, incorporar uma narração e música local e abrir/encerrar a imagem no
+preto, produzindo H.264/AAC validado e registrado em `RenderManifest`. Um modo final separado publica `final.mp4`
 somente após QA técnico. Imagens de qualquer dimensão são escaladas e
 letter-boxed no canvas dos clipes; movimento (Ken Burns) ainda não está
 implementado.
@@ -193,6 +193,13 @@ fade-in curto anticlique e por normalização de loudness EBU R128 para um alvo 
 publicação online (-14 LUFS integrado, true peak -1,5 dBTP), reamostrada de volta
 a 48 kHz. O áudio original dos clipes permanece excluído e o output continua
 contendo uma única faixa AAC.
+
+Após todos os segmentos da timeline, uma operação opcional `fade` (sem source e
+sem tempos) abre a imagem a partir do preto e/ou a fecha no preto:
+`{"from_black_seconds":X,"to_black_seconds":Y}`, cada um opcional e ≥ 0, ao menos
+um presente, soma ≤ duração visual. O fade é aplicado sobre o quadro já
+concatenado e sobre as captions queimadas, então elas escurecem junto com a
+imagem. O áudio tem os próprios fades (via `music` e a normalização final).
 
 Para publicação, `execute-final-sequence-plan` exige que o `output_path`
 persistido termine exatamente em `final.mp4`. O render é criado em um diretório

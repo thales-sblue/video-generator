@@ -396,6 +396,14 @@ def _format_sequence_workflow(report: SequenceWorkflowReport, manifest_path: Pat
             ),
             f"Captions: {report.artifact.caption_count}",
             f"Music: {'included' if report.artifact.music_source_path else 'not included'}",
+            "Fades: "
+            + (
+                f"from black {report.artifact.video_fade_in_seconds}s / "
+                f"to black {report.artifact.video_fade_out_seconds}s"
+                if report.artifact.video_fade_in_seconds
+                or report.artifact.video_fade_out_seconds
+                else "not applied"
+            ),
             f"Publication: {report.publication}",
             f"Artifact: {report.artifact.output_path}",
             f"Duration: {report.artifact.duration_seconds} seconds",

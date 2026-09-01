@@ -168,6 +168,32 @@ def music_preflight(plan: EditPlan, *, audio: bool = True) -> PreflightReport:
     return PreflightReport(plan.plan_id, True, (), (*base.sources, music_probe))
 
 
+def fade_plan(*, fade_parameters=None, fade_kwargs=None, place_after_narration=False) -> EditPlan:
+    narrated = narrated_plan()
+    fade_op = EditOperation(
+        "fade-1",
+        "fade",
+        parameters=(
+            {"from_black_seconds": 1, "to_black_seconds": 1.5}
+            if fade_parameters is None
+            else fade_parameters
+        ),
+        **(fade_kwargs or {}),
+    )
+    operations = (
+        (*narrated.operations, fade_op)
+        if place_after_narration
+        else (*narrated.operations[:-1], fade_op, narrated.operations[-1])
+    )
+    return EditPlan(
+        narrated.plan_id,
+        narrated.brief_id,
+        narrated.sources,
+        narrated.output_path,
+        operations,
+    )
+
+
 def image_plan(*, image_parameters=None, image_kind: str = "image_clip", **operation_kwargs) -> EditPlan:
     clip_source = str(Path("inputs/first.mp4").resolve())
     image_source = str(Path("inputs/card.png").resolve())
@@ -520,6 +546,138 @@ class SequenceWorkflowTests(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(SequenceWorkflowError, "fades must not be longer"):
+            run_sequence_workflow(
+                plan,
+                preflight=lambda _: self.fail("must not preflight"),
+                compose=lambda *_a, **_k: self.fail("must not compose"),
+            )
+
+    def test_passes_persisted_video_fades_to_composition(self):
+        plan = fade_plan(
+            fade_parameters={"from_black_seconds": 1, "to_black_seconds": 1.5}
+        )
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen.update(
+                {
+                    key: kwargs.get(key)
+                    for key in ("video_fade_in_seconds", "video_fade_out_seconds")
+                }
+            )
+            return SequenceArtifact(
+                plan.sources[:2],
+                plan.output_path,
+                3.5,
+                900,
+                narration_source_path=plan.sources[2],
+                video_fade_in_seconds=1.0,
+                video_fade_out_seconds=1.5,
+            )
+
+        report = run_sequence_workflow(
+            plan,
+            preflight=narrated_preflight,
+            compose=compose,
+            validate=lambda v, **_: SequenceValidationReport(True, v, 3.5, 0.15, (), None),
+        )
+
+        self.assertTrue(report.valid)
+        self.assertEqual(
+            seen, {"video_fade_in_seconds": 1.0, "video_fade_out_seconds": 1.5}
+        )
+        self.assertEqual(report.artifact.video_fade_out_seconds, 1.5)
+        self.assertIn("fade-1", report.operation_ids)
+
+    def test_accepts_a_one_sided_video_fade(self):
+        plan = fade_plan(fade_parameters={"from_black_seconds": 2})
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen.update(
+                {
+                    key: kwargs.get(key)
+                    for key in ("video_fade_in_seconds", "video_fade_out_seconds")
+                }
+            )
+            return SequenceArtifact(
+                plan.sources[:2],
+                plan.output_path,
+                3.5,
+                900,
+                narration_source_path=plan.sources[2],
+                video_fade_in_seconds=2.0,
+                video_fade_out_seconds=0.0,
+            )
+
+        run_sequence_workflow(
+            plan,
+            preflight=narrated_preflight,
+            compose=compose,
+            validate=lambda v, **_: SequenceValidationReport(True, v, 3.5, 0.15, (), None),
+        )
+
+        self.assertEqual(seen, {"video_fade_in_seconds": 2.0, "video_fade_out_seconds": 0.0})
+
+    def test_rejects_video_fades_longer_than_the_timeline(self):
+        plan = fade_plan(
+            fade_parameters={"from_black_seconds": 2, "to_black_seconds": 2}
+        )
+        with self.assertRaisesRegex(SequenceWorkflowError, "fade must not be longer"):
+            run_sequence_workflow(
+                plan,
+                preflight=lambda _: self.fail("must not preflight"),
+                compose=lambda *_a, **_k: self.fail("must not compose"),
+            )
+
+    def test_rejects_a_malformed_or_misplaced_fade_before_composition(self):
+        cases = (
+            (
+                fade_plan(fade_parameters={"from_black_seconds": 1, "extra": 1}),
+                "fade accepts only",
+            ),
+            (fade_plan(fade_parameters={}), "fade accepts only"),
+            (
+                fade_plan(fade_parameters={"from_black_seconds": 0, "to_black_seconds": 0}),
+                "fade requires a positive",
+            ),
+            (
+                fade_plan(fade_parameters={"from_black_seconds": -1}),
+                "from_black_seconds",
+            ),
+            (
+                fade_plan(fade_kwargs={"source": str(Path("inputs/narration.wav").resolve())}),
+                "fade does not take a source",
+            ),
+            (
+                fade_plan(fade_kwargs={"start_seconds": 0, "end_seconds": 1}),
+                "fade has no timeline range",
+            ),
+            (fade_plan(place_after_narration=True), "narration must be the final operation"),
+        )
+        for plan, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(SequenceWorkflowError, message):
+                    run_sequence_workflow(
+                        plan,
+                        preflight=lambda _: self.fail("must not preflight invalid fade"),
+                        compose=lambda *_a, **_k: self.fail("must not compose invalid fade"),
+                    )
+
+    def test_rejects_more_than_one_fade_operation(self):
+        plan = fade_plan()
+        plan = EditPlan(
+            plan.plan_id,
+            plan.brief_id,
+            plan.sources,
+            plan.output_path,
+            (
+                *plan.operations[:-1],
+                EditOperation("fade-2", "fade", parameters={"to_black_seconds": 1}),
+                plan.operations[-1],
+            ),
+        )
+        with self.assertRaisesRegex(SequenceWorkflowError, "at most one fade"):
             run_sequence_workflow(
                 plan,
                 preflight=lambda _: self.fail("must not preflight"),
