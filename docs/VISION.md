@@ -30,7 +30,8 @@ Pesquisa automática, roteiro automático, busca de stock, geração local de
 assets e escolhas editoriais mais autônomas vêm depois que a composição básica
 funcionar. Não são requisitos do primeiro vídeo.
 
-`dark-video` v1 estará atingido quando o projeto puder, de maneira reproduzível:
+`dark-video` v1 **foi atingido em 2026-08-31**. De maneira reproduzível, o
+projeto já consegue:
 
 - receber roteiro e múltiplos vídeos e/ou imagens;
 - receber ou gerar narração local;
@@ -43,13 +44,28 @@ funcionar. Não são requisitos do primeiro vídeo.
 
 O vídeo inicial precisa ser completo e assistível, não cinematográfico.
 
-O motor já recebe uma narração local com duração correspondente à sequência,
+O motor recebe uma narração local com duração correspondente à sequência,
 queima captions temporizadas, repete e mistura música com ganho persistido e
 produz H.264/AAC. O modo final publica `final.mp4` apenas após validação em
-staging e uma segunda validação do arquivo publicado, mantendo a revisão humana
-como `not_performed`. Geração local de voz e imagens continuam futuras; para o
-primeiro caso alimentado por clipes, voz e música fornecidos, o próximo marco é
-executar uma produção real completa e obter revisão visual/auditiva humana.
+staging e uma segunda validação do arquivo publicado. A produção de referência
+está em `projects/prod/` (roteiro PT-BR -> narração Kokoro -> timeline ->
+captions `from=narration` -> música -> `final.mp4` H.264/AAC), com o pipeline
+oficial re-executado e o `final.mp4` re-derivado byte-idêntico.
+
+A revisão visual/auditiva humana dessa produção foi realizada em 2026-08-31 e
+aprovou hook, ritmo, atmosfera/trilha, encerramento, legendas e visuais. O
+`RenderManifest` v1 só aceita `editorial_review = not_performed`, então o
+veredito humano fica registrado nas `editorial_notes` do `video-brief.json` e no
+histórico da sessão; promover `editorial_review` a um veredito com evidência no
+próprio contrato é um incremento futuro.
+
+**Pendência conhecida e aceita do v1 — naturalidade da voz.** O Kokoro TTS local
+ainda soa sintético em PT-BR mesmo a 0,88 com roteiro enxuto; foi mitigado com
+velocidade menor e reescrita de trechos. Uma voz melhor exige outro TTS local
+(Piper/XTTS/F5-TTS, pelos gates de licença/segurança) ou narração gravada por
+humano — próximo incremento, fora do escopo do v1. Publicar em um canal real
+também pede trocar o b-roll procedural de placeholder por footage dark real com
+direitos rastreáveis: passo editorial/de asset, não lacuna do motor.
 
 ## Fluxo-alvo
 

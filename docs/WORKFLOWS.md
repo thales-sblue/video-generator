@@ -140,13 +140,22 @@ explícito.
 
 ## Evolução planejada do `dark-video`
 
-Capacidades que ainda faltam para `dark-video` v1:
+`dark-video` v1 **foi atingido em 2026-08-31**: a produção de referência
+`projects/prod/` roda de ponta a ponta pelo pipeline oficial (com `final.mp4`
+re-derivado byte-idêntico) e recebeu revisão visual/auditiva humana registrada
+nas `editorial_notes` do `video-brief.json` — aprovados hook, ritmo,
+atmosfera/trilha, encerramento, legendas e visuais. O `RenderManifest` v1 só
+aceita `editorial_review = not_performed`; o veredito humano vive no brief e no
+histórico da sessão.
 
-- registrar a revisão humana visual/auditiva da primeira produção real. O sample
-  `projects/prod/` já roda de ponta a ponta pelo pipeline oficial e passou por
-  uma rodada de correção editorial (luminância, densidade e posição das captions,
-  loudness, pacing); falta a escuta/observação humana com evidência —
-  `editorial_review` continua `not_performed`.
+Pendência conhecida e aceita, carregada para além do v1:
+
+- **naturalidade da voz.** O Kokoro TTS local ainda soa sintético em PT-BR;
+  mitigado com velocidade menor e reescrita de trechos. Uma voz melhor exige
+  outro TTS local (Piper/XTTS/F5-TTS, pelos gates de licença/segurança) ou
+  narração gravada por humano. Publicar em um canal real ainda pede footage dark
+  real com direitos rastreáveis no lugar do b-roll procedural de placeholder —
+  passo editorial/de asset, não lacuna do motor.
 
 Já disponível:
 
@@ -169,10 +178,10 @@ Já disponível:
 Sequência sugerida (cada item ainda deve passar pela pergunta do menor
 incremento; nada aqui autoriza pular testes ou camadas):
 
-1. **Primeira produção real completa** — script -> narração (`narration` texto) ->
-   timeline (clipes + imagens) -> captions (`from=narration`) -> música -> MP4,
-   com assets locais reais, e registrar a revisão humana visual/auditiva. É o
-   marco que fecha `dark-video` v1; exige o modelo Kokoro instalado.
+1. **Voz local mais natural** — o v1 fechou com o Kokoro como pendência aceita de
+   qualidade. Avaliar outro TTS local (Piper/XTTS/F5-TTS) ou narração gravada por
+   humano, pelos gates de licença/segurança e no padrão `spike -> adapter ->
+   wire`. É a melhoria de qualidade mais visível pós-v1, não pré-requisito dele.
 2. **Captions com alinhamento real (Whisper local)** — melhorar o timing de
    `from=narration` de "peso de caracteres" para alinhamento por fala, seguindo o
    padrão do Kokoro (spike -> adapter -> wire). Qualidade, não pré-requisito de v1.
