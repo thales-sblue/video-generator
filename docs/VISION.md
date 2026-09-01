@@ -116,6 +116,34 @@ comercial, origem e direito de uso comercial rastreáveis e a persistência dess
 proveniência (ver "Direitos sobre assets externos" e "Contratos e evolução" em
 [AGENTS.md](../AGENTS.md)).
 
+## Voz local — decisão de reuso (2026-09-01)
+
+A naturalidade da voz é a pendência conhecida e aceita do v1 (Kokoro soa
+sintético em PT-BR). Pesquisa de alternativas locais, avaliada pelos gates de
+licença, segurança/manutenção, custo e ajuste local-first:
+
+- **XTTS v2** e **F5-TTS** — descartados: licenças não comerciais (Coqui Public
+  Model License "non-commercial"; F5-TTS CC-BY-NC 4.0). Coqui encerrou em 2024
+  sem relicenciar.
+- **Piper** — o `rhasspy/piper` MIT foi arquivado (somente leitura, out/2025); o
+  fork mantido é **GPL-3.0**. Copyleft conflita com a opção de manter o
+  `video-generator` proprietário no futuro; a versão MIT sem manutenção falha no
+  gate de segurança. Descartado como engine (vozes PT-BR isoladas em MIT, ex.
+  Razo/faber, não resolvem a licença do runtime).
+- **Chatterbox Multilingual** (Resemble AI, código MIT, tem modelo dedicado
+  PT-BR) — descartado por ora: pede 5–7 GB de VRAM e é "painfully slow" em CPU,
+  além de marca d'água embutida em todo output. Runtime pesado desproporcional
+  ao incremento e a esta máquina; reabrir só com decisão explícita de exigir GPU.
+- **Kokoro** (Apache-2.0) — permanece o único TTS local empacotado. Já isolado e
+  travado em `.local-tools/kokoro/`, CPU-viável, com `pf_dora`/`pm_alex` em
+  PT-BR.
+
+**Decisão: reutilizar — manter só o Kokoro; não adicionar um segundo engine
+agora.** O caminho de maior qualidade já é suportado sem dependência nova:
+**narração gravada por humano** via `narration` com `source` de áudio local. Um
+segundo engine só entra quando surgir uma opção permissiva e viável em CPU, ou
+mediante decisão explícita de adotar runtime com GPU.
+
 O objetivo maduro é permitir um pedido como “produza o próximo vídeo do canal”
 e fazer o agente cuidar da maior parte da produção com checkpoints auditáveis.
 

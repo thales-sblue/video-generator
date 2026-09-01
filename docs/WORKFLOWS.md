@@ -181,9 +181,13 @@ Sequência sugerida (cada item ainda deve passar pela pergunta do menor
 incremento; nada aqui autoriza pular testes ou camadas):
 
 1. **Voz local mais natural** — o v1 fechou com o Kokoro como pendência aceita de
-   qualidade. Avaliar outro TTS local (Piper/XTTS/F5-TTS) ou narração gravada por
-   humano, pelos gates de licença/segurança e no padrão `spike -> adapter ->
-   wire`. É a melhoria de qualidade mais visível pós-v1, não pré-requisito dele.
+   qualidade. A pesquisa de reuso (ver "Voz local — decisão de reuso" em
+   [VISION.md](VISION.md)) descartou Piper (GPL-3.0/arquivado), XTTS v2 e F5-TTS
+   (licenças não comerciais) e Chatterbox (5–7 GB de VRAM, inviável em CPU): o
+   Kokoro segue como único engine empacotado. O caminho de maior qualidade
+   disponível hoje é **narração gravada por humano** via `narration` com `source`
+   de áudio local — sem dependência nova. Um segundo engine só entra com uma
+   opção permissiva viável em CPU ou decisão explícita de exigir GPU.
 2. **Captions com alinhamento real (Whisper local)** — melhorar o timing de
    `from=narration` de "peso de caracteres" para alinhamento por fala, seguindo o
    padrão do Kokoro (spike -> adapter -> wire). Qualidade, não pré-requisito de v1.
