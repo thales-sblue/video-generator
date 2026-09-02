@@ -161,12 +161,18 @@ def build_sequence_render_manifest(
         if operation.kind == "narration" and operation.source is None
     )
     expected_text_sha = None
+    expected_lead_in = 0.0
     if len(narration_text_ops) == 1:
         expected_text_sha = hashlib.sha256(
             str(narration_text_ops[0].parameters.get("text", "")).encode("utf-8")
         ).hexdigest()
+        expected_lead_in = float(
+            narration_text_ops[0].parameters.get("lead_in_seconds", 0.0) or 0.0
+        )
     if report.artifact.narration_text_sha256 != expected_text_sha:
         raise ManifestError("workflow artifact narration text does not match the plan")
+    if report.artifact.narration_lead_in_seconds != expected_lead_in:
+        raise ManifestError("workflow artifact narration lead-in does not match the plan")
     captions = tuple(
         operation for operation in plan.operations if operation.kind == "captions"
     )

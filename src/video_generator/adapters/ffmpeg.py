@@ -73,6 +73,7 @@ class SequenceArtifact:
     music_fade_out_seconds: float = 0.0
     video_fade_in_seconds: float = 0.0
     video_fade_out_seconds: float = 0.0
+    narration_lead_in_seconds: float = 0.0
 
 
 IMAGE_TIMELINE_FPS = 30
@@ -387,6 +388,7 @@ def compose_video_sequence(
     output_path: str | Path,
     *,
     narration_path: str | Path | None = None,
+    narration_lead_in_seconds: float = 0.0,
     captions: Sequence[CaptionCue] = (),
     music_path: str | Path | None = None,
     music_gain_db: float | None = None,
@@ -407,6 +409,10 @@ def compose_video_sequence(
     required and every image is scaled to fit and letter-boxed onto it, then
     every segment is normalised to ``IMAGE_TIMELINE_FPS`` and ``yuv420p`` so the
     concat is deterministic.
+
+    ``narration_lead_in_seconds`` delays the voice so the timeline can open on
+    picture and music alone; it requires ``narration_path`` and must be shorter
+    than the timeline.
     """
 
     if isinstance(clips, (str, bytes)) or not isinstance(clips, Sequence):
@@ -493,12 +499,18 @@ def compose_video_sequence(
     if resolved_captions and canvas_size is None:
         raise FFmpegError("captions require a (width, height) canvas for pixel-accurate layout")
     narration: Path | None = None
-    if narration_path is not None:
+    narration_lead_in = _time(narration_lead_in_seconds, "narration_lead_in_seconds")
+    if narration_path is None:
+        if narration_lead_in:
+            raise FFmpegError("narration_lead_in_seconds requires a narration_path")
+    else:
         narration = Path(narration_path).expanduser().resolve()
         if not narration.exists() or not narration.is_file():
             raise FFmpegError(f"narration does not exist or is not a file: {narration}")
         if os.path.normcase(str(narration)) == os.path.normcase(str(output)):
             raise FFmpegError("output_path must not overwrite the narration source")
+        if narration_lead_in >= duration:
+            raise FFmpegError("narration lead-in must be shorter than the sequence duration")
     music: Path | None = None
     gain: float | None = None
     fade_in = _time(music_fade_in_seconds, "music_fade_in_seconds")
@@ -639,9 +651,14 @@ def compose_video_sequence(
     narration_index = len(resolved_clips) if narration is not None else None
     music_index = len(resolved_clips) + (1 if narration is not None else 0) if music is not None else None
     if narration_index is not None:
+        # A lead-in holds the voice back so the timeline can open on atmosphere
+        # (and the music bed) alone; apad/atrim still fill out to the timeline.
+        delay = (
+            f"adelay={round(narration_lead_in * 1000)}:all=1," if narration_lead_in else ""
+        )
         filters.append(
             f"[{narration_index}:a:0]aresample=48000,"
-            "aformat=sample_fmts=fltp:channel_layouts=stereo,apad,"
+            f"aformat=sample_fmts=fltp:channel_layouts=stereo,{delay}apad,"
             f"atrim=duration={format(duration, '.15g')},asetpts=PTS-STARTPTS[voice]"
         )
     if music_index is not None and gain is not None:
@@ -747,4 +764,5 @@ def compose_video_sequence(
         music_fade_out_seconds=fade_out if music is not None else 0.0,
         video_fade_in_seconds=video_fade_in,
         video_fade_out_seconds=video_fade_out,
+        narration_lead_in_seconds=narration_lead_in,
     )

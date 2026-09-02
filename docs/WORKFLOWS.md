@@ -98,12 +98,25 @@ Uma operação final opcional `narration`, sem tempos e com
   `duration_policy`. A duração deve bater com a soma dos trechos dentro da
   tolerância (150 ms por padrão); diferença maior falha antes da composição.
 - **texto:** sem `source`; `parameters` adiciona `text` (obrigatório) e,
-  opcionalmente, `voice`, `speed`, `lang`. O workflow chama
+  opcionalmente, `voice`, `speed`, `lang`, `lead_in_seconds`. O workflow chama
   `synthesize_narration` (Kokoro opcional) para um WAV temporário, recusa uma
   narração mais longa que a timeline e descarta o WAV depois; o
   `RenderManifest` guarda o SHA-256 do texto (voz/velocidade/idioma resolvidos
   no artifact), sem persistir o áudio intermediário. Kokoro ausente falha só
   esta operação.
+
+`lead_in_seconds` (≥ 0, menor que a duração visual, só no modo texto) segura a
+voz para que a abertura seja só imagem e trilha: o adapter aplica `adelay` antes
+do `apad`/`atrim`, então a narração ainda preenche a timeline até o fim. A soma
+`lead_in + duração sintetizada` precisa caber na timeline (dentro da tolerância),
+senão o plano é recusado antes da composição. Quando as captions vêm de
+`from=narration`, os cues são distribuídos sobre o trecho falado e **deslocados
+pelo mesmo lead-in**, de modo que nada aparece antes da voz e a última linha
+ainda termina com ela. No modo arquivo o lead-in não existe: um áudio pré-gravado
+carrega o próprio silêncio inicial e continua tendo de bater com a timeline. Como
+o valor vem do plano, o `plan_sha256` já preserva a reprodutibilidade — o
+`RenderManifest` apenas cruza o lead-in do artifact contra a operação
+`narration`.
 
 Em ambos os casos a narração é normalizada para estéreo/48 kHz, recebe silêncio
 final ou trim até a duração visual e é codificada em AAC. A validação exige
@@ -186,6 +199,10 @@ Já disponível:
   operação `narration`** no `video-sequence` (`text` + `voice`/`speed`/`lang`
   opcionais; WAV temporário, SHA-256 do texto no `RenderManifest`). Kokoro
   ausente falha só essa capacidade. **Pendente:** revisão auditiva real;
+- `lead_in_seconds` na operação `narration` em modo texto: abre o vídeo só com
+  imagem e trilha e só então entra a voz, com as captions derivadas da narração
+  deslocadas junto. **Pendente:** revisão auditiva/visual real do ritmo da
+  entrada da voz;
 - operação `fade` no `video-sequence`: abre a imagem do preto e/ou a fecha no
   preto (`from_black_seconds`/`to_black_seconds`, soma ≤ duração visual),
   aplicada depois do concat e das captions queimadas. **Pendente:** revisão

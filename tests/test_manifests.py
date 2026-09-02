@@ -341,6 +341,65 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ManifestError, "fade does not match the plan"):
                 build_sequence_render_manifest(plan, report_for(0.0), doctor_report(), fingerprints)
 
+    def test_sequence_manifest_checks_the_persisted_narration_lead_in(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "a.mp4"
+            second = root / "b.mp4"
+            output = root / "timeline.mp4"
+            for path in (first, second, output):
+                path.write_bytes(path.stem.encode("utf-8"))
+            plan = EditPlan(
+                "plan-lead-in",
+                "brief-dark",
+                (str(first), str(second)),
+                str(output),
+                (
+                    EditOperation("clip-1", "sequence_clip", str(first), 0, 1),
+                    EditOperation("clip-2", "sequence_clip", str(second), 0, 1),
+                    EditOperation(
+                        "voice-1",
+                        "narration",
+                        parameters={
+                            "duration_policy": "match_timeline",
+                            "text": "Hello dark world.",
+                            "lead_in_seconds": 0.75,
+                        },
+                    ),
+                ),
+            )
+
+            def report_for(lead_in):
+                artifact = SequenceArtifact(
+                    (str(first.resolve()), str(second.resolve())),
+                    str(output.resolve()),
+                    2.0,
+                    output.stat().st_size,
+                    narration_text_sha256=hashlib.sha256(
+                        b"Hello dark world."
+                    ).hexdigest(),
+                    narration_lead_in_seconds=lead_in,
+                )
+                return SequenceWorkflowReport(
+                    plan.plan_id,
+                    ("clip-1", "clip-2", "voice-1"),
+                    PreflightReport(plan.plan_id, True, (), ()),
+                    artifact,
+                    SequenceValidationReport(True, artifact, 2.0, 0.15, (), None),
+                )
+
+            fingerprints = tuple(fingerprint_file(source) for source in plan.sources)
+            manifest = build_sequence_render_manifest(
+                plan, report_for(0.75), doctor_report(), fingerprints
+            )
+            self.assertEqual(manifest.editorial_review, "not_performed")
+            with self.assertRaisesRegex(
+                ManifestError, "narration lead-in does not match the plan"
+            ):
+                build_sequence_render_manifest(
+                    plan, report_for(0.0), doctor_report(), fingerprints
+                )
+
     def test_fingerprints_files_and_builds_round_trippable_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             plan, report = execution(directory)

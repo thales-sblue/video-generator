@@ -44,6 +44,17 @@ class SequenceWorkflowSummaryTests(unittest.TestCase):
             ),
         )
 
+    def test_narration_line_reports_a_lead_in(self):
+        self.assertIn(
+            "Narration: from text after 1.5s",
+            _format_sequence_workflow(
+                self._report(
+                    narration_text_sha256="a" * 64, narration_lead_in_seconds=1.5
+                ),
+                Path("m.json"),
+            ),
+        )
+
     def test_fade_line_reports_the_black_spans(self):
         self.assertIn(
             "Fades: not applied",

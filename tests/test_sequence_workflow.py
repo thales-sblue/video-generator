@@ -1198,7 +1198,7 @@ class SequenceWorkflowTests(unittest.TestCase):
             ({"duration_policy": "match_timeline", "text": "   "}, "non-empty string"),
             (
                 {"duration_policy": "match_timeline", "text": "hi", "pitch": 3},
-                "text, voice, speed and lang",
+                "text, voice, speed, lang and lead_in_seconds",
             ),
         ):
             with self.subTest(message=message):
@@ -1271,6 +1271,169 @@ class SequenceWorkflowTests(unittest.TestCase):
         self.assertEqual(seen["captions"][0][1], 0.0)
         self.assertLessEqual(seen["captions"][-1][2], 3.0)
         self.assertEqual(report.artifact.caption_count, len(seen["captions"]))
+
+    def test_holds_text_narration_back_by_the_lead_in_and_shifts_its_captions(self):
+        base = narrated_text_plan(
+            params={
+                "duration_policy": "match_timeline",
+                "text": "Hello dark world. Here is a second sentence for the caption track.",
+                "lead_in_seconds": 1,
+            }
+        )
+        plan = EditPlan(
+            base.plan_id,
+            base.brief_id,
+            base.sources,
+            base.output_path,
+            (
+                *base.operations[:-1],
+                EditOperation(
+                    "captions-1", "captions", parameters={"style": "bottom_box", "from": "narration"}
+                ),
+                base.operations[-1],
+            ),
+        )
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen["lead_in"] = kwargs.get("narration_lead_in_seconds")
+            seen["captions"] = tuple(
+                (round(c.start_seconds, 3), round(c.end_seconds, 3))
+                for c in kwargs.get("captions", ())
+            )
+            return SequenceArtifact(
+                tuple(clip.source_path for clip in clips),
+                plan.output_path,
+                3.5,
+                500,
+                narration_source_path=kwargs.get("narration_path"),
+                caption_count=len(kwargs.get("captions", ())),
+                narration_lead_in_seconds=kwargs.get("narration_lead_in_seconds", 0.0),
+            )
+
+        # 1 s of atmosphere, then 2 s of voice inside a 3.5 s timeline
+        with patch.object(sequence_module, "synthesize_narration", side_effect=_fake_synth), \
+                patch.object(sequence_module, "probe_media", side_effect=_probe_of(2.0)):
+            report = run_sequence_workflow(
+                plan,
+                preflight=valid_preflight,
+                compose=compose,
+                validate=lambda artifact, **_k: SequenceValidationReport(
+                    True, artifact, 3.5, 0.15, (), None
+                ),
+            )
+
+        self.assertTrue(report.valid)
+        self.assertEqual(seen["lead_in"], 1.0)
+        self.assertEqual(report.artifact.narration_lead_in_seconds, 1.0)
+        # no caption before the voice; the last one still ends with it
+        self.assertGreaterEqual(len(seen["captions"]), 2)
+        self.assertEqual(seen["captions"][0][0], 1.0)
+        self.assertEqual(seen["captions"][-1][1], 3.0)
+
+    def test_defaults_the_narration_lead_in_to_zero(self):
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen["lead_in"] = kwargs.get("narration_lead_in_seconds")
+            return SequenceArtifact(
+                tuple(clip.source_path for clip in clips),
+                narrated_text_plan().output_path,
+                3.5,
+                500,
+                narration_source_path=kwargs.get("narration_path"),
+            )
+
+        with patch.object(sequence_module, "synthesize_narration", side_effect=_fake_synth), \
+                patch.object(sequence_module, "probe_media", side_effect=_probe_of(3.2)):
+            report = run_sequence_workflow(
+                narrated_text_plan(),
+                preflight=valid_preflight,
+                compose=compose,
+                validate=lambda artifact, **_k: SequenceValidationReport(
+                    True, artifact, 3.5, 0.15, (), None
+                ),
+            )
+
+        # an absent lead-in is not forwarded at all, keeping the previous graph
+        self.assertIsNone(seen["lead_in"])
+        self.assertEqual(report.artifact.narration_lead_in_seconds, 0.0)
+
+    def test_rejects_a_lead_in_that_pushes_the_narration_past_the_timeline(self):
+        plan = narrated_text_plan(
+            params={
+                "duration_policy": "match_timeline",
+                "text": "Hello dark world.",
+                "lead_in_seconds": 2,
+            }
+        )
+        # 2 s lead-in + 2 s of voice overruns the 3.5 s timeline
+        with patch.object(sequence_module, "synthesize_narration", side_effect=_fake_synth), \
+                patch.object(sequence_module, "probe_media", side_effect=_probe_of(2.0)):
+            with self.assertRaisesRegex(SequenceWorkflowError, "shorten the narration text"):
+                run_sequence_workflow(
+                    plan,
+                    preflight=valid_preflight,
+                    compose=lambda *_a, **_k: self.fail("must not compose"),
+                )
+
+    def test_rejects_an_invalid_or_misplaced_narration_lead_in(self):
+        for plan, message in (
+            (
+                narrated_text_plan(
+                    params={
+                        "duration_policy": "match_timeline",
+                        "text": "hi",
+                        "lead_in_seconds": -1,
+                    }
+                ),
+                "lead_in_seconds must be a finite non-negative number",
+            ),
+            (
+                narrated_text_plan(
+                    params={
+                        "duration_policy": "match_timeline",
+                        "text": "hi",
+                        "lead_in_seconds": "soon",
+                    }
+                ),
+                "lead_in_seconds must be a finite non-negative number",
+            ),
+            (
+                narrated_plan(
+                    narration_parameters={
+                        "duration_policy": "match_timeline",
+                        "lead_in_seconds": 1,
+                    }
+                ),
+                "narration from a source accepts only duration_policy",
+            ),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(SequenceWorkflowError, message):
+                    run_sequence_workflow(
+                        plan,
+                        preflight=lambda _: self.fail("must not preflight"),
+                        compose=lambda *_a, **_k: self.fail("must not compose"),
+                    )
+
+    def test_rejects_an_artifact_with_an_unexpected_lead_in(self):
+        def compose(clips, output, **kwargs):
+            return SequenceArtifact(
+                tuple(clip.source_path for clip in clips),
+                narrated_text_plan().output_path,
+                3.5,
+                500,
+                narration_source_path=kwargs.get("narration_path"),
+                narration_lead_in_seconds=2.0,
+            )
+
+        with patch.object(sequence_module, "synthesize_narration", side_effect=_fake_synth), \
+                patch.object(sequence_module, "probe_media", side_effect=_probe_of(3.2)):
+            with self.assertRaisesRegex(SequenceWorkflowError, "unexpected narration metadata"):
+                run_sequence_workflow(
+                    narrated_text_plan(), preflight=valid_preflight, compose=compose
+                )
 
     def test_rejects_from_narration_captions_without_a_narration_text(self):
         base = sequence_plan()

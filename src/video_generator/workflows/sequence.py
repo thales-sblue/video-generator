@@ -45,7 +45,14 @@ IMAGE_KIND = "image_clip"
 IMAGE_MAX_DURATION_SECONDS = 600.0
 NARRATION_KIND = "narration"
 NARRATION_PARAMETERS = {"duration_policy": "match_timeline"}
-NARRATION_TEXT_KEYS = {"duration_policy", "text", "voice", "speed", "lang"}
+NARRATION_TEXT_KEYS = {
+    "duration_policy",
+    "text",
+    "voice",
+    "speed",
+    "lang",
+    "lead_in_seconds",
+}
 NARRATION_DEFAULT_VOICE = "af_heart"
 NARRATION_DEFAULT_SPEED = 1.0
 NARRATION_DEFAULT_LANG = "en-us"
@@ -64,6 +71,7 @@ class NarrationTextSpec:
     voice: str
     speed: float
     lang: str
+    lead_in_seconds: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,16 +348,23 @@ def _operations_from_plan(
                 unknown = set(params) - NARRATION_TEXT_KEYS
                 if unknown:
                     raise SequenceWorkflowError(
-                        "narration text accepts only text, voice, speed and lang"
+                        "narration text accepts only text, voice, speed, lang "
+                        "and lead_in_seconds"
                     )
                 text = params.get("text")
                 if not isinstance(text, str) or not text.strip():
                     raise SequenceWorkflowError("narration text must be a non-empty string")
+                lead_in = _runtime_number(
+                    params.get("lead_in_seconds", 0.0),
+                    "narration lead_in_seconds",
+                    allow_zero=True,
+                )
                 narration_text = NarrationTextSpec(
                     text=text,
                     voice=params.get("voice", NARRATION_DEFAULT_VOICE),
                     speed=params.get("speed", NARRATION_DEFAULT_SPEED),
                     lang=params.get("lang", NARRATION_DEFAULT_LANG),
+                    lead_in_seconds=lead_in,
                 )
             continue
         if operation.kind == CAPTIONS_KIND:
@@ -546,10 +561,10 @@ def _synthesise_narration(
         seconds = probe.duration_seconds
         if seconds is None or seconds <= 0:
             raise SequenceWorkflowError("synthesised narration has no usable duration")
-        if seconds > expected_duration + tolerance:
+        if spec.lead_in_seconds + seconds > expected_duration + tolerance:
             raise SequenceWorkflowError(
-                f"synthesised narration is {seconds:.3f}s but the timeline is "
-                f"{expected_duration:.3f}s; shorten the narration text"
+                f"a {spec.lead_in_seconds:.3f}s lead-in plus {seconds:.3f}s of narration "
+                f"overruns the {expected_duration:.3f}s timeline; shorten the narration text"
             )
         return artifact.output_path, artifact.text_sha256, synth_dir, float(seconds)
     except BaseException:
@@ -663,6 +678,15 @@ def run_sequence_workflow(
     canvas = _video_shape(probes, segments)
     synth_dir: str | None = None
     narration_text_sha256: str | None = None
+    # a lead-in belongs to text-mode narration only; a narration file carries
+    # any leading silence itself and must still match the timeline duration
+    narration_lead_in = (
+        narration_text.lead_in_seconds if narration_text is not None else 0.0
+    )
+    if narration_lead_in >= expected_duration:
+        raise SequenceWorkflowError(
+            "narration lead_in_seconds must be shorter than the sequence duration"
+        )
     try:
         if narration_text is not None:
             (
@@ -674,10 +698,18 @@ def run_sequence_workflow(
                 narration_text, plan.output_path, expected_duration, tolerance, timeout
             )
             if captions_from_narration:
-                span = min(narration_seconds, expected_duration)
+                lead_in = narration_text.lead_in_seconds
+                span = min(narration_seconds, expected_duration - lead_in)
                 try:
+                    # cues are laid out over the spoken span, then shifted so the
+                    # track starts with the voice rather than with the timeline
                     captions = _validate_caption_cues(
-                        captions_from_text(narration_text.text, span)
+                        tuple(
+                            (text, start + lead_in, end + lead_in)
+                            for text, start, end in captions_from_text(
+                                narration_text.text, span
+                            )
+                        )
                     )
                 except SubtitleParseError as exc:
                     raise SequenceWorkflowError(
@@ -699,6 +731,8 @@ def run_sequence_workflow(
             compose_kwargs = {"timeout_seconds": timeout}
             if narration_path is not None:
                 compose_kwargs["narration_path"] = narration_path
+            if narration_lead_in:
+                compose_kwargs["narration_lead_in_seconds"] = narration_lead_in
             if captions:
                 compose_kwargs["captions"] = captions
             if music_path is not None and music is not None:
@@ -729,7 +763,10 @@ def run_sequence_workflow(
             if artifact.narration_source_path is not None
             else None
         )
-        if actual_narration != expected_narration:
+        if (
+            actual_narration != expected_narration
+            or artifact.narration_lead_in_seconds != narration_lead_in
+        ):
             raise SequenceWorkflowError("compose returned unexpected narration metadata")
         if artifact.caption_count != len(captions):
             raise SequenceWorkflowError("compose returned unexpected caption metadata")

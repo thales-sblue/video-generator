@@ -282,6 +282,97 @@ class FFmpegAdapterTests(unittest.TestCase):
             self.assertEqual(artifact.video_fade_in_seconds, 1.0)
             self.assertEqual(artifact.video_fade_out_seconds, 1.5)
 
+    def test_delays_the_narration_by_the_lead_in_and_records_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            voice = root / "voice.wav"
+            for path in (first, second, voice):
+                path.write_bytes(path.stem.encode("utf-8"))
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"delayed sequence")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            clips = (SequenceClip(str(first), 0, 2), SequenceClip(str(second), 0, 2))
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                artifact = compose_video_sequence(
+                    clips,
+                    root / "delayed.mp4",
+                    narration_path=voice,
+                    narration_lead_in_seconds=1.25,
+                )
+
+            filter_graph = execute.call_args.args[0][
+                execute.call_args.args[0].index("-filter_complex") + 1
+            ]
+            # the voice is held back, then still padded/trimmed to the 4 s timeline
+            self.assertIn("adelay=1250:all=1,apad,atrim=duration=4", filter_graph)
+            self.assertEqual(artifact.narration_lead_in_seconds, 1.25)
+
+    def test_a_zero_lead_in_leaves_the_voice_graph_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            voice = root / "voice.wav"
+            for path in (first, second, voice):
+                path.write_bytes(path.stem.encode("utf-8"))
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"sequence")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            clips = (SequenceClip(str(first), 0, 2), SequenceClip(str(second), 0, 2))
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                artifact = compose_video_sequence(
+                    clips, root / "plain.mp4", narration_path=voice
+                )
+
+            filter_graph = execute.call_args.args[0][
+                execute.call_args.args[0].index("-filter_complex") + 1
+            ]
+            self.assertNotIn("adelay", filter_graph)
+            self.assertEqual(artifact.narration_lead_in_seconds, 0.0)
+
+    def test_a_narration_lead_in_requires_narration_and_must_fit_the_timeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            voice = root / "voice.wav"
+            for path in (first, second, voice):
+                path.write_bytes(path.stem.encode("utf-8"))
+            clips = (SequenceClip(str(first), 0, 1), SequenceClip(str(second), 0, 1))
+
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ):
+                with self.assertRaisesRegex(
+                    FFmpegError, "narration_lead_in_seconds requires a narration_path"
+                ):
+                    compose_video_sequence(
+                        clips, root / "out.mp4", narration_lead_in_seconds=0.5
+                    )
+                with self.assertRaisesRegex(
+                    FFmpegError, "narration lead-in must be shorter than the sequence"
+                ):
+                    compose_video_sequence(
+                        clips,
+                        root / "out2.mp4",
+                        narration_path=voice,
+                        narration_lead_in_seconds=2,
+                    )
+
     def test_video_fades_apply_after_captions_and_must_fit_the_timeline(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

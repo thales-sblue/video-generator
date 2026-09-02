@@ -393,6 +393,11 @@ def _format_sequence_workflow(report: SequenceWorkflowReport, manifest_path: Pat
                 else "included"
                 if report.artifact.narration_source_path
                 else "not included"
+            )
+            + (
+                f" after {report.artifact.narration_lead_in_seconds}s"
+                if report.artifact.narration_lead_in_seconds
+                else ""
             ),
             f"Captions: {report.artifact.caption_count}",
             f"Music: {'included' if report.artifact.music_source_path else 'not included'}",

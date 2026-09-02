@@ -175,6 +175,9 @@ diferenças maiores são recusadas antes do render. Sem `source`, `parameters`
 traz `text` (obrigatório) e opcionalmente `voice`/`speed`/`lang`: o workflow
 sintetiza via Kokoro para um WAV temporário, recusa uma narração mais longa que
 a timeline, descarta o WAV e grava o SHA-256 do texto no `RenderManifest`.
+Ainda no modo texto, `lead_in_seconds` (≥ 0, menor que a timeline) atrasa a voz
+para abrir só com imagem e trilha; `lead_in + duração sintetizada` precisa caber
+na timeline e as captions `from=narration` são deslocadas pelo mesmo valor.
 Em ambos os casos a faixa é normalizada para estéreo/48 kHz, preenchida ou
 cortada até a timeline e codificada como AAC. Sem essa operação, o comportamento
 silencioso anterior só é preservado quando também não há música. O MP4 final
