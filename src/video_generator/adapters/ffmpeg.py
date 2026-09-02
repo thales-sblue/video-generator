@@ -43,12 +43,14 @@ class SequenceClip:
     source_path: str
     start_seconds: float
     end_seconds: float
+    fit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class SequenceImage:
     source_path: str
     duration_seconds: float
+    fit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +138,29 @@ _CAPTION_ASS_HEADER = (
     "[Events]\n"
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
 )
+
+
+def _fit_filter(fit: str, width: int, height: int) -> str:
+    """Deterministic scale-to-canvas chain for an explicit target format.
+
+    ``contain`` fits the whole frame and pads the remainder with black
+    (letterbox/pillarbox); ``cover`` fills the canvas and crops the overflow
+    from the centre. Both end on ``setsar=1`` so the concat sees square pixels.
+    """
+
+    if fit == "contain":
+        return (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease:"
+            f"force_divisible_by=2,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+        )
+    if fit == "cover":
+        return (
+            f"scale={width}:{height}:force_original_aspect_ratio=increase:"
+            f"force_divisible_by=2,"
+            f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,setsar=1"
+        )
+    raise FFmpegError('fit must be "contain" or "cover"')
 
 
 def _escape_filter_path(path: Path) -> str:
@@ -516,6 +541,14 @@ def compose_video_sequence(
     every segment is normalised to ``IMAGE_TIMELINE_FPS`` and ``yuv420p`` so the
     concat is deterministic.
 
+    When any segment carries a ``fit`` (``"contain"`` or ``"cover"``) the
+    timeline is an explicit target format: ``canvas`` is the delivery
+    resolution, sources of different sizes and aspect ratios are accepted, and
+    every segment is deterministically scaled to the canvas (``contain``
+    letterboxes, ``cover`` centre-crops) then pinned to ``IMAGE_TIMELINE_FPS``,
+    ``setsar=1`` and ``yuv420p``. With no ``fit`` on any segment the legacy
+    filter graph is emitted unchanged.
+
     ``narration_lead_in_seconds`` delays the voice so the timeline can open on
     picture and music alone; it requires ``narration_path`` and must be shorter
     than the timeline.
@@ -553,6 +586,7 @@ def compose_video_sequence(
         raise FFmpegError("video sequence requires an .mp4 output_path")
 
     resolved_clips: list[tuple[str, Path, float, float]] = []
+    resolved_fits: list[str | None] = []
     for clip in normalized_clips:
         source = Path(clip.source_path).expanduser().resolve()
         if isinstance(clip, SequenceImage):
@@ -566,13 +600,20 @@ def compose_video_sequence(
             if end <= start:
                 raise FFmpegError("end_seconds must be greater than start_seconds")
             kind = "clip"
+        fit = clip.fit
+        if fit is not None and fit not in ("contain", "cover"):
+            raise FFmpegError('fit must be "contain" or "cover"')
         if not source.exists() or not source.is_file():
             raise FFmpegError(f"source does not exist or is not a file: {source}")
         if os.path.normcase(str(source)) == os.path.normcase(str(output)):
             raise FFmpegError("output_path must not overwrite a source")
         resolved_clips.append((kind, source, start, end))
+        resolved_fits.append(fit)
     duration = sum(end - start for _, _, start, end in resolved_clips)
     has_images = any(kind == "image" for kind, _, _, _ in resolved_clips)
+    # An explicit target format: every segment is deterministically scaled to
+    # the canvas (contain/cover), so heterogeneous sources can share the concat.
+    normalize_to_canvas = any(fit is not None for fit in resolved_fits)
     canvas_size: tuple[int, int] | None = None
     if canvas is not None:
         if (
@@ -587,6 +628,8 @@ def compose_video_sequence(
         canvas_size = (int(canvas[0]), int(canvas[1]))
     if has_images and canvas_size is None:
         raise FFmpegError("a timeline with images requires a positive (width, height) canvas")
+    if normalize_to_canvas and canvas_size is None:
+        raise FFmpegError("a segment fit requires a positive (width, height) canvas")
     resolved_captions: list[tuple[str, float, float]] = []
     previous_end = 0.0
     for cue in normalized_captions:
@@ -743,7 +786,26 @@ def compose_video_sequence(
     labels = []
     for index, (kind, _, start, end) in enumerate(resolved_clips):
         label = f"v{index}"
-        if kind == "image":
+        if normalize_to_canvas:
+            width, height = canvas_size  # type: ignore[misc]
+            # An explicit target format falls back to contain for any segment
+            # that did not state a fit, so a mixed timeline still normalises.
+            fit = resolved_fits[index] or "contain"
+            scale_chain = _fit_filter(fit, width, height)
+            if kind == "image":
+                filters.append(
+                    f"[{index}:v:0]{scale_chain},"
+                    f"fps={IMAGE_TIMELINE_FPS},format=yuv420p,"
+                    f"trim=duration={format(end - start, '.15g')},"
+                    f"setpts=PTS-STARTPTS[{label}]"
+                )
+            else:
+                filters.append(
+                    f"[{index}:v:0]trim=start={format(start, '.15g')}:"
+                    f"end={format(end, '.15g')},setpts=PTS-STARTPTS,"
+                    f"{scale_chain},fps={IMAGE_TIMELINE_FPS},format=yuv420p[{label}]"
+                )
+        elif kind == "image":
             width, height = canvas_size  # type: ignore[misc]
             filters.append(
                 f"[{index}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,"

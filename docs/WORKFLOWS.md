@@ -50,16 +50,57 @@ O plano deve declarar pelo menos dois segmentos de timeline e ao menos um
 tem source (imagem local) e `parameters={"duration_seconds": N}`, sem início ou
 fim: a imagem é exibida por `N` segundos (limite de 600 s). A ordem das operações
 é a ordem da timeline. Todos os sources declarados devem ser usados; parâmetros
-inesperados e outputs diferentes de MP4 são recusados. Os `sequence_clip`
-definem o canvas: precisam ter um stream de vídeo e dimensões iguais entre si;
-clipes que não batem são recusados antes de qualquer render. Cada `image_clip` só
-precisa de um stream de vídeo legível — o adapter o escala para caber e
-letter-boxes (barras pretas) no canvas dos clipes.
+inesperados e outputs diferentes de MP4 são recusados.
+
+**Canvas — dois modos.** Sem `target_format` no plano (comportamento legado): os
+`sequence_clip` definem o canvas, precisam ter um stream de vídeo e dimensões
+iguais entre si, e clipes que não batem são recusados antes de qualquer render;
+cada `image_clip` só precisa de um stream de vídeo legível e é escalado para
+caber com letter-box (barras pretas) no canvas dos clipes.
+
+Com `target_format` (ver [VIDEO_LANGUAGE.md](VIDEO_LANGUAGE.md)): o canvas é a
+resolução de entrega declarada (`width`×`height`), sources de resoluções e
+proporções diferentes podem compor a mesma timeline, e cada segmento é
+normalizado deterministicamente para o canvas. Cada segmento resolve seu `fit`
+por `operation.parameters["fit"]` (override) ou, na ausência, por
+`target_format.fit`:
+
+- `contain` — cabe o quadro inteiro e preenche o resto com preto
+  (letterbox/pillarbox); nada é perdido;
+- `cover` — ocupa o canvas inteiro e corta o excedente pelo centro; bordas podem
+  ser perdidas.
+
+`sequence_clip` aceita apenas um `fit` opcional; `image_clip` aceita
+`duration_seconds` e um `fit` opcional. Declarar `fit` sem `target_format` é erro
+de planejamento.
+
+Exemplo — timeline vertical 9:16 com corte central por padrão e um segmento que
+prefere preservar o quadro inteiro:
+
+```json
+{
+  "schema_version": 1,
+  "plan_id": "shorts-001",
+  "brief_id": "brief-001",
+  "sources": ["inputs/wide.mp4", "inputs/card.png"],
+  "output_path": "output/short.mp4",
+  "target_format": { "width": 1080, "height": 1920, "fit": "cover" },
+  "operations": [
+    { "operation_id": "s1", "kind": "sequence_clip", "source": "inputs/wide.mp4",
+      "start_seconds": 0, "end_seconds": 4 },
+    { "operation_id": "s2", "kind": "image_clip", "source": "inputs/card.png",
+      "parameters": { "duration_seconds": 3, "fit": "contain" } }
+  ]
+}
+```
 
 FFmpeg recorta os clipes, zera os timestamps, concatena e reencoda o resultado em
-H.264. Cada `image_clip` entra como um input `-loop 1 -t N`, é ajustado ao canvas
-por `scale`/`pad` e, quando há qualquer imagem na timeline, todos os segmentos
-são normalizados para 30 fps e `yuv420p` para manter o concat determinístico. O
+H.264. Cada `image_clip` entra como um input `-loop 1 -t N`. No modo legado a
+imagem é ajustada por `scale`/`pad` e, quando há qualquer imagem na timeline,
+todos os segmentos são normalizados para 30 fps e `yuv420p`. Com `target_format`
+todos os segmentos terminam na resolução do canvas, `setsar=1`, 30 fps e
+`yuv420p` — `contain` via `scale=...:force_original_aspect_ratio=decrease` + `pad`
+central, `cover` via `scale=...:increase` + `crop` central. O
 áudio original dos clipes não entra na timeline. Depois dos segmentos, uma
 operação opcional `captions` representa uma faixa inteira. Os cues vêm de uma de
 três formas:

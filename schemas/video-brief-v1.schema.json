@@ -13,7 +13,22 @@
     "platform": {"type": "string", "minLength": 1},
     "workflow": {"type": "string", "minLength": 1},
     "audience": {"type": ["string", "null"], "minLength": 1},
-    "aspect_ratio": {"type": ["string", "null"], "minLength": 1},
+    "aspect_ratio": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Legacy free-form hint (e.g. \"9:16\"); soft-deprecated in favour of target_format for pipeline use."
+    },
+    "target_format": {
+      "type": "object",
+      "description": "Structured delivery canvas for deterministic fit/crop; supersedes aspect_ratio when both are present.",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 2, "maximum": 7680, "multipleOf": 2},
+        "height": {"type": "integer", "minimum": 2, "maximum": 7680, "multipleOf": 2},
+        "fit": {"enum": ["contain", "cover"]}
+      }
+    },
     "target_duration_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
     "editorial_notes": {
       "type": "array",

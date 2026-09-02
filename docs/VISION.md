@@ -175,6 +175,38 @@ necessário.
 O objetivo maduro é permitir um pedido como “produza o próximo vídeo do canal”
 e fazer o agente cuidar da maior parte da produção com checkpoints auditáveis.
 
+## Bancos de stock (Pexels / Pixabay / Openverse) — decisão de reuso (2026-09-02)
+
+Levantados como fornecedores de B-roll para o passo `busca/seleção de assets` do
+fluxo-alvo, pelos gates de licença e segurança:
+
+- **Pexels API** — grátis hoje, exige API key, quota ~200 req/h e 20 000 req/mês,
+  atribuição “apreciada” mas não obrigatória. Uso comercial permitido pela
+  licença do banco, que **não** cobre marcas, logos, pessoas reconhecíveis,
+  propriedade privada ou obras protegidas presentes na mídia. Termos e limites
+  podem mudar sem aviso.
+- **Pixabay API** — grátis, exige API key, rate limit ~100 req/min, resultados em
+  cache por 24 h por termos. Content License própria (2019+), sem atribuição
+  obrigatória, com as mesmas exclusões de marcas/pessoas/propriedade e uma
+  cláusula que veda redistribuir os assets “as-is”.
+- **Openverse** (WordPress Foundation) — agregador CC/domínio público; a licença
+  **varia por resultado** (CC0 até CC BY-NC-SA e marcas). Cada item traz
+  `license`, `license_version`, `attribution` e `source`; a checagem tem de ser
+  por asset, não por provedor. API sem key para uso básico, com throttle.
+
+Nenhum dos três garante direitos sobre marcas, pessoas ou propriedade privada no
+quadro — isso continua sendo revisão editorial. Todos exigiriam persistir
+proveniência por asset (origem, URL/ID, licença, uso comercial, atribuição,
+data, SHA-256) antes de qualquer uso em produção comercial.
+
+**Decisão deste incremento: NÃO implementar adapter externo agora.** O consumidor
+real desses provedores é o par `AssetPlan` + `AssetProvenance` + catálogo local
+rastreável, que ainda não existe e é o próximo incremento recomendado. Sem esse
+contrato local, um adapter de banco entregaria assets sem lugar para gravar
+licença e proveniência. Preço, quota e termos atuais **não são garantias
+permanentes** e devem ser revalidados quando um adapter for de fato desenvolvido;
+Openverse em particular exige tratamento de licença por resultado.
+
 ## Segundo workflow futuro: edição de creator
 
 Edição automática de vídeos gravados pelo usuário permanece parte da visão, mas

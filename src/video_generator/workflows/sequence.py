@@ -292,10 +292,31 @@ def _fade_spec(parameters: Mapping[str, object]) -> FadeSpec:
     return FadeSpec(from_black, to_black)
 
 
+def _segment_fit(operation, target_format) -> str | None:
+    """Resolve a timeline segment's fit: its own override, else the target format.
+
+    A per-segment ``fit`` is only meaningful once the plan declares a
+    ``target_format``; without one it is a planning error.
+    """
+
+    raw = operation.parameters.get("fit")
+    if raw is not None:
+        if raw not in ("contain", "cover"):
+            raise SequenceWorkflowError('fit must be "contain" or "cover"')
+        if target_format is None:
+            raise SequenceWorkflowError(
+                "a segment fit requires the plan to declare a target_format"
+            )
+        return raw
+    return target_format.fit if target_format is not None else None
+
+
 def _image_duration(parameters: Mapping[str, object]) -> float:
     values = dict(parameters)
-    if set(values) != {"duration_seconds"}:
-        raise SequenceWorkflowError("image_clip requires only a duration_seconds parameter")
+    if "duration_seconds" not in values or set(values) - {"duration_seconds", "fit"}:
+        raise SequenceWorkflowError(
+            "image_clip requires a duration_seconds parameter and an optional fit"
+        )
     duration = _runtime_number(
         values["duration_seconds"], "image_clip duration_seconds", allow_zero=False
     )
@@ -448,7 +469,11 @@ def _operations_from_plan(
                     "image_clip has no timeline range; use a duration_seconds parameter"
                 )
             segments.append(
-                SequenceImage(operation.source, _image_duration(operation.parameters))
+                SequenceImage(
+                    operation.source,
+                    _image_duration(operation.parameters),
+                    _segment_fit(operation, plan.target_format),
+                )
             )
             used_sources.add(operation.source)
             continue
@@ -464,10 +489,17 @@ def _operations_from_plan(
             raise SequenceWorkflowError("sequence_clip must declare a source")
         if operation.start_seconds is None or operation.end_seconds is None:
             raise SequenceWorkflowError("sequence_clip requires start_seconds and end_seconds")
-        if operation.parameters:
-            raise SequenceWorkflowError("sequence_clip does not accept parameters in v1")
+        if set(operation.parameters) - {"fit"}:
+            raise SequenceWorkflowError(
+                "sequence_clip accepts only an optional fit parameter"
+            )
         segments.append(
-            SequenceClip(operation.source, operation.start_seconds, operation.end_seconds)
+            SequenceClip(
+                operation.source,
+                operation.start_seconds,
+                operation.end_seconds,
+                _segment_fit(operation, plan.target_format),
+            )
         )
         used_sources.add(operation.source)
     if len(segments) < 2:
@@ -523,13 +555,20 @@ def _segment_dimensions(probes: dict[str, MediaProbe], source_path: str) -> tupl
 def _video_shape(
     probes: dict[str, MediaProbe],
     segments: tuple[SequenceClip | SequenceImage, ...],
+    target_format=None,
 ) -> tuple[int, int]:
-    """Return the timeline canvas: the shared pixel size of the video clips.
+    """Return the timeline canvas.
 
-    Video clips must all match. Images only need a readable video stream; the
-    adapter scales and letter-boxes each image onto this canvas.
+    Every source must expose a readable video stream. With a ``target_format``
+    the canvas is that explicit delivery resolution and heterogeneous clip
+    sizes are allowed; without one the legacy rule stands — the video clips
+    must all share one pixel size, which becomes the canvas.
     """
 
+    for segment in segments:
+        _segment_dimensions(probes, segment.source_path)
+    if target_format is not None:
+        return target_format.width, target_format.height
     clip_shapes = {
         _segment_dimensions(probes, segment.source_path)
         for segment in segments
@@ -537,9 +576,6 @@ def _video_shape(
     }
     if len(clip_shapes) != 1:
         raise SequenceWorkflowError("video-sequence v1 requires matching clip dimensions")
-    for segment in segments:
-        if isinstance(segment, SequenceImage):
-            _segment_dimensions(probes, segment.source_path)
     return next(iter(clip_shapes))
 
 
@@ -699,7 +735,7 @@ def run_sequence_workflow(
         issue_codes = ", ".join(issue.code for issue in preflight_report.issues) or "unknown"
         raise SequenceWorkflowError(f"preflight rejected plan {plan.plan_id}: {issue_codes}")
     probes = _source_probes(preflight_report, plan)
-    canvas = _video_shape(probes, segments)
+    canvas = _video_shape(probes, segments, plan.target_format)
     synth_dir: str | None = None
     narration_text_sha256: str | None = None
     # the voice track's own length, so a ducked bed knows when to come back up
@@ -912,6 +948,7 @@ def run_final_sequence_workflow(
                 plan.sources,
                 str(staged_path),
                 plan.operations,
+                plan.target_format,
             )
             staged_report = run_sequence_workflow(
                 staged_plan,

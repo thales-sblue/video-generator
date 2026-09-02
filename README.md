@@ -147,10 +147,18 @@ não é revisão auditiva: ela permanece `not_performed`.
 
 `execute-sequence-plan` aceita ao menos dois segmentos de timeline ordenados, com
 ao menos um `sequence_clip` (source, início e fim). Um `image_clip` mostra uma
-imagem local por `duration_seconds` (até 600 s) sem início ou fim. Os
-`sequence_clip` precisam ter as mesmas dimensões e definem o canvas; imagens de
-qualquer tamanho são escaladas e letter-boxed nele e, havendo qualquer imagem, os
-segmentos são normalizados para 30 fps. Após os segmentos, uma
+imagem local por `duration_seconds` (até 600 s) sem início ou fim. Sem
+`target_format` no plano, os `sequence_clip` precisam ter as mesmas dimensões e
+definem o canvas; imagens de qualquer tamanho são escaladas e letter-boxed nele
+e, havendo qualquer imagem, os segmentos são normalizados para 30 fps. Com
+`target_format` (`{"width":W,"height":H,"fit":"contain"|"cover"}`; W/H pares
+≤ 7680, `fit` default `contain`), o canvas é a resolução de entrega declarada e
+sources de resoluções/proporções diferentes podem compor a mesma timeline: cada
+segmento é escalado deterministicamente para o canvas — `contain` mantém todo o
+conteúdo e adiciona letterbox/pillarbox, `cover` preenche o canvas e corta pelo
+centro. `sequence_clip` e `image_clip` aceitam um `fit` opcional que sobrepõe o
+default; `fit` sem `target_format` é recusado. Planos sem `target_format`
+serializam e fazem fingerprint exatamente como antes. Após os segmentos, uma
 operação opcional `captions` pode persistir uma faixa com estilo fixo
 `bottom_box`. Os cues vêm de itens inline (texto, início e fim relativos à
 timeline), de um `.srt`/`.vtt` local apontado por `source` e declarado entre os

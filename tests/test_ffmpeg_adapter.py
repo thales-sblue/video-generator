@@ -661,6 +661,109 @@ class FFmpegAdapterTests(unittest.TestCase):
                 (str(first.resolve()), str(still.resolve()), str(second.resolve())),
             )
 
+    def _run_fit_compose(self, timeline, canvas):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {clip.source_path for clip in timeline}
+            for raw in sources:
+                Path(raw).write_bytes(Path(raw).stem.encode("utf-8"))
+            output = root / "timeline.mp4"
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"composed")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                artifact = compose_video_sequence(timeline, output, canvas=canvas)
+            command = execute.call_args.args[0]
+            return artifact, command[command.index("-filter_complex") + 1]
+
+    def test_target_format_contain_letterboxes_every_segment_onto_the_canvas(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wide = str(root / "wide.mp4")
+            tall = str(root / "tall.mp4")
+            timeline = (
+                SequenceClip(wide, 0, 1.5, fit="contain"),
+                SequenceClip(tall, 0, 2, fit="contain"),
+            )
+            _artifact, filter_graph = self._run_fit_compose(timeline, (640, 360))
+            self.assertIn(
+                "[0:v:0]trim=start=0:end=1.5,setpts=PTS-STARTPTS,"
+                "scale=640:360:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+                "pad=640:360:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,"
+                "fps=30,format=yuv420p[v0]",
+                filter_graph,
+            )
+            self.assertIn(":end=2,", filter_graph)
+            self.assertIn("[v0][v1]concat=n=2:v=1:a=0[outv]", filter_graph)
+
+    def test_target_format_cover_centre_crops_every_segment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wide = str(root / "wide.mp4")
+            tall = str(root / "tall.mp4")
+            timeline = (
+                SequenceClip(wide, 0, 1, fit="cover"),
+                SequenceClip(tall, 0, 1, fit="cover"),
+            )
+            _artifact, filter_graph = self._run_fit_compose(timeline, (360, 640))
+            self.assertIn(
+                "scale=360:640:force_original_aspect_ratio=increase:force_divisible_by=2,"
+                "crop=360:640:(iw-360)/2:(ih-640)/2,setsar=1,"
+                "fps=30,format=yuv420p[v0]",
+                filter_graph,
+            )
+
+    def test_target_format_image_contain_and_cover_chains(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clip = str(root / "clip.mp4")
+            card = str(root / "card.png")
+            contain = (
+                SequenceClip(clip, 0, 1, fit="contain"),
+                SequenceImage(card, 3, fit="contain"),
+            )
+            _artifact, graph = self._run_fit_compose(contain, (640, 360))
+            self.assertIn(
+                "[1:v:0]scale=640:360:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+                "pad=640:360:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,"
+                "fps=30,format=yuv420p,trim=duration=3,setpts=PTS-STARTPTS[v1]",
+                graph,
+            )
+
+            cover = (
+                SequenceClip(clip, 0, 1, fit="cover"),
+                SequenceImage(card, 3, fit="cover"),
+            )
+            _artifact, graph = self._run_fit_compose(cover, (360, 640))
+            self.assertIn(
+                "[1:v:0]scale=360:640:force_original_aspect_ratio=increase:force_divisible_by=2,"
+                "crop=360:640:(iw-360)/2:(ih-640)/2,setsar=1,"
+                "fps=30,format=yuv420p,trim=duration=3,setpts=PTS-STARTPTS[v1]",
+                graph,
+            )
+
+    def test_a_segment_fit_requires_a_canvas(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            a = root / "a.mp4"
+            b = root / "b.mp4"
+            for path in (a, b):
+                path.write_bytes(path.stem.encode("utf-8"))
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ):
+                with self.assertRaisesRegex(FFmpegError, "fit requires a .*canvas"):
+                    compose_video_sequence(
+                        (SequenceClip(str(a), 0, 1, fit="contain"), SequenceClip(str(b), 0, 1)),
+                        root / "out.mp4",
+                    )
+
     def test_sequence_requires_at_least_one_video_clip(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

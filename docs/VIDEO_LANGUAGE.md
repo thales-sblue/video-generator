@@ -54,6 +54,22 @@ transformar preferências contextuais em automações universais.
 - Manter linguagem visual consistente dentro da peça.
 - Intensidade e frequência devem respeitar conteúdo, música e plataforma.
 
+## Formato de entrega (target format)
+
+- `target_format` no `VideoBrief`/`EditPlan` descreve o canvas final de forma
+  estruturada: `width`, `height` (inteiros pares, ≤ 7680) e `fit`
+  (`contain` | `cover`, default `contain`). `aspect_ratio` continua aceito, mas é
+  legado/soft-deprecated — quando ambos existem, `target_format` é o que orienta
+  o pipeline.
+- `contain` mantém todo o conteúdo e pode introduzir letterbox/pillarbox;
+  `cover` ocupa o quadro inteiro com crop central e pode perder as bordas.
+- Escolher `9:16` (`1080×1920`) para shorts/reels e `16:9` (`1920×1080`) para
+  YouTube landscape; presets `SHORTS_PORTRAIT` e `YOUTUBE_LANDSCAPE` no domínio.
+- `cover` é apropriado quando o assunto está centrado e as bordas são
+  descartáveis; `contain` quando nada pode ser cortado (texto, gráficos, planos
+  compostos). Um `fit` por segmento sobrepõe o default só quando há razão
+  editorial.
+
 ## Critério de revisão
 
 Uma renderização tecnicamente válida ainda pode falhar editorialmente. A revisão

@@ -69,9 +69,16 @@ sintetizada de `text` via Kokoro, com o SHA-256 do texto no manifest). O
 workflow executa preflight, confere dimensões, tempos, streams e políticas
 persistidas, recorta e concatena os segmentos, queima os cues, normaliza e
 mistura áudio e produz MP4 H.264/AAC. Sem opções, preserva o render silencioso
-anterior. Os clipes definem o canvas e devem compartilhar dimensões; imagens de
-qualquer tamanho são escaladas e letter-boxed nele. Movimento, transitions e
-composição visual rica continuam fora do escopo, reservados ao compositor rico.
+anterior. Sem `target_format` no plano, os clipes definem o canvas e devem
+compartilhar dimensões; imagens de qualquer tamanho são escaladas e
+letter-boxed nele. Com `target_format` (contrato `TargetFormat`: `width`,
+`height` pares ≤ 7680, `fit` `contain`/`cover`), o canvas passa a ser a
+resolução de entrega declarada, sources heterogêneos compõem a mesma timeline e
+cada segmento é normalizado deterministicamente para o canvas (fit por segmento
+ou herdado do `target_format`). O campo é omit-when-None: planos e briefs
+legados serializam e fazem fingerprint exatamente como antes. Movimento,
+transitions e composição visual rica continuam fora do escopo, reservados ao
+compositor rico.
 
 ### Adapters e renderers
 

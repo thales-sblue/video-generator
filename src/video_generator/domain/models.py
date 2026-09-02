@@ -99,6 +99,50 @@ def _to_json(payload: Mapping[str, Any], *, indent: int | None = 2) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class TargetFormat:
+    """The explicit delivery canvas a heterogeneous timeline is normalised to."""
+
+    width: int
+    height: int
+    fit: str = "contain"
+
+    def __post_init__(self) -> None:
+        for name in ("width", "height"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ContractError(f"{name} must be an integer")
+            if value <= 0:
+                raise ContractError(f"{name} must be greater than zero")
+            if value % 2 != 0:
+                raise ContractError(f"{name} must be an even number")
+            if value > 7680:
+                raise ContractError(f"{name} must not exceed 7680")
+        if self.fit not in ("contain", "cover"):
+            raise ContractError('fit must be "contain" or "cover"')
+
+    @property
+    def aspect_ratio(self) -> str:
+        divisor = math.gcd(self.width, self.height)
+        return f"{self.width // divisor}:{self.height // divisor}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"width": self.width, "height": self.height, "fit": self.fit}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> TargetFormat:
+        _keys(data, required={"width", "height"}, optional={"fit"})
+        return cls(
+            width=data["width"],
+            height=data["height"],
+            fit=data.get("fit", "contain"),
+        )
+
+
+YOUTUBE_LANDSCAPE = TargetFormat(1920, 1080)
+SHORTS_PORTRAIT = TargetFormat(1080, 1920)
+
+
+@dataclass(frozen=True, slots=True)
 class VideoRequest:
     """The user's audiovisual intent and immutable source references."""
 
@@ -160,6 +204,7 @@ class VideoBrief:
     aspect_ratio: str | None = None
     target_duration_seconds: float | None = None
     editorial_notes: tuple[str, ...] = ()
+    target_format: TargetFormat | None = None
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -180,10 +225,12 @@ class VideoBrief:
             if not math.isfinite(self.target_duration_seconds) or self.target_duration_seconds <= 0:
                 raise ContractError("target_duration_seconds must be greater than zero")
             object.__setattr__(self, "target_duration_seconds", float(self.target_duration_seconds))
+        if self.target_format is not None and not isinstance(self.target_format, TargetFormat):
+            raise ContractError("target_format must be a TargetFormat; parse mappings via from_dict")
         _schema_version(self.schema_version)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "brief_id": self.brief_id,
             "request_id": self.request_id,
@@ -195,6 +242,9 @@ class VideoBrief:
             "target_duration_seconds": self.target_duration_seconds,
             "editorial_notes": list(self.editorial_notes),
         }
+        if self.target_format is not None:
+            payload["target_format"] = self.target_format.to_dict()
+        return payload
 
     def to_json(self, *, indent: int | None = 2) -> str:
         return _to_json(self.to_dict(), indent=indent)
@@ -204,8 +254,15 @@ class VideoBrief:
         _keys(
             data,
             required={"schema_version", "brief_id", "request_id", "objective", "platform", "workflow"},
-            optional={"audience", "aspect_ratio", "target_duration_seconds", "editorial_notes"},
+            optional={
+                "audience",
+                "aspect_ratio",
+                "target_duration_seconds",
+                "editorial_notes",
+                "target_format",
+            },
         )
+        raw_target_format = data.get("target_format")
         return cls(
             schema_version=data["schema_version"],
             brief_id=data["brief_id"],
@@ -217,6 +274,11 @@ class VideoBrief:
             aspect_ratio=data.get("aspect_ratio"),
             target_duration_seconds=data.get("target_duration_seconds"),
             editorial_notes=data.get("editorial_notes", ()),
+            target_format=(
+                TargetFormat.from_dict(raw_target_format)
+                if raw_target_format is not None
+                else None
+            ),
         )
 
 
@@ -290,6 +352,7 @@ class EditPlan:
     sources: tuple[str, ...]
     output_path: str
     operations: tuple[EditOperation, ...]
+    target_format: TargetFormat | None = None
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -316,10 +379,12 @@ class EditPlan:
         unknown = referenced - set(self.sources)
         if unknown:
             raise ContractError("operation sources must be declared in plan sources")
+        if self.target_format is not None and not isinstance(self.target_format, TargetFormat):
+            raise ContractError("target_format must be a TargetFormat; parse mappings via from_dict")
         _schema_version(self.schema_version)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "plan_id": self.plan_id,
             "brief_id": self.brief_id,
@@ -327,6 +392,9 @@ class EditPlan:
             "output_path": self.output_path,
             "operations": [operation.to_dict() for operation in self.operations],
         }
+        if self.target_format is not None:
+            payload["target_format"] = self.target_format.to_dict()
+        return payload
 
     def to_json(self, *, indent: int | None = 2) -> str:
         return _to_json(self.to_dict(), indent=indent)
@@ -336,11 +404,12 @@ class EditPlan:
         _keys(
             data,
             required={"schema_version", "plan_id", "brief_id", "sources", "output_path", "operations"},
-            optional=set(),
+            optional={"target_format"},
         )
         raw_operations = data["operations"]
         if not isinstance(raw_operations, (list, tuple)):
             raise ContractError("operations must be an array")
+        raw_target_format = data.get("target_format")
         return cls(
             schema_version=data["schema_version"],
             plan_id=data["plan_id"],
@@ -348,6 +417,11 @@ class EditPlan:
             sources=data["sources"],
             output_path=data["output_path"],
             operations=tuple(EditOperation.from_dict(item) for item in raw_operations),
+            target_format=(
+                TargetFormat.from_dict(raw_target_format)
+                if raw_target_format is not None
+                else None
+            ),
         )
 
 

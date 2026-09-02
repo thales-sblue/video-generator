@@ -16,6 +16,16 @@
       "items": {"type": "string", "minLength": 1}
     },
     "output_path": {"type": "string", "minLength": 1},
+    "target_format": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 2, "maximum": 7680, "multipleOf": 2},
+        "height": {"type": "integer", "minimum": 2, "maximum": 7680, "multipleOf": 2},
+        "fit": {"enum": ["contain", "cover"]}
+      }
+    },
     "operations": {
       "type": "array",
       "minItems": 1,

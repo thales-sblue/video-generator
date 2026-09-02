@@ -1116,7 +1116,7 @@ class SequenceWorkflowTests(unittest.TestCase):
     def test_rejects_unsupported_plans_before_preflight(self):
         for plan, message in (
             (sequence_plan(second_kind="extract_segment"), "does not support"),
-            (sequence_plan(second_parameters={"transition": "fade"}), "does not accept parameters"),
+            (sequence_plan(second_parameters={"transition": "fade"}), "only an optional fit parameter"),
         ):
             with self.subTest(message=message):
                 with self.assertRaisesRegex(SequenceWorkflowError, message):
@@ -1168,7 +1168,7 @@ class SequenceWorkflowTests(unittest.TestCase):
             ({}, "duration_seconds"),
             ({"duration_seconds": 0}, "positive"),
             ({"duration_seconds": -2}, "positive"),
-            ({"duration_seconds": 4, "loop": True}, "only a duration_seconds"),
+            ({"duration_seconds": 4, "loop": True}, "an optional fit"),
             ({"duration_seconds": 100000}, "must not exceed"),
         ):
             with self.subTest(parameters=parameters):
@@ -1808,6 +1808,145 @@ class SequenceWorkflowTests(unittest.TestCase):
                 preflight=narrated_preflight,
                 compose=lambda *_args, **_kwargs: bad_artifact,
             )
+
+
+def target_format_plan(*, tf, first_params=None, second_kind="sequence_clip", second_params=None):
+    first = str(Path("inputs/first.mp4").resolve())
+    second = str(Path("inputs/second.mp4").resolve())
+    if second_kind == "image_clip":
+        second_op = EditOperation(
+            "clip-2", "image_clip", second, parameters=second_params or {"duration_seconds": 2}
+        )
+    else:
+        second_op = EditOperation("clip-2", "sequence_clip", second, 0, 2, second_params or {})
+    return EditPlan(
+        "plan-tf",
+        "brief-dark",
+        (first, second),
+        str(Path("output/timeline.mp4").resolve()),
+        (
+            EditOperation("clip-1", "sequence_clip", first, 1, 2.5, first_params or {}),
+            second_op,
+        ),
+        tf,
+    )
+
+
+def mixed_preflight(plan: EditPlan) -> PreflightReport:
+    shapes = ((1920, 1080), (1080, 1920))
+    probes = tuple(
+        MediaProbe(
+            source,
+            1000,
+            "mov,mp4",
+            10,
+            800000,
+            (StreamProbe(0, "video", "h264", 10, width, height, None, None),),
+        )
+        for source, (width, height) in zip(plan.sources, shapes, strict=True)
+    )
+    return PreflightReport(plan.plan_id, True, (), probes)
+
+
+class TargetFormatWorkflowTests(unittest.TestCase):
+    def _capture(self, plan, preflight=mixed_preflight):
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen["canvas"] = kwargs.get("canvas")
+            seen["fits"] = [clip.fit for clip in clips]
+            duration = 0.0
+            image_count = 0
+            for clip in clips:
+                if type(clip).__name__ == "SequenceImage":
+                    duration += clip.duration_seconds
+                    image_count += 1
+                else:
+                    duration += clip.end_seconds - clip.start_seconds
+            seen["duration"] = duration
+            return SequenceArtifact(
+                tuple(clip.source_path for clip in clips),
+                plan.output_path,
+                duration,
+                500,
+                image_count=image_count,
+            )
+
+        def validate(artifact, **_kwargs):
+            return SequenceValidationReport(True, artifact, seen["duration"], 0.15, (), None)
+
+        report = run_sequence_workflow(
+            plan, preflight=preflight, compose=compose, validate=validate
+        )
+        return report, seen
+
+    def test_canvas_comes_from_the_target_format_across_mixed_resolutions(self):
+        from video_generator.domain import TargetFormat
+
+        plan = target_format_plan(tf=TargetFormat(1080, 1920, "cover"))
+        report, seen = self._capture(plan)
+        self.assertTrue(report.valid)
+        self.assertEqual(seen["canvas"], (1080, 1920))
+        # default fit flows from the target format to every segment
+        self.assertEqual(seen["fits"], ["cover", "cover"])
+
+    def test_per_clip_and_per_image_fit_overrides(self):
+        from video_generator.domain import TargetFormat
+
+        plan = target_format_plan(
+            tf=TargetFormat(1080, 1920, "contain"),
+            first_params={"fit": "cover"},
+            second_kind="image_clip",
+            second_params={"duration_seconds": 3, "fit": "cover"},
+        )
+        report, seen = self._capture(plan)
+        self.assertTrue(report.valid)
+        self.assertEqual(seen["canvas"], (1080, 1920))
+        self.assertEqual(seen["fits"], ["cover", "cover"])
+
+    def test_rejects_an_invalid_fit_value(self):
+        from video_generator.domain import TargetFormat
+
+        plan = target_format_plan(
+            tf=TargetFormat(1080, 1920), first_params={"fit": "stretch"}
+        )
+        with self.assertRaisesRegex(SequenceWorkflowError, "fit"):
+            run_sequence_workflow(
+                plan,
+                preflight=lambda _: self.fail("must not preflight"),
+                compose=lambda *_a, **_k: self.fail("must not compose"),
+            )
+
+    def test_rejects_a_fit_without_a_target_format(self):
+        plan = sequence_plan(second_parameters={"fit": "cover"})
+        with self.assertRaisesRegex(SequenceWorkflowError, "requires the plan to declare a target_format"):
+            run_sequence_workflow(
+                plan,
+                preflight=lambda _: self.fail("must not preflight"),
+                compose=lambda *_a, **_k: self.fail("must not compose"),
+            )
+
+    def test_legacy_plan_without_target_format_still_inherits_the_clip_canvas(self):
+        plan = sequence_plan()
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen["canvas"] = kwargs.get("canvas")
+            seen["fits"] = [clip.fit for clip in clips]
+            return SequenceArtifact(
+                tuple(clip.source_path for clip in clips), plan.output_path, 3.5, 500
+            )
+
+        run_sequence_workflow(
+            plan,
+            preflight=valid_preflight,
+            compose=compose,
+            validate=lambda artifact, **_k: SequenceValidationReport(
+                True, artifact, 3.5, 0.15, (), None
+            ),
+        )
+        self.assertEqual(seen["canvas"], (1280, 720))
+        self.assertEqual(seen["fits"], [None, None])
 
 
 if __name__ == "__main__":
