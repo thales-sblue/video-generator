@@ -45,6 +45,7 @@ WORKFLOW_NAME = "video-sequence"
 OPERATION_KIND = "sequence_clip"
 IMAGE_KIND = "image_clip"
 IMAGE_MAX_DURATION_SECONDS = 600.0
+IMAGE_MOTIONS = ("zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down")
 NARRATION_KIND = "narration"
 NARRATION_PARAMETERS = {"duration_policy": "match_timeline"}
 NARRATION_TEXT_KEYS = {
@@ -313,9 +314,9 @@ def _segment_fit(operation, target_format) -> str | None:
 
 def _image_duration(parameters: Mapping[str, object]) -> float:
     values = dict(parameters)
-    if "duration_seconds" not in values or set(values) - {"duration_seconds", "fit"}:
+    if "duration_seconds" not in values or set(values) - {"duration_seconds", "fit", "motion"}:
         raise SequenceWorkflowError(
-            "image_clip requires a duration_seconds parameter and an optional fit"
+            "image_clip requires a duration_seconds parameter and an optional fit and motion"
         )
     duration = _runtime_number(
         values["duration_seconds"], "image_clip duration_seconds", allow_zero=False
@@ -325,6 +326,23 @@ def _image_duration(parameters: Mapping[str, object]) -> float:
             f"image_clip duration_seconds must not exceed {IMAGE_MAX_DURATION_SECONDS} seconds"
         )
     return duration
+
+
+def _image_motion(parameters: Mapping[str, object]) -> str | None:
+    """Resolve an ``image_clip``'s optional Ken Burns motion.
+
+    Absent leaves the still frozen (current behaviour). A value must be one of
+    the fixed set the adapter knows how to translate into a ``zoompan`` pass.
+    """
+
+    raw = parameters.get("motion")
+    if raw is None:
+        return None
+    if raw not in IMAGE_MOTIONS:
+        raise SequenceWorkflowError(
+            "image_clip motion must be one of " + ", ".join(IMAGE_MOTIONS)
+        )
+    return raw
 
 
 def _segment_duration(segment: SequenceClip | SequenceImage) -> float:
@@ -473,6 +491,7 @@ def _operations_from_plan(
                     operation.source,
                     _image_duration(operation.parameters),
                     _segment_fit(operation, plan.target_format),
+                    _image_motion(operation.parameters),
                 )
             )
             used_sources.add(operation.source)

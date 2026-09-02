@@ -71,8 +71,21 @@ por `operation.parameters["fit"]` (override) ou, na ausência, por
   ser perdidas.
 
 `sequence_clip` aceita apenas um `fit` opcional; `image_clip` aceita
-`duration_seconds` e um `fit` opcional. Declarar `fit` sem `target_format` é erro
-de planejamento.
+`duration_seconds`, um `fit` opcional e um `motion` opcional. Declarar `fit` sem
+`target_format` é erro de planejamento.
+
+**Movimento (Ken Burns) num `image_clip`.** `motion` anima uma imagem parada com
+um `zoompan` determinístico, um de `zoom_in`, `zoom_out`, `pan_left`,
+`pan_right`, `pan_up`, `pan_down`. Sem `motion` (padrão) o quadro fica
+congelado, byte a byte como antes. O deslocamento é fixo — 12% ao longo do clipe
+(zooms cobrem 1,0↔1,12; os pans mantêm 1,12 e varrem a margem que o zoom abre) —
+e é função pura de `(motion, canvas, duração)`: a imagem é pré-escalada 4× (o
+antídoto padrão contra o tremor do `zoompan`), a janela caminha um quadro de
+saída por quadro de entrada (`d=1`) e volta à resolução do canvas. O movimento é
+aplicado **depois** da cadeia de `fit`, tanto no modo legado quanto com
+`target_format`. `plan_sha256` já preserva a reprodutibilidade; o
+`RenderManifest` não ganha campo novo (mesmo tratamento do `fit`). Só a revisão
+visual humana confirma o ritmo do movimento.
 
 Exemplo — timeline vertical 9:16 com corte central por padrão e um segmento que
 prefere preservar o quadro inteiro:
@@ -89,7 +102,7 @@ prefere preservar o quadro inteiro:
     { "operation_id": "s1", "kind": "sequence_clip", "source": "inputs/wide.mp4",
       "start_seconds": 0, "end_seconds": 4 },
     { "operation_id": "s2", "kind": "image_clip", "source": "inputs/card.png",
-      "parameters": { "duration_seconds": 3, "fit": "contain" } }
+      "parameters": { "duration_seconds": 3, "fit": "contain", "motion": "zoom_in" } }
   ]
 }
 ```
@@ -248,7 +261,11 @@ Já disponível:
 
 - `image_clip` insere imagens locais com duração explícita na timeline de
   `video-sequence`; qualquer dimensão é aceita e a imagem é escalada e
-  letter-boxed no canvas dos clipes (sem movimento/Ken Burns nesta v1);
+  letter-boxed no canvas dos clipes. Um `motion` opcional (`zoom_in`,
+  `zoom_out`, `pan_left`, `pan_right`, `pan_up`, `pan_down`) anima a parada com
+  um `zoompan` determinístico de deslocamento fixo, aplicado após a cadeia de
+  `fit`; sem `motion` o quadro continua congelado. **Pendente:** revisão visual
+  real do ritmo do movimento;
 - `captions` aceita itens inline, um `.srt`/`.vtt` local como source, ou
   `from=narration` (linhas curtas de uma linha, quebra por frase/oração, timing
   por peso de sílabas e pausas estimadas e depois ancorado nas pausas medidas no
@@ -294,11 +311,12 @@ incremento; nada aqui autoriza pular testes ou camadas):
    padrão do Kokoro (spike -> adapter -> wire); ver "Alinhamento de captions —
    decisão de reuso" em [VISION.md](VISION.md). Qualidade, não pré-requisito de v1.
 3. **Primeiro adapter HyperFrames** — provar `EditPlan -> cena HTML -> MP4` com um
-   title card / camada de captions. Avaliar se movimento (Ken Burns), fit
-   configurável e composição visual rica saem mais baratos por HTML do que por
-   `zoompan`/`tpad` no FFmpeg; se sim, HyperFrames passa a ser o caminho de
+   title card / camada de captions. O `image_clip` já cobre fit configurável e
+   Ken Burns básico (`motion` via `zoompan`); avaliar se composição visual rica
+   (múltiplas camadas, texto animado, transições) sai mais barata por HTML do que
+   encadeando filtros no FFmpeg. Se sim, HyperFrames passa a ser o caminho de
    imagens ricas e captions avançadas, deixando o `image_clip` atual (escala +
-   letterbox estático) para o caso simples. HyperFrames exige
+   letterbox + pan/zoom simples) para o caso comum. HyperFrames exige
    Node e Chrome headless e deve receber um lock de proveniência análogo a
    `config/ffmpeg-lock.json`.
 

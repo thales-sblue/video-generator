@@ -16,8 +16,8 @@ trechos de vídeo e imagens locais com duração fixa em ordem, pode queimar
 captions, incorporar uma narração e música local e abrir/encerrar a imagem no
 preto, produzindo H.264/AAC validado e registrado em `RenderManifest`. Um modo final separado publica `final.mp4`
 somente após QA técnico. Imagens de qualquer dimensão são escaladas e
-letter-boxed no canvas dos clipes; movimento (Ken Burns) ainda não está
-implementado.
+letter-boxed no canvas dos clipes e podem receber um Ken Burns determinístico
+(`motion`: zoom ou pan) sobre a parada.
 
 ## Princípios
 
@@ -157,7 +157,10 @@ sources de resoluções/proporções diferentes podem compor a mesma timeline: c
 segmento é escalado deterministicamente para o canvas — `contain` mantém todo o
 conteúdo e adiciona letterbox/pillarbox, `cover` preenche o canvas e corta pelo
 centro. `sequence_clip` e `image_clip` aceitam um `fit` opcional que sobrepõe o
-default; `fit` sem `target_format` é recusado. Planos sem `target_format`
+default; `fit` sem `target_format` é recusado. Um `image_clip` também aceita
+`motion` (`zoom_in`, `zoom_out`, `pan_left`, `pan_right`, `pan_up`, `pan_down`):
+um Ken Burns determinístico via `zoompan`, deslocamento fixo, aplicado depois do
+`fit`; sem `motion` a parada fica congelada. Planos sem `target_format`
 serializam e fazem fingerprint exatamente como antes. Após os segmentos, uma
 operação opcional `captions` pode persistir uma faixa com estilo fixo
 `bottom_box`. Os cues vêm de itens inline (texto, início e fim relativos à

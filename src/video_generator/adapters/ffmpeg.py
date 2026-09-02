@@ -51,6 +51,7 @@ class SequenceImage:
     source_path: str
     duration_seconds: float
     fit: str | None = None
+    motion: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +162,55 @@ def _fit_filter(fit: str, width: int, height: int) -> str:
             f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,setsar=1"
         )
     raise FFmpegError('fit must be "contain" or "cover"')
+
+
+KEN_BURNS_MOTIONS = ("zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down")
+# Fractional travel over the clip: zooms cover 1.0 <-> 1.12, pans hold 1.12 and
+# translate across the crop margin that zoom opens up. Fixed on purpose so the
+# move is a pure function of (motion, canvas, duration).
+_KEN_BURNS_TRAVEL = 0.12
+_KEN_BURNS_PAN_ZOOM = 1.0 + _KEN_BURNS_TRAVEL
+_KEN_BURNS_UPSCALE = 4
+
+
+def _ken_burns_filter(motion: str, width: int, height: int, frames: int) -> str:
+    """A deterministic ``zoompan`` pass for a still frame.
+
+    The frame is pre-upscaled (``scale=iw*4:ih*4``) so the sub-pixel zoom steps
+    do not jitter, then ``zoompan`` walks a window across it — one output frame
+    per input frame (``d=1``) — and rescales back to the canvas (``s=WxH``).
+    ``on`` is the cumulative output frame index, so ``on/(frames-1)`` ramps
+    linearly from 0 to 1 across the clip.
+    """
+
+    if motion not in KEN_BURNS_MOTIONS:
+        raise FFmpegError("motion must be one of " + ", ".join(KEN_BURNS_MOTIONS))
+    progress = f"on/{max(frames - 1, 1)}"
+    travel = format(_KEN_BURNS_TRAVEL, ".15g")
+    pan_zoom = format(_KEN_BURNS_PAN_ZOOM, ".15g")
+    centre_x = "iw/2-(iw/zoom/2)"
+    centre_y = "ih/2-(ih/zoom/2)"
+    if motion == "zoom_in":
+        zoom, pan_x, pan_y = f"1+{travel}*{progress}", centre_x, centre_y
+    elif motion == "zoom_out":
+        zoom, pan_x, pan_y = f"{pan_zoom}-{travel}*{progress}", centre_x, centre_y
+    elif motion == "pan_left":
+        zoom = pan_zoom
+        pan_x, pan_y = f"(iw-iw/zoom)*(1-{progress})", "(ih-ih/zoom)/2"
+    elif motion == "pan_right":
+        zoom = pan_zoom
+        pan_x, pan_y = f"(iw-iw/zoom)*({progress})", "(ih-ih/zoom)/2"
+    elif motion == "pan_up":
+        zoom = pan_zoom
+        pan_x, pan_y = "(iw-iw/zoom)/2", f"(ih-ih/zoom)*(1-{progress})"
+    else:  # pan_down
+        zoom = pan_zoom
+        pan_x, pan_y = "(iw-iw/zoom)/2", f"(ih-ih/zoom)*({progress})"
+    return (
+        f"scale=iw*{_KEN_BURNS_UPSCALE}:ih*{_KEN_BURNS_UPSCALE},"
+        f"zoompan=z={zoom}:x={pan_x}:y={pan_y}:d=1:s={width}x{height}:"
+        f"fps={IMAGE_TIMELINE_FPS}"
+    )
 
 
 def _escape_filter_path(path: Path) -> str:
@@ -587,13 +637,18 @@ def compose_video_sequence(
 
     resolved_clips: list[tuple[str, Path, float, float]] = []
     resolved_fits: list[str | None] = []
+    resolved_motions: list[str | None] = []
     for clip in normalized_clips:
         source = Path(clip.source_path).expanduser().resolve()
+        motion: str | None = None
         if isinstance(clip, SequenceImage):
             span = _time(clip.duration_seconds, "image duration_seconds")
             if span == 0:
                 raise FFmpegError("image duration_seconds must be greater than zero")
             kind, start, end = "image", 0.0, span
+            motion = clip.motion
+            if motion is not None and motion not in KEN_BURNS_MOTIONS:
+                raise FFmpegError("motion must be one of " + ", ".join(KEN_BURNS_MOTIONS))
         else:
             start = _time(clip.start_seconds, "start_seconds")
             end = _time(clip.end_seconds, "end_seconds")
@@ -609,6 +664,7 @@ def compose_video_sequence(
             raise FFmpegError("output_path must not overwrite a source")
         resolved_clips.append((kind, source, start, end))
         resolved_fits.append(fit)
+        resolved_motions.append(motion)
     duration = sum(end - start for _, _, start, end in resolved_clips)
     has_images = any(kind == "image" for kind, _, _, _ in resolved_clips)
     # An explicit target format: every segment is deterministically scaled to
@@ -786,6 +842,15 @@ def compose_video_sequence(
     labels = []
     for index, (kind, _, start, end) in enumerate(resolved_clips):
         label = f"v{index}"
+
+        def _motion_chain(width: int, height: int, _motion=resolved_motions[index],
+                          _span=end - start) -> str:
+            """The optional Ken Burns ``zoompan`` pass for this still, or ``""``."""
+            if _motion is None:
+                return ""
+            frames = round(_span * IMAGE_TIMELINE_FPS)
+            return "," + _ken_burns_filter(_motion, width, height, frames)
+
         if normalize_to_canvas:
             width, height = canvas_size  # type: ignore[misc]
             # An explicit target format falls back to contain for any segment
@@ -795,7 +860,7 @@ def compose_video_sequence(
             if kind == "image":
                 filters.append(
                     f"[{index}:v:0]{scale_chain},"
-                    f"fps={IMAGE_TIMELINE_FPS},format=yuv420p,"
+                    f"fps={IMAGE_TIMELINE_FPS}{_motion_chain(width, height)},format=yuv420p,"
                     f"trim=duration={format(end - start, '.15g')},"
                     f"setpts=PTS-STARTPTS[{label}]"
                 )
@@ -810,7 +875,7 @@ def compose_video_sequence(
             filters.append(
                 f"[{index}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
-                f"fps={IMAGE_TIMELINE_FPS},setsar=1,format=yuv420p,"
+                f"fps={IMAGE_TIMELINE_FPS},setsar=1{_motion_chain(width, height)},format=yuv420p,"
                 f"trim=duration={format(end - start, '.15g')},setpts=PTS-STARTPTS[{label}]"
             )
         else:

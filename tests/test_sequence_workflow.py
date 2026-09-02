@@ -1163,6 +1163,38 @@ class SequenceWorkflowTests(unittest.TestCase):
         self.assertEqual(report.artifact.duration_seconds, 5.5)
         self.assertEqual(report.artifact.image_count, 1)
 
+    def test_carries_a_ken_burns_motion_onto_the_image_segment(self):
+        plan = image_plan(image_parameters={"duration_seconds": 4, "motion": "zoom_in"})
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen["motions"] = [getattr(clip, "motion", None) for clip in clips]
+            return SequenceArtifact(
+                tuple(clip.source_path for clip in clips),
+                plan.output_path,
+                5.5,
+                500,
+                image_count=1,
+            )
+
+        def validate(artifact, **_kwargs):
+            return SequenceValidationReport(True, artifact, 5.5, 0.15, (), None)
+
+        report = run_sequence_workflow(
+            plan, preflight=image_preflight, compose=compose, validate=validate
+        )
+
+        self.assertTrue(report.valid)
+        self.assertEqual(seen["motions"], [None, "zoom_in"])
+
+    def test_rejects_an_unknown_ken_burns_motion(self):
+        with self.assertRaisesRegex(SequenceWorkflowError, "motion must be one of"):
+            run_sequence_workflow(
+                image_plan(image_parameters={"duration_seconds": 4, "motion": "spin"}),
+                preflight=lambda _: self.fail("must not preflight"),
+                compose=lambda *_a, **_k: self.fail("must not compose"),
+            )
+
     def test_rejects_an_image_clip_with_an_invalid_duration(self):
         for parameters, message in (
             ({}, "duration_seconds"),

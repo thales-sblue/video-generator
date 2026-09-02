@@ -764,6 +764,102 @@ class FFmpegAdapterTests(unittest.TestCase):
                         root / "out.mp4",
                     )
 
+    def test_ken_burns_zoom_in_on_a_still_adds_a_centred_zoompan_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            a = str(root / "a.mp4")
+            card = str(root / "card.png")
+            b = str(root / "b.mp4")
+            timeline = (
+                SequenceClip(a, 0, 1),
+                SequenceImage(card, 4, motion="zoom_in"),
+                SequenceClip(b, 0, 1),
+            )
+            _artifact, graph = self._run_fit_compose(timeline, (1280, 720))
+        # 4 s * 30 fps = 120 frames, so the ramp denominator is 119
+        self.assertIn(
+            "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,"
+            "fps=30,setsar=1,"
+            "scale=iw*4:ih*4,"
+            "zoompan=z=1+0.12*on/119:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):"
+            "d=1:s=1280x720:fps=30,"
+            "format=yuv420p,trim=duration=4,setpts=PTS-STARTPTS[v1]",
+            graph,
+        )
+
+    def test_a_still_without_motion_keeps_the_static_filter_chain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            a = str(root / "a.mp4")
+            card = str(root / "card.png")
+            b = str(root / "b.mp4")
+            timeline = (
+                SequenceClip(a, 0, 1),
+                SequenceImage(card, 4),
+                SequenceClip(b, 0, 1),
+            )
+            _artifact, graph = self._run_fit_compose(timeline, (1280, 720))
+        self.assertNotIn("zoompan", graph)
+
+    def test_each_ken_burns_motion_emits_its_own_pan_or_zoom_expression(self):
+        cases = {
+            "zoom_in": "z=1+0.12*on/119:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)",
+            "zoom_out": "z=1.12-0.12*on/119:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)",
+            "pan_left": "z=1.12:x=(iw-iw/zoom)*(1-on/119):y=(ih-ih/zoom)/2",
+            "pan_right": "z=1.12:x=(iw-iw/zoom)*(on/119):y=(ih-ih/zoom)/2",
+            "pan_up": "z=1.12:x=(iw-iw/zoom)/2:y=(ih-ih/zoom)*(1-on/119)",
+            "pan_down": "z=1.12:x=(iw-iw/zoom)/2:y=(ih-ih/zoom)*(on/119)",
+        }
+        for motion, expr in cases.items():
+            with self.subTest(motion=motion), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                a = str(root / "a.mp4")
+                card = str(root / "card.png")
+                b = str(root / "b.mp4")
+                timeline = (
+                    SequenceClip(a, 0, 1),
+                    SequenceImage(card, 4, motion=motion),
+                    SequenceClip(b, 0, 1),
+                )
+                _artifact, graph = self._run_fit_compose(timeline, (1280, 720))
+                self.assertIn(f"zoompan={expr}:d=1:s=1280x720:fps=30", graph)
+
+    def test_rejects_an_unknown_still_motion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            a = root / "a.mp4"
+            card = root / "card.png"
+            for path in (a, card):
+                path.write_bytes(path.stem.encode("utf-8"))
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ):
+                with self.assertRaisesRegex(FFmpegError, "motion must be one of"):
+                    compose_video_sequence(
+                        (SequenceClip(str(a), 0, 1), SequenceImage(str(card), 4, motion="spin")),
+                        root / "out.mp4",
+                        canvas=(1280, 720),
+                    )
+
+    def test_target_format_still_motion_applies_after_the_fit_chain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clip = str(root / "clip.mp4")
+            card = str(root / "card.png")
+            timeline = (
+                SequenceClip(clip, 0, 1, fit="cover"),
+                SequenceImage(card, 2, motion="pan_right", fit="cover"),
+            )
+            _artifact, graph = self._run_fit_compose(timeline, (360, 640))
+        self.assertIn(
+            "[1:v:0]scale=360:640:force_original_aspect_ratio=increase:force_divisible_by=2,"
+            "crop=360:640:(iw-360)/2:(ih-640)/2,setsar=1,fps=30,"
+            "scale=iw*4:ih*4,"
+            "zoompan=z=1.12:x=(iw-iw/zoom)*(on/59):y=(ih-ih/zoom)/2:d=1:s=360x640:fps=30,"
+            "format=yuv420p,trim=duration=2,setpts=PTS-STARTPTS[v1]",
+            graph,
+        )
+
     def test_sequence_requires_at_least_one_video_clip(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -53,6 +53,11 @@ transformar preferências contextuais em automações universais.
 - Evitar zoom ou transição automática em cada corte.
 - Manter linguagem visual consistente dentro da peça.
 - Intensidade e frequência devem respeitar conteúdo, música e plataforma.
+- Um `image_clip` aceita `motion` (`zoom_in`, `zoom_out`, `pan_left`,
+  `pan_right`, `pan_up`, `pan_down`): um Ken Burns determinístico de
+  deslocamento fixo (12% ao longo do clipe) sobre a imagem parada, aplicado
+  depois do `fit`. Sem `motion` a imagem fica congelada. É um gesto sutil e
+  único por clipe — não um efeito para repetir em todo segmento.
 
 ## Formato de entrega (target format)
 

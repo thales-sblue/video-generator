@@ -151,6 +151,40 @@ class FFmpegTargetFormatIntegrationTests(unittest.TestCase):
         )
         self._assert_video(out, 360, 640, expect_audio=False)
 
+    def test_still_with_ken_burns_zoom_renders_to_the_canvas(self):
+        a = _make_clip(self.root / "a.mp4", size="640x360", seconds=1.0, colour="red")
+        card = _make_image(self.root / "card.png", size="900x900", colour="white")
+        out = self.root / "out.mp4"
+        compose_video_sequence(
+            (
+                SequenceClip(str(a), 0, 1.0, fit="cover"),
+                SequenceImage(str(card), 1.5, motion="zoom_in", fit="cover"),
+            ),
+            out,
+            canvas=(480, 480),
+        )
+        info = self._assert_video(out, 480, 480, expect_audio=False)
+        self.assertAlmostEqual(float(info["format"]["duration"]), 2.5, delta=0.5)
+        video = next(s for s in info["streams"] if s["codec_type"] == "video")
+        num, _, den = video["r_frame_rate"].partition("/")
+        self.assertEqual(int(num) / int(den or 1), 30)
+
+    def test_each_ken_burns_motion_renders_without_ffmpeg_error(self):
+        a = _make_clip(self.root / "a.mp4", size="640x360", seconds=1.0, colour="red")
+        card = _make_image(self.root / "card.png", size="900x600", colour="white")
+        for motion in ("zoom_out", "pan_left", "pan_right", "pan_up", "pan_down"):
+            with self.subTest(motion=motion):
+                out = self.root / f"{motion}.mp4"
+                compose_video_sequence(
+                    (
+                        SequenceClip(str(a), 0, 1.0, fit="contain"),
+                        SequenceImage(str(card), 1.0, motion=motion, fit="contain"),
+                    ),
+                    out,
+                    canvas=(640, 360),
+                )
+                self._assert_video(out, 640, 360, expect_audio=False)
+
     def test_target_format_timeline_with_narration_and_music(self):
         a = _make_clip(self.root / "a.mp4", size="640x360", seconds=1.0, colour="red")
         b = _make_clip(self.root / "b.mp4", size="480x480", seconds=1.0, colour="green")

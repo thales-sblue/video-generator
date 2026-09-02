@@ -61,7 +61,9 @@ antes de escrever mídia.
 
 `video-sequence` compõe ao menos dois segmentos ordenados no `EditPlan` — com ao
 menos um `sequence_clip` (trecho de vídeo) e, opcionalmente, `image_clip`
-(imagem local com `duration_seconds`). Pode queimar uma faixa `captions` — cues
+(imagem local com `duration_seconds` e um `motion` opcional que anima a parada
+com um Ken Burns determinístico via `zoompan`). Pode queimar uma faixa
+`captions` — cues
 inline, de um `.srt`/`.vtt` local, ou derivados do texto da narração
 (`from=narration`, timing aproximado) —, repetir uma faixa `music` com ganho e
 fades opcionais e receber uma operação final `narration` (de um áudio local ou
@@ -76,9 +78,10 @@ letter-boxed nele. Com `target_format` (contrato `TargetFormat`: `width`,
 resolução de entrega declarada, sources heterogêneos compõem a mesma timeline e
 cada segmento é normalizado deterministicamente para o canvas (fit por segmento
 ou herdado do `target_format`). O campo é omit-when-None: planos e briefs
-legados serializam e fazem fingerprint exatamente como antes. Movimento,
-transitions e composição visual rica continuam fora do escopo, reservados ao
-compositor rico.
+legados serializam e fazem fingerprint exatamente como antes. Um Ken Burns
+simples (`image_clip.motion`: zoom/pan de deslocamento fixo) já existe;
+transitions e composição visual rica com múltiplas camadas continuam fora do
+escopo, reservadas ao compositor rico.
 
 ### Adapters e renderers
 
