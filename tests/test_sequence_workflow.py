@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from hashlib import sha256
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from video_generator.adapters import (
     FFmpegError,
@@ -1437,6 +1437,109 @@ class SequenceWorkflowTests(unittest.TestCase):
                     compose=lambda *_a, **_k: self.fail("must not compose"),
                 )
 
+    def test_pulls_derived_captions_onto_the_measured_narration_pauses(self):
+        base = narrated_text_plan(
+            params={
+                "duration_policy": "match_timeline",
+                "text": "Hello dark world. Here is a second sentence for the caption track.",
+                "lead_in_seconds": 0.5,
+            }
+        )
+        plan = EditPlan(
+            base.plan_id,
+            base.brief_id,
+            base.sources,
+            base.output_path,
+            (
+                *base.operations[:-1],
+                EditOperation(
+                    "captions-1",
+                    "captions",
+                    parameters={"style": "bottom_box", "from": "narration"},
+                ),
+                base.operations[-1],
+            ),
+        )
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen["captions"] = tuple(
+                (cue.text, cue.start_seconds, cue.end_seconds)
+                for cue in kwargs.get("captions", ())
+            )
+            seen["narration_path"] = kwargs.get("narration_path")
+            return SequenceArtifact(
+                tuple(clip.source_path for clip in clips),
+                plan.output_path,
+                3.5,
+                500,
+                narration_source_path=kwargs.get("narration_path"),
+                caption_count=len(kwargs.get("captions", ())),
+                narration_lead_in_seconds=0.5,
+            )
+
+        measured = Mock(return_value=((1.1, 1.3),))
+        with patch.object(sequence_module, "synthesize_narration", side_effect=_fake_synth), \
+                patch.object(sequence_module, "detect_silences", measured), \
+                patch.object(sequence_module, "probe_media", side_effect=_probe_of(3.0)):
+            report = run_sequence_workflow(
+                plan,
+                preflight=valid_preflight,
+                compose=compose,
+                validate=lambda artifact, **_k: SequenceValidationReport(
+                    True, artifact, 3.5, 0.15, (), None
+                ),
+            )
+
+        self.assertTrue(report.valid)
+        # the pauses are measured on the synthesised WAV, before it is discarded
+        self.assertEqual(measured.call_args.args[0], seen["narration_path"])
+        # the estimate put the break at 0.954 s; the voice really stopped from
+        # 1.1 to 1.3, so the cut moves to 1.2 and then shifts by the 0.5 lead-in
+        self.assertAlmostEqual(seen["captions"][0][2], 1.7, places=6)
+        self.assertAlmostEqual(seen["captions"][1][1], 1.7, places=6)
+        self.assertAlmostEqual(seen["captions"][0][1], 0.5, places=6)
+        self.assertAlmostEqual(seen["captions"][-1][2], 3.5, places=6)
+
+    def test_reports_a_narration_whose_pauses_cannot_be_measured(self):
+        base = narrated_text_plan(
+            params={
+                "duration_policy": "match_timeline",
+                "text": "Hello dark world. Here is a second sentence for the caption track.",
+            }
+        )
+        plan = EditPlan(
+            base.plan_id,
+            base.brief_id,
+            base.sources,
+            base.output_path,
+            (
+                *base.operations[:-1],
+                EditOperation(
+                    "captions-1",
+                    "captions",
+                    parameters={"style": "bottom_box", "from": "narration"},
+                ),
+                base.operations[-1],
+            ),
+        )
+
+        with patch.object(sequence_module, "synthesize_narration", side_effect=_fake_synth), \
+                patch.object(
+                    sequence_module,
+                    "detect_silences",
+                    side_effect=FFmpegError("no audio stream"),
+                ), \
+                patch.object(sequence_module, "probe_media", side_effect=_probe_of(3.0)):
+            with self.assertRaisesRegex(
+                SequenceWorkflowError, "could not measure the narration pauses"
+            ):
+                run_sequence_workflow(
+                    plan,
+                    preflight=valid_preflight,
+                    compose=lambda *_a, **_k: self.fail("must not compose"),
+                )
+
     def test_derives_captions_from_the_narration_text(self):
         base = narrated_text_plan(
             params={
@@ -1474,6 +1577,7 @@ class SequenceWorkflowTests(unittest.TestCase):
             )
 
         with patch.object(sequence_module, "synthesize_narration", side_effect=_fake_synth), \
+                patch.object(sequence_module, "detect_silences", return_value=()), \
                 patch.object(sequence_module, "probe_media", side_effect=_probe_of(3.0)):
             report = run_sequence_workflow(
                 plan,
@@ -1531,6 +1635,7 @@ class SequenceWorkflowTests(unittest.TestCase):
 
         # 1 s of atmosphere, then 2 s of voice inside a 3.5 s timeline
         with patch.object(sequence_module, "synthesize_narration", side_effect=_fake_synth), \
+                patch.object(sequence_module, "detect_silences", return_value=()), \
                 patch.object(sequence_module, "probe_media", side_effect=_probe_of(2.0)):
             report = run_sequence_workflow(
                 plan,

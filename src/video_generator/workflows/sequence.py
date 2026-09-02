@@ -22,12 +22,14 @@ from video_generator.adapters import (
     SequenceClip,
     SequenceImage,
     compose_video_sequence,
+    detect_silences,
     probe_media,
     synthesize_narration,
 )
 from video_generator.domain import EditPlan
 from video_generator.subtitles import (
     SubtitleParseError,
+    align_cues_to_silences,
     captions_from_text,
     parse_subtitle_cues,
 )
@@ -725,14 +727,24 @@ def run_sequence_workflow(
             if captions_from_narration:
                 lead_in = narration_text.lead_in_seconds
                 span = min(narration_seconds, expected_duration - lead_in)
+                # where the synthesised voice actually stops, so a line break can
+                # land on a real pause instead of on an estimated one
                 try:
-                    # cues are laid out over the spoken span, then shifted so the
-                    # track starts with the voice rather than with the timeline
+                    silences = detect_silences(narration_path, timeout_seconds=timeout)
+                except FFmpegError as exc:
+                    raise SequenceWorkflowError(
+                        f"could not measure the narration pauses: {exc}"
+                    ) from exc
+                try:
+                    # cues are laid out over the spoken span, pulled onto the
+                    # measured pauses, then shifted so the track starts with the
+                    # voice rather than with the timeline
                     captions = _validate_caption_cues(
                         tuple(
                             (text, start + lead_in, end + lead_in)
-                            for text, start, end in captions_from_text(
-                                narration_text.text, span
+                            for text, start, end in align_cues_to_silences(
+                                captions_from_text(narration_text.text, span),
+                                silences,
                             )
                         )
                     )

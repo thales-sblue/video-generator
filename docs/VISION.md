@@ -144,6 +144,34 @@ agora.** O caminho de maior qualidade já é suportado sem dependência nova:
 segundo engine só entra quando surgir uma opção permissiva e viável em CPU, ou
 mediante decisão explícita de adotar runtime com GPU.
 
+## Alinhamento de captions — decisão de reuso (2026-09-02)
+
+O timing de `from=narration` era estimado por peso de sílabas. Pesquisa de
+alternativas locais para medir a fala, pelos mesmos gates:
+
+- **kokoro-onnx `create_timed`** (já instalado, 0.6.1) — devolveria o instante de
+  cada fonema, de graça e sem dependência nova. Bloqueado pelo asset: o export
+  `kokoro-v1.0.onnx` que temos publica só a saída `audio`, sem `duration`
+  (verificado via onnxruntime), então `has_timings` é falso. Reabrir exigiria
+  re-exportar o modelo (PyTorch + pesos originais) e travar um asset novo — é o
+  melhor caminho futuro, não um incremento pequeno.
+- **faster-whisper** (MIT, CTranslate2, int8 viável em CPU) — alinhamento por
+  palavra de verdade, mas é um caminho de vários commits: dependência,
+  download/lock de modelo, check no `doctor`, adapter e wiring. Segue como porta
+  aberta para alinhamento por palavra, não para este incremento.
+- **aeneas** — descartado: AGPL-3.0, copyleft incompatível com a opção de manter
+  o `video-generator` proprietário.
+- **Montreal Forced Aligner** (MIT) — descartado por ora: pilha Kaldi/conda e
+  modelos grandes, desproporcional ao ganho.
+- **FFmpeg `silencedetect`** — já travado em `.local-tools/ffmpeg` (LGPL), zero
+  dependência nova, passagem somente leitura.
+
+**Decisão: reutilizar o FFmpeg — ancorar as quebras de caption nas pausas
+medidas** (`detect_silences` + `align_cues_to_silences`). Mede onde a voz parou,
+não qual palavra foi dita: afia a estimativa sem prometer alinhamento forçado.
+Whisper local continua o próximo passo se o alinhamento por palavra virar
+necessário.
+
 O objetivo maduro é permitir um pedido como “produza o próximo vídeo do canal”
 e fazer o agente cuidar da maior parte da produção com checkpoints auditáveis.
 

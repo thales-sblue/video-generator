@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -386,6 +387,104 @@ def extract_audio(
     except OSError as exc:
         raise FFmpegError(f"could not inspect published output: {output}") from exc
     return AudioArtifact(str(source), str(output), 48000, 2, size)
+
+
+# Defaults for :func:`detect_silences`. -35 dBFS sits below a synthesised voice
+# but above the noise floor of a clean TTS render, and 0.12 s is long enough to
+# skip the stops inside a word while still catching a sentence break.
+SILENCE_NOISE_DB = -35.0
+SILENCE_MIN_SECONDS = 0.12
+_SILENCE_START = re.compile(r"silence_start:\s*(-?\d+(?:\.\d+)?)")
+_SILENCE_END = re.compile(r"silence_end:\s*(-?\d+(?:\.\d+)?)")
+
+
+def detect_silences(
+    source_path: str | Path,
+    *,
+    noise_db: float = SILENCE_NOISE_DB,
+    min_duration_seconds: float = SILENCE_MIN_SECONDS,
+    timeout_seconds: float = 120,
+) -> tuple[tuple[float, float], ...]:
+    """Report the quiet spans of a local audio file, in seconds.
+
+    A read-only ``silencedetect`` pass: nothing is decoded to disk and the
+    source is never touched. Spans come back ordered and closed; a silence that
+    runs to the end of the file has no ``silence_end`` and is dropped, since it
+    marks where the audio stops rather than a pause inside it.
+    """
+
+    source = Path(source_path).expanduser().resolve()
+    if not source.exists() or not source.is_file():
+        raise FFmpegError(f"source does not exist or is not a file: {source}")
+    if (
+        isinstance(noise_db, bool)
+        or not isinstance(noise_db, (int, float))
+        or not math.isfinite(noise_db)
+        or noise_db < -90
+        or noise_db >= 0
+    ):
+        raise FFmpegError("noise_db must be a finite number from -90 to less than 0")
+    minimum = _time(min_duration_seconds, "min_duration_seconds")
+    if minimum == 0:
+        raise FFmpegError("min_duration_seconds must be greater than zero")
+    timeout = _time(timeout_seconds, "timeout_seconds")
+    if timeout == 0:
+        raise FFmpegError("timeout_seconds must be greater than zero")
+
+    try:
+        executable = resolve_media_tool("ffmpeg", path_lookup=shutil.which)
+    except ToolResolutionError as exc:
+        raise FFmpegError(str(exc)) from exc
+    if executable is None:
+        raise FFmpegError("ffmpeg is not available locally or on PATH")
+
+    command = [
+        executable,
+        "-hide_banner",
+        "-nostdin",
+        "-i",
+        str(source),
+        "-map",
+        "0:a:0",
+        "-af",
+        f"silencedetect=noise={format(float(noise_db), '.15g')}dB:"
+        f"d={format(minimum, '.15g')}",
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegError("ffmpeg timed out while detecting silences") from exc
+    except OSError as exc:
+        raise FFmpegError(f"ffmpeg could not detect silences: {type(exc).__name__}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        suffix = f": {detail}" if detail else ""
+        raise FFmpegError(f"ffmpeg exited with {completed.returncode}{suffix}")
+
+    spans: list[tuple[float, float]] = []
+    pending: float | None = None
+    for line in (completed.stderr or "").splitlines():
+        started = _SILENCE_START.search(line)
+        if started is not None:
+            pending = max(float(started.group(1)), 0.0)
+            continue
+        ended = _SILENCE_END.search(line)
+        if ended is not None and pending is not None:
+            finish = float(ended.group(1))
+            if finish > pending:
+                spans.append((pending, finish))
+            pending = None
+    return tuple(spans)
 
 
 def compose_video_sequence(

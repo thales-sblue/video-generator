@@ -10,9 +10,69 @@ from video_generator.adapters import (
     SequenceClip,
     SequenceImage,
     compose_video_sequence,
+    detect_silences,
     extract_audio,
     extract_segment,
 )
+
+
+class DetectSilencesTests(unittest.TestCase):
+    def test_reads_closed_silence_spans_from_a_read_only_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            voice = root / "voice.wav"
+            voice.write_bytes(b"voice")
+            stderr = (
+                "[Parsed_silencedetect_0 @ 0000] silence_start: 1.530208\n"
+                "[Parsed_silencedetect_0 @ 0000] silence_end: 1.808875 | "
+                "silence_duration: 0.278667\n"
+                "[Parsed_silencedetect_0 @ 0000] silence_start: 3.1\n"
+            )
+
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 0, "", stderr),
+            ) as execute:
+                spans = detect_silences(voice)
+
+            command = execute.call_args.args[0]
+            self.assertEqual(command[command.index("-i") + 1], str(voice.resolve()))
+            self.assertIn("silencedetect=noise=-35dB:d=0.12", command)
+            # read-only: the pass decodes to the null muxer and writes nothing
+            self.assertEqual(command[-3:], ["-f", "null", "-"])
+            # the trailing silence has no end -- it is where the audio stops, not a
+            # pause inside it -- so it is dropped
+            self.assertEqual(spans, ((1.530208, 1.808875),))
+            self.assertEqual(voice.read_bytes(), b"voice")
+
+    def test_reports_a_failed_or_unusable_detection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            voice = root / "voice.wav"
+            voice.write_bytes(b"voice")
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ):
+                with self.assertRaisesRegex(FFmpegError, "does not exist or is not a file"):
+                    detect_silences(root / "missing.wav")
+                with self.assertRaisesRegex(FFmpegError, "noise_db must be"):
+                    detect_silences(voice, noise_db=0)
+                with self.assertRaisesRegex(FFmpegError, "min_duration_seconds must be"):
+                    detect_silences(voice, min_duration_seconds=0)
+                with patch(
+                    "video_generator.adapters.ffmpeg.subprocess.run",
+                    return_value=subprocess.CompletedProcess([], 1, "", "no audio stream"),
+                ):
+                    with self.assertRaisesRegex(FFmpegError, "exited with 1: no audio stream"):
+                        detect_silences(voice)
+                with patch(
+                    "video_generator.adapters.ffmpeg.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired("ffmpeg", 1),
+                ):
+                    with self.assertRaisesRegex(FFmpegError, "timed out"):
+                        detect_silences(voice)
 
 
 class FFmpegAdapterTests(unittest.TestCase):

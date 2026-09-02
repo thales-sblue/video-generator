@@ -14,6 +14,7 @@ from video_generator.adapters.ffmpeg import (
     SequenceClip,
     SequenceImage,
     compose_video_sequence,
+    detect_silences,
     extract_audio,
     extract_segment,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "extract_audio",
     "extract_segment",
     "compose_video_sequence",
+    "detect_silences",
     "probe_media",
     "synthesize_narration",
 ]

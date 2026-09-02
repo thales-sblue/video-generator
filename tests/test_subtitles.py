@@ -3,6 +3,7 @@ import unittest
 from video_generator.subtitles import (
     CAPTION_CHUNK_MAX_CHARS,
     SubtitleParseError,
+    align_cues_to_silences,
     captions_from_text,
     parse_subtitle_cues,
 )
@@ -84,6 +85,73 @@ class CaptionsFromTextTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(SubtitleParseError, "more cues than its duration"):
             captions_from_text(crowded, 0.002)
+
+
+class AlignCuesToSilencesTests(unittest.TestCase):
+    def cues(self):
+        return (
+            ("First line.", 0.0, 1.6),
+            ("Second line.", 1.6, 3.2),
+            ("Third line.", 3.2, 5.0),
+        )
+
+    def test_pulls_a_boundary_onto_the_middle_of_a_measured_pause(self):
+        aligned = align_cues_to_silences(self.cues(), ((1.9, 2.1),))
+
+        # the estimate said 1.6; the voice actually stopped from 1.9 to 2.1, and
+        # the line stays up across the pause instead of blinking out inside it
+        self.assertEqual(aligned[0][2], 2.0)
+        self.assertEqual(aligned[1][1], 2.0)
+        # untouched boundaries and the outer edges keep their estimated times
+        self.assertEqual(aligned[1][2], 3.2)
+        self.assertEqual((aligned[0][1], aligned[-1][2]), (0.0, 5.0))
+        self.assertEqual([cue[0] for cue in aligned], [cue[0] for cue in self.cues()])
+
+    def test_ignores_pauses_beyond_the_tolerance_or_outside_the_cues(self):
+        cues = self.cues()
+        # 2.5 is 0.7 s from the nearest boundary, past the 0.5 s tolerance
+        self.assertEqual(align_cues_to_silences(cues, ((2.4, 2.6),)), cues)
+        self.assertEqual(align_cues_to_silences(cues, ()), cues)
+        self.assertEqual(align_cues_to_silences(cues, ((5.2, 5.6),)), cues)
+
+    def test_ignores_the_quiet_before_and_after_the_voice(self):
+        cues = (("A", 0.0, 1.6), ("B", 1.6, 2.0))
+        # the tail quiet of the recording reaches the end of the span: snapping
+        # the break into it would leave the last line with almost no time
+        self.assertEqual(align_cues_to_silences(cues, ((1.9, 2.0),)), cues)
+        self.assertEqual(align_cues_to_silences(cues, ((0.0, 0.2),)), cues)
+
+    def test_gives_a_pause_to_one_boundary_only(self):
+        cues = (("A", 0.0, 1.6), ("B", 1.6, 2.0), ("C", 2.0, 4.0))
+        # 1.8 sits the same distance from both boundaries: the earlier one takes
+        # it and the other keeps its estimate rather than collapsing onto it
+        aligned = align_cues_to_silences(cues, ((1.75, 1.85),))
+
+        self.assertEqual(aligned[0][2], 1.8)
+        self.assertEqual(aligned[1][2], 2.0)
+
+    def test_refuses_a_pause_that_would_cross_a_neighbouring_boundary(self):
+        cues = (("A", 0.0, 1.0), ("B", 1.0, 2.0), ("C", 2.0, 3.0))
+        # both pauses precede the second boundary; taking the far one would put
+        # it before the first, so that boundary keeps its estimated time
+        aligned = align_cues_to_silences(
+            cues, ((0.85, 0.95), (0.9, 1.0)), tolerance_seconds=1.5
+        )
+
+        self.assertEqual(aligned[0][2], 0.95)
+        self.assertEqual(aligned[1][2], 2.0)
+        starts = [cue[1] for cue in aligned]
+        self.assertEqual(starts, sorted(starts))
+        for _, start, end in aligned:
+            self.assertGreater(end, start)
+
+    def test_rejects_unusable_input(self):
+        with self.assertRaisesRegex(SubtitleParseError, "at least one cue"):
+            align_cues_to_silences((), ((1.0, 1.2),))
+        with self.assertRaisesRegex(SubtitleParseError, "ordered, contiguous"):
+            align_cues_to_silences((("A", 0.0, 1.0), ("B", 1.5, 2.0)), ((1.2, 1.3),))
+        with self.assertRaisesRegex(SubtitleParseError, "tolerance must be positive"):
+            align_cues_to_silences(self.cues(), ((1.9, 2.1),), tolerance_seconds=0)
 
 
 class SubtitleParsingTests(unittest.TestCase):

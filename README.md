@@ -159,8 +159,12 @@ da narração (modo texto) em linhas curtas (até ~50 caracteres, quebra em
 fronteiras de frase e oração e não deixa artigo, preposição ou conjunção sozinho
 no fim da linha) e as distribui sobre a duração real da narração por
 peso de sílabas e pausas estimadas, de modo que a última linha termina exatamente
-com a voz (timing **aproximado**: modela o ritmo, não mede o áudio; alinhamento
-por fala com Whisper é futuro). Em todos os casos os cues devem estar ordenados,
+com a voz. As quebras são então ancoradas nas pausas reais: um `silencedetect`
+somente leitura sobre o WAV sintetizado e cada fronteira interna puxada para a
+pausa mais próxima dentro de 0,5 s (uma pausa por fronteira, caindo no meio dela;
+o silêncio inicial e final não conta). O timing segue **aproximado** — mede onde
+a voz parou, não qual palavra foi dita; alinhamento por palavra com Whisper local
+continua futuro. Em todos os casos os cues devem estar ordenados,
 não podem se sobrepor, duram ao menos 1 ms, usam no máximo 160 caracteres,
 recusam markup de subtitles e não podem ultrapassar o vídeo. O texto é escrito em
 um `.ass` temporário com `PlayResX/Y` igual ao quadro — assim o corpo da fonte e

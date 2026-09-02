@@ -76,9 +76,16 @@ três formas:
   de frase e de oração; um artigo, preposição ou conjunção sozinho no fim de uma
   linha é empurrado para a linha seguinte quando cabe) e distribuído sobre a
   duração real da narração por peso de sílabas e pausas estimadas, com a última
-  linha terminando exatamente com a voz.
-  O timing é **aproximado** (modela o ritmo da fala, não mede o áudio
-  renderizado); alinhamento por fala com Whisper é incremento futuro. O
+  linha terminando exatamente com a voz. Em seguida as quebras são **ancoradas
+  nas pausas medidas**: o workflow roda um `silencedetect` somente leitura sobre
+  o WAV sintetizado e cada fronteira interna recebe a pausa mais próxima dentro
+  de 0,5 s (a melhor combinação primeiro, uma pausa por fronteira), caindo no
+  meio dela para a linha não piscar durante o silêncio. Fronteiras sem pausa por
+  perto mantêm a estimativa; o silêncio do começo e do fim do arquivo não vale
+  como âncora; o primeiro início e o último fim nunca se movem.
+  O timing continua **aproximado** — mede onde a voz parou, não qual palavra foi
+  dita; alinhamento por palavra (Whisper local) segue como incremento futuro (ver
+  "Alinhamento de captions — decisão de reuso" em [VISION.md](VISION.md)). O
   `RenderManifest` já cobre isso pelo SHA-256 do texto da narração.
 
 Em todos os casos cada texto tem até 160 caracteres; cues são ordenados, não
@@ -203,8 +210,10 @@ Já disponível:
   letter-boxed no canvas dos clipes (sem movimento/Ken Burns nesta v1);
 - `captions` aceita itens inline, um `.srt`/`.vtt` local como source, ou
   `from=narration` (linhas curtas de uma linha, quebra por frase/oração, timing
-  por peso de sílabas e pausas estimadas — aproximado; queimadas de um `.ass` com
-  `PlayRes` igual ao quadro, em faixa segura de plataforma);
+  por peso de sílabas e pausas estimadas e depois ancorado nas pausas medidas no
+  WAV sintetizado por `silencedetect` — ainda aproximado; queimadas de um `.ass`
+  com `PlayRes` igual ao quadro, em faixa segura de plataforma). **Pendente:**
+  revisão visual real do ritmo das quebras ancoradas;
 - narração local a partir de texto: Kokoro opcional (extra op-in `tts`, assets
   fail-closed em `.local-tools/kokoro/`, check no `doctor`), o adapter
   `synthesize_narration`, a CLI de baixo nível `narrate` e o **modo texto da
@@ -237,9 +246,12 @@ incremento; nada aqui autoriza pular testes ou camadas):
    disponível hoje é **narração gravada por humano** via `narration` com `source`
    de áudio local — sem dependência nova. Um segundo engine só entra com uma
    opção permissiva viável em CPU ou decisão explícita de exigir GPU.
-2. **Captions com alinhamento real (Whisper local)** — melhorar o timing de
-   `from=narration` de "peso de caracteres" para alinhamento por fala, seguindo o
-   padrão do Kokoro (spike -> adapter -> wire). Qualidade, não pré-requisito de v1.
+2. **Captions com alinhamento por palavra (Whisper local)** — o timing de
+   `from=narration` já saiu de "só estimativa" para "estimativa ancorada nas
+   pausas medidas" (`silencedetect`, sem dependência nova). O passo seguinte, se
+   necessário, é alinhamento por palavra com faster-whisper (MIT), seguindo o
+   padrão do Kokoro (spike -> adapter -> wire); ver "Alinhamento de captions —
+   decisão de reuso" em [VISION.md](VISION.md). Qualidade, não pré-requisito de v1.
 3. **Primeiro adapter HyperFrames** — provar `EditPlan -> cena HTML -> MP4` com um
    title card / camada de captions. Avaliar se movimento (Ken Burns), fit
    configurável e composição visual rica saem mais baratos por HTML do que por

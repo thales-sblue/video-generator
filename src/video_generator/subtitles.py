@@ -282,3 +282,88 @@ def captions_from_text(
             )
         result.append((chunk, start, end))
     return tuple(result)
+
+
+CUE_ALIGN_TOLERANCE_SECONDS = 0.5
+_MIN_CUE_SECONDS = 0.001
+_EDGE_EPSILON = 1e-9
+
+
+def align_cues_to_silences(
+    cues: tuple[tuple[str, float, float], ...],
+    silences: tuple[tuple[float, float], ...],
+    *,
+    tolerance_seconds: float = CUE_ALIGN_TOLERANCE_SECONDS,
+) -> tuple[tuple[str, float, float], ...]:
+    """Move cue boundaries onto the pauses actually heard in the narration.
+
+    ``cues`` are contiguous cues over the voice (as :func:`captions_from_text`
+    lays them out) and ``silences`` are the quiet spans measured in that same
+    audio. Every internal boundary is offered the closest silence within
+    ``tolerance_seconds``, best match first, each silence serving one boundary;
+    a boundary lands on the middle of its silence, so the line stays up across
+    the pause instead of blinking out in it. Boundaries with no silence nearby
+    keep their estimated time, and the first start and the last end are never
+    moved -- the track still begins and ends with the voice.
+
+    This measures where the speaker stopped, not which word was said: it sharpens
+    the estimate, it is not forced alignment.
+    """
+
+    if not isinstance(cues, tuple) or not cues:
+        raise SubtitleParseError("alignment requires at least one cue")
+    if (
+        isinstance(tolerance_seconds, bool)
+        or not isinstance(tolerance_seconds, (int, float))
+        or tolerance_seconds <= 0
+    ):
+        raise SubtitleParseError("alignment tolerance must be positive")
+    previous_end = None
+    for _, start, end in cues:
+        if end <= start or (previous_end is not None and abs(start - previous_end) > 1e-9):
+            raise SubtitleParseError("alignment requires ordered, contiguous cues")
+        previous_end = end
+    if len(cues) == 1 or not silences:
+        return cues
+
+    # boundary i separates cue i - 1 from cue i; the outer edges stay put
+    edges = [cues[0][1], *(cue[1] for cue in cues[1:]), cues[-1][2]]
+    # Head and tail quiet is where the voice has not started or has already
+    # stopped, not a pause between two lines, so only silences that both begin
+    # and end inside the spoken span can anchor a boundary.
+    anchors = [
+        (start + end) / 2
+        for start, end in silences
+        if start > edges[0] + _EDGE_EPSILON and end < edges[-1] - _EDGE_EPSILON
+    ]
+    if not anchors:
+        return cues
+
+    candidates = sorted(
+        (
+            (abs(anchor - edges[boundary]), boundary, index)
+            for boundary in range(1, len(edges) - 1)
+            for index, anchor in enumerate(anchors)
+            if abs(anchor - edges[boundary]) <= tolerance_seconds
+        ),
+        # distance decides; the indices only keep ties deterministic
+        key=lambda candidate: (candidate[0], candidate[1], candidate[2]),
+    )
+    moved: set[int] = set()
+    used: set[int] = set()
+    for _, boundary, index in candidates:
+        if boundary in moved or index in used:
+            continue
+        anchor = anchors[index]
+        # never let a snap cross a neighbouring boundary or squeeze a cue away
+        if (
+            anchor - edges[boundary - 1] < _MIN_CUE_SECONDS
+            or edges[boundary + 1] - anchor < _MIN_CUE_SECONDS
+        ):
+            continue
+        edges[boundary] = anchor
+        moved.add(boundary)
+        used.add(index)
+    return tuple(
+        (text, edges[index], edges[index + 1]) for index, (text, _, _) in enumerate(cues)
+    )
