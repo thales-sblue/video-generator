@@ -197,12 +197,15 @@ def build_sequence_render_manifest(
     expected_gain = None
     expected_fade_in = 0.0
     expected_fade_out = 0.0
+    expected_duck = None
     if len(music_operations) == 1 and music_operations[0].source is not None:
         music_parameters = music_operations[0].parameters
         expected_music = _normalized(music_operations[0].source)
         expected_gain = music_parameters.get("gain_db")
         expected_fade_in = float(music_parameters.get("fade_in_seconds", 0.0) or 0.0)
         expected_fade_out = float(music_parameters.get("fade_out_seconds", 0.0) or 0.0)
+        duck = music_parameters.get("duck_db")
+        expected_duck = float(duck) if duck is not None else None
     artifact_music = (
         _normalized(report.artifact.music_source_path)
         if report.artifact.music_source_path is not None
@@ -213,6 +216,7 @@ def build_sequence_render_manifest(
         or report.artifact.music_gain_db != expected_gain
         or report.artifact.music_fade_in_seconds != expected_fade_in
         or report.artifact.music_fade_out_seconds != expected_fade_out
+        or report.artifact.music_duck_db != expected_duck
     ):
         raise ManifestError("workflow artifact music does not match the plan")
     fade_operations = tuple(

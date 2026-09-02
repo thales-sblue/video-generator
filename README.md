@@ -191,10 +191,13 @@ distinto e `{"duration_policy":"loop_to_timeline","gain_db":N}`, com
 ganho fica entre -60 e 0 dB. A faixa é repetida até a duração visual, recebe
 `afade` de entrada/saída, é convertida para estéreo/48 kHz e, quando há voz,
 mixada sem normalização de somatório; um limiter evita picos acima de 0,95.
-Música sem narração também é suportada. Toda a mixagem final passa por um
-fade-in curto anticlique e por normalização de loudness EBU R128 para um alvo de
-publicação online (-14 LUFS integrado, true peak -1,5 dBTP), reamostrada de volta
-a 48 kHz. O áudio original dos clipes permanece excluído e o output continua
+Música sem narração também é suportada. Com uma narração no mesmo plano,
+`duck_db` (de -60 a menos de 0) abaixa a trilha exatamente esse tanto enquanto a
+voz fala, com rampa de 0,35 s em cada borda: a abertura e o encerramento ficam
+com a música cheia e só o trecho falado é atenuado. Toda a mixagem final passa
+por um fade-in curto anticlique e por normalização de loudness EBU R128 para um
+alvo de publicação online (-14 LUFS integrado, true peak -1,5 dBTP), reamostrada
+de volta a 48 kHz. O áudio original dos clipes permanece excluído e o output continua
 contendo uma única faixa AAC.
 
 Após todos os segmentos da timeline, uma operação opcional `fade` (sem source e

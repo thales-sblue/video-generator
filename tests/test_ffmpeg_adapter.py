@@ -218,8 +218,130 @@ class FFmpegAdapterTests(unittest.TestCase):
             self.assertIn("volume=-12dB,afade=t=in:st=0:d=1", filter_graph)
             # 4 s timeline, 1.5 s tail fade -> starts at 2.5 s
             self.assertIn("afade=t=out:st=2.5:d=1.5,atrim=duration=4", filter_graph)
+            # without a duck the bed carries no envelope at all
+            self.assertNotIn("volume=volume=", filter_graph)
+            self.assertIsNone(artifact.music_duck_db)
             self.assertEqual(artifact.music_fade_in_seconds, 1.0)
             self.assertEqual(artifact.music_fade_out_seconds, 1.5)
+
+    def test_ducks_the_music_bed_over_the_voice_and_records_the_level(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            narration = root / "voice.wav"
+            music = root / "bed.wav"
+            output = root / "mixed.mp4"
+            for path in (first, second, narration, music):
+                path.write_bytes(path.stem.encode("utf-8"))
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"mixed sequence")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            clips = (SequenceClip(str(first), 0, 2), SequenceClip(str(second), 0, 2))
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                artifact = compose_video_sequence(
+                    clips,
+                    output,
+                    narration_path=narration,
+                    narration_lead_in_seconds=1,
+                    music_path=music,
+                    music_gain_db=-12,
+                    music_duck_db=-9,
+                    narration_duration_seconds=2,
+                )
+
+            filter_graph = execute.call_args.args[0][
+                execute.call_args.args[0].index("-filter_complex") + 1
+            ]
+            # -9 dB is 0.354813... of full scale; the 0.35 s attack ramp ends on
+            # the 1 s lead-in and the release starts when the 2 s voice does.
+            self.assertIn(
+                "volume=volume='1-(1-0.354813389233575)"
+                "*clip((t-(0.65))/0.35,0,1)*clip((3.35-t)/0.35,0,1)':eval=frame,"
+                "atrim=duration=4",
+                filter_graph,
+            )
+            # the duck rides on top of the persisted static gain, never replaces it
+            self.assertIn("volume=-12dB,volume=volume=", filter_graph)
+            self.assertEqual(artifact.music_duck_db, -9.0)
+
+    def test_holds_the_duck_to_the_end_without_a_voice_length(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            narration = root / "voice.wav"
+            music = root / "bed.wav"
+            for path in (first, second, narration, music):
+                path.write_bytes(path.stem.encode("utf-8"))
+
+            def succeed(command, **kwargs):
+                Path(command[-1]).write_bytes(b"mixed sequence")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            clips = (SequenceClip(str(first), 0, 2), SequenceClip(str(second), 0, 2))
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=succeed
+            ) as execute:
+                compose_video_sequence(
+                    clips,
+                    root / "mixed.mp4",
+                    narration_path=narration,
+                    music_path=music,
+                    music_gain_db=-12,
+                    music_duck_db=-9,
+                )
+
+            filter_graph = execute.call_args.args[0][
+                execute.call_args.args[0].index("-filter_complex") + 1
+            ]
+            # no lead-in and no voice length: ducked from the first sample and
+            # released only past the 4 s timeline
+            self.assertIn("*clip((t-(-0.35))/0.35,0,1)*clip((4.35-t)/0.35,0,1)", filter_graph)
+
+    def test_music_ducking_requires_a_bed_a_voice_and_a_negative_level(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            narration = root / "voice.wav"
+            music = root / "bed.wav"
+            for path in (first, second, narration, music):
+                path.write_bytes(path.stem.encode("utf-8"))
+            clips = (SequenceClip(str(first), 0, 1), SequenceClip(str(second), 0, 1))
+            duck_kwargs = {
+                "narration_path": narration,
+                "music_path": music,
+                "music_gain_db": -12,
+            }
+            with patch("video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"):
+                for overrides, message in (
+                    ({"narration_path": None, "music_duck_db": -9}, "requires both a music_path"),
+                    (
+                        {"music_path": None, "music_gain_db": None, "music_duck_db": -9},
+                        "requires both a music_path",
+                    ),
+                    ({"music_duck_db": 0}, "from -60 to less than 0"),
+                    ({"music_duck_db": -61}, "from -60 to less than 0"),
+                    ({"narration_duration_seconds": 2}, "requires a music_duck_db"),
+                    (
+                        {"music_duck_db": -9, "narration_duration_seconds": 0},
+                        "narration_duration_seconds must be greater than zero",
+                    ),
+                ):
+                    with self.subTest(message=message):
+                        with self.assertRaisesRegex(FFmpegError, message):
+                            compose_video_sequence(
+                                clips, root / "out.mp4", **{**duck_kwargs, **overrides}
+                            )
 
     def test_music_fades_require_a_music_path_and_fit_the_timeline(self):
         with tempfile.TemporaryDirectory() as directory:

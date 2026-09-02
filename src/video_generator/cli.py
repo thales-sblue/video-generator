@@ -400,7 +400,13 @@ def _format_sequence_workflow(report: SequenceWorkflowReport, manifest_path: Pat
                 else ""
             ),
             f"Captions: {report.artifact.caption_count}",
-            f"Music: {'included' if report.artifact.music_source_path else 'not included'}",
+            "Music: "
+            + ("included" if report.artifact.music_source_path else "not included")
+            + (
+                f", ducked {report.artifact.music_duck_db}dB under the voice"
+                if report.artifact.music_duck_db is not None
+                else ""
+            ),
             "Fades: "
             + (
                 f"from black {report.artifact.video_fade_in_seconds}s / "

@@ -127,17 +127,29 @@ Sucesso técnico não é revisão auditiva.
 Antes da narração, uma operação opcional `music` declara um source de áudio
 local, sem tempos próprios, e
 `parameters={"duration_policy":"loop_to_timeline","gain_db":N}`, com
-`fade_in_seconds` e `fade_out_seconds` opcionais (≥ 0; a soma não pode passar a
-duração visual). O ganho aceita valores de -60 a 0 dB. O source deve ter
+`fade_in_seconds`, `fade_out_seconds` e `duck_db` opcionais (os fades ≥ 0; a soma
+não pode passar a duração visual). O ganho aceita valores de -60 a 0 dB. O source deve ter
 exatamente um stream de áudio e duração positiva; não precisa corresponder à
 timeline, pois FFmpeg o repete e corta no fim visual. A faixa recebe `afade` de
 entrada/saída antes do corte, é convertida para estéreo/48 kHz com a voz e
-mixada com `normalize=0`, limitada a 0,95. A mixagem final ainda recebe um
+mixada com `normalize=0`, limitada a 0,95. `duck_db` (de -60 a menos de 0, exige uma operação `narration` no mesmo plano)
+abaixa a trilha exatamente esse tanto enquanto a voz fala. O adapter aplica, sobre
+o ganho estático e os fades, um envelope `volume` determinístico: a rampa de
+`MUSIC_DUCK_RAMP_SECONDS` (0,35 s) termina no início da voz — o `lead_in_seconds`
+da narração — e a de volta começa quando a faixa de voz acaba, então a abertura e
+o encerramento ficam com a música cheia e só o trecho falado é atenuado. O
+workflow informa ao adapter a duração da voz (a síntese Kokoro no modo texto, o
+probe do arquivo no modo arquivo); sem essa duração o duck vale até o fim da
+timeline. A escolha por envelope em vez de `sidechaincompress` é deliberada: a
+queda é sempre o valor declarado, seja qual for o nível do source de voz, e
+depende só do plano. Uma narração em arquivo bate com a timeline, então lá o duck
+cobre praticamente tudo — ele rende mais no modo texto, com lead-in e cauda. A
+mixagem final ainda recebe um
 fade-in curto anticlique e normalização de loudness EBU R128 para -14 LUFS
 integrado / true peak -1,5 dBTP (reamostrada a 48 kHz) antes da codificação AAC —
 o mesmo caminho para voz+música, só voz ou só música. Sem voz, a música sozinha
 ocupa a faixa AAC. O áudio original dos clipes nunca entra no
-mix. O `RenderManifest` guarda ganho e fades.
+mix. O `RenderManifest` guarda ganho, fades e o nível do duck.
 
 Depois de todos os segmentos da timeline, uma operação opcional `fade` — sem
 source e sem tempos próprios — abre a imagem a partir do preto e/ou a fecha no
@@ -203,6 +215,10 @@ Já disponível:
   imagem e trilha e só então entra a voz, com as captions derivadas da narração
   deslocadas junto. **Pendente:** revisão auditiva/visual real do ritmo da
   entrada da voz;
+- `duck_db` na operação `music`: a trilha cai exatamente N dB enquanto a voz fala
+  e volta ao nível cheio na abertura e na cauda, por envelope determinístico
+  derivado do plano. **Pendente:** revisão auditiva real do quanto abaixar e de
+  como o duck combina com a normalização final;
 - operação `fade` no `video-sequence`: abre a imagem do preto e/ou a fecha no
   preto (`from_black_seconds`/`to_black_seconds`, soma ≤ duração visual),
   aplicada depois do concat e das captions queimadas. **Pendente:** revisão

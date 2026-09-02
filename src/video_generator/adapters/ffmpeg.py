@@ -74,9 +74,14 @@ class SequenceArtifact:
     video_fade_in_seconds: float = 0.0
     video_fade_out_seconds: float = 0.0
     narration_lead_in_seconds: float = 0.0
+    music_duck_db: float | None = None
 
 
 IMAGE_TIMELINE_FPS = 30
+# How long the music bed takes to reach the ducked level and to come back. The
+# attack lands exactly on the first word (it ramps over the silence before it)
+# and the release starts when the voice track ends.
+MUSIC_DUCK_RAMP_SECONDS = 0.35
 
 
 def _time(value: object, name: str) -> float:
@@ -394,6 +399,8 @@ def compose_video_sequence(
     music_gain_db: float | None = None,
     music_fade_in_seconds: float = 0.0,
     music_fade_out_seconds: float = 0.0,
+    music_duck_db: float | None = None,
+    narration_duration_seconds: float | None = None,
     video_fade_in_seconds: float = 0.0,
     video_fade_out_seconds: float = 0.0,
     canvas: tuple[int, int] | None = None,
@@ -413,6 +420,13 @@ def compose_video_sequence(
     ``narration_lead_in_seconds`` delays the voice so the timeline can open on
     picture and music alone; it requires ``narration_path`` and must be shorter
     than the timeline.
+
+    ``music_duck_db`` attenuates the bed by exactly that many decibels while the
+    voice runs, ramping over ``MUSIC_DUCK_RAMP_SECONDS`` at each edge; it
+    requires both a ``music_path`` and a ``narration_path``. The ducked span
+    starts at the lead-in and ends after ``narration_duration_seconds`` (the
+    voice track's own length), so the bed comes back up for the tail; without
+    that length the duck holds to the end of the timeline.
     """
 
     if isinstance(clips, (str, bytes)) or not isinstance(clips, Sequence):
@@ -537,6 +551,32 @@ def compose_video_sequence(
         gain = float(music_gain_db)
         if fade_in + fade_out > duration:
             raise FFmpegError("music fades must not exceed the sequence duration")
+    duck: float | None = None
+    duck_start = 0.0
+    duck_end = duration
+    if music_duck_db is None:
+        if narration_duration_seconds is not None:
+            raise FFmpegError("narration_duration_seconds requires a music_duck_db")
+    else:
+        if music is None or narration is None:
+            raise FFmpegError("music_duck_db requires both a music_path and a narration_path")
+        if (
+            isinstance(music_duck_db, bool)
+            or not isinstance(music_duck_db, (int, float))
+            or not math.isfinite(music_duck_db)
+            or music_duck_db < -60
+            or music_duck_db >= 0
+        ):
+            raise FFmpegError("music_duck_db must be a finite number from -60 to less than 0")
+        duck = float(music_duck_db)
+        duck_start = narration_lead_in
+        if narration_duration_seconds is not None:
+            voice = _time(narration_duration_seconds, "narration_duration_seconds")
+            if voice == 0:
+                raise FFmpegError("narration_duration_seconds must be greater than zero")
+            # a synthesised voice may run a few milliseconds past the timeline;
+            # the duck then simply never releases.
+            duck_end = min(narration_lead_in + voice, duration)
     video_fade_in = _time(video_fade_in_seconds, "video_fade_in_seconds")
     video_fade_out = _time(video_fade_out_seconds, "video_fade_out_seconds")
     if video_fade_in + video_fade_out > duration:
@@ -674,6 +714,21 @@ def compose_video_sequence(
                 f",afade=t=out:st={format(duration - fade_out, '.15g')}:"
                 f"d={format(fade_out, '.15g')}"
             )
+        if duck is not None:
+            # An exact, plan-derived envelope instead of a signal-driven
+            # sidechain: the dip is always the stated number of decibels, however
+            # loud the voice source happens to be, and it stays reproducible from
+            # the plan alone. The attack ramp finishes as the voice starts and
+            # the release ramp begins when the voice track ends.
+            level = format(10 ** (duck / 20), ".15g")
+            ramp = format(MUSIC_DUCK_RAMP_SECONDS, ".15g")
+            attack = format(duck_start - MUSIC_DUCK_RAMP_SECONDS, ".15g")
+            release = format(duck_end + MUSIC_DUCK_RAMP_SECONDS, ".15g")
+            bed += (
+                f",volume=volume='1-(1-{level})"
+                f"*clip((t-({attack}))/{ramp},0,1)"
+                f"*clip(({release}-t)/{ramp},0,1)':eval=frame"
+            )
         bed += f",atrim=duration={format(duration, '.15g')},asetpts=PTS-STARTPTS[bed]"
         filters.append(bed)
     # Master chain shared by every audio branch: a short fade-in kills any start
@@ -765,4 +820,5 @@ def compose_video_sequence(
         video_fade_in_seconds=video_fade_in,
         video_fade_out_seconds=video_fade_out,
         narration_lead_in_seconds=narration_lead_in,
+        music_duck_db=duck,
     )

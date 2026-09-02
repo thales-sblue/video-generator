@@ -303,6 +303,54 @@ def narrated_text_plan(*, params=None):
     )
 
 
+def narrated_text_music_plan(*, music_parameters=None, narration_parameters=None) -> EditPlan:
+    spoken = narrated_text_plan(params=narration_parameters)
+    music = str(Path("inputs/music.wav").resolve())
+    return EditPlan(
+        spoken.plan_id,
+        spoken.brief_id,
+        (*spoken.sources, music),
+        spoken.output_path,
+        (
+            *spoken.operations[:-1],
+            EditOperation(
+                "music-1",
+                "music",
+                music,
+                parameters=(
+                    {"duration_policy": "loop_to_timeline", "gain_db": -18, "duck_db": -9}
+                    if music_parameters is None
+                    else music_parameters
+                ),
+            ),
+            spoken.operations[-1],
+        ),
+    )
+
+
+def narrated_text_music_preflight(plan: EditPlan) -> PreflightReport:
+    video_probes = tuple(
+        MediaProbe(
+            source,
+            1000,
+            "mov,mp4",
+            10,
+            800000,
+            (StreamProbe(0, "video", "h264", 10, 1280, 720, None, None),),
+        )
+        for source in plan.sources[:2]
+    )
+    music_probe = MediaProbe(
+        plan.sources[2],
+        1500,
+        "wav",
+        0.75,
+        1536000,
+        (StreamProbe(0, "audio", "pcm_s16le", 0.75, None, None, 48000, 2),),
+    )
+    return PreflightReport(plan.plan_id, True, (), (*video_probes, music_probe))
+
+
 def _fake_synth(text, target, *, voice, speed, lang, timeout_seconds):
     return NarrationArtifact(
         output_path=str(target),
@@ -535,6 +583,176 @@ class SequenceWorkflowTests(unittest.TestCase):
         self.assertTrue(report.valid)
         self.assertEqual(seen, {"music_fade_in_seconds": 0.5, "music_fade_out_seconds": 2.0})
         self.assertEqual(report.artifact.music_fade_out_seconds, 2.0)
+
+    def test_ducks_the_bed_under_a_narration_file_for_its_probed_length(self):
+        plan = music_plan(
+            music_parameters={
+                "duration_policy": "loop_to_timeline",
+                "gain_db": -14,
+                "duck_db": -9,
+            }
+        )
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen.update(
+                {k: kwargs.get(k) for k in ("music_duck_db", "narration_duration_seconds")}
+            )
+            return SequenceArtifact(
+                plan.sources[:2],
+                plan.output_path,
+                3.5,
+                900,
+                narration_source_path=plan.sources[2],
+                caption_count=2,
+                music_source_path=plan.sources[3],
+                music_gain_db=-14.0,
+                music_duck_db=-9.0,
+            )
+
+        report = run_sequence_workflow(
+            plan,
+            preflight=music_preflight,
+            compose=compose,
+            validate=lambda v, **_: SequenceValidationReport(True, v, 3.5, 0.15, (), None),
+        )
+
+        self.assertTrue(report.valid)
+        # a recorded track matches the timeline, so the duck runs its full length
+        self.assertEqual(seen, {"music_duck_db": -9.0, "narration_duration_seconds": 3.5})
+        self.assertEqual(report.artifact.music_duck_db, -9.0)
+
+    def test_ducks_the_bed_only_over_the_synthesised_voice(self):
+        plan = narrated_text_music_plan(
+            narration_parameters={
+                "duration_policy": "match_timeline",
+                "text": "Hello dark world.",
+                "lead_in_seconds": 0.5,
+            }
+        )
+        seen = {}
+
+        def compose(clips, output, **kwargs):
+            seen.update(
+                {
+                    k: kwargs.get(k)
+                    for k in (
+                        "music_duck_db",
+                        "narration_duration_seconds",
+                        "narration_lead_in_seconds",
+                    )
+                }
+            )
+            return SequenceArtifact(
+                tuple(clip.source_path for clip in clips),
+                plan.output_path,
+                3.5,
+                900,
+                narration_source_path=kwargs.get("narration_path"),
+                music_source_path=plan.sources[2],
+                music_gain_db=-18.0,
+                music_duck_db=-9.0,
+                narration_lead_in_seconds=0.5,
+            )
+
+        with patch.object(sequence_module, "synthesize_narration", side_effect=_fake_synth), \
+                patch.object(sequence_module, "probe_media", side_effect=_probe_of(2.0)):
+            report = run_sequence_workflow(
+                plan,
+                preflight=narrated_text_music_preflight,
+                compose=compose,
+                validate=lambda v, **_: SequenceValidationReport(True, v, 3.5, 0.15, (), None),
+            )
+
+        self.assertTrue(report.valid)
+        # the bed dips for the 2 s of voice that start at 0.5 s and comes back
+        # up for the tail of the 3.5 s timeline
+        self.assertEqual(
+            seen,
+            {
+                "music_duck_db": -9.0,
+                "narration_duration_seconds": 2.0,
+                "narration_lead_in_seconds": 0.5,
+            },
+        )
+        self.assertEqual(report.artifact.music_duck_db, -9.0)
+
+    def test_rejects_ducking_without_narration_or_with_an_invalid_level(self):
+        for parameters, message in (
+            (
+                {"duration_policy": "loop_to_timeline", "gain_db": -18, "duck_db": 0},
+                "from -60 to less than 0",
+            ),
+            (
+                {"duration_policy": "loop_to_timeline", "gain_db": -18, "duck_db": -61},
+                "from -60 to less than 0",
+            ),
+            (
+                {"duration_policy": "loop_to_timeline", "gain_db": -18, "duck_db": "loud"},
+                "from -60 to less than 0",
+            ),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(SequenceWorkflowError, message):
+                    run_sequence_workflow(
+                        music_plan(music_parameters=parameters),
+                        preflight=lambda _: self.fail("must not preflight invalid music"),
+                        compose=lambda *_a, **_k: self.fail("must not compose"),
+                    )
+
+        silent = sequence_plan()
+        music = str(Path("inputs/music.wav").resolve())
+        without_voice = EditPlan(
+            silent.plan_id,
+            silent.brief_id,
+            (*silent.sources, music),
+            silent.output_path,
+            (
+                *silent.operations,
+                EditOperation(
+                    "music-1",
+                    "music",
+                    music,
+                    parameters={
+                        "duration_policy": "loop_to_timeline",
+                        "gain_db": -18,
+                        "duck_db": -9,
+                    },
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(SequenceWorkflowError, "duck_db requires a narration"):
+            run_sequence_workflow(
+                without_voice,
+                preflight=lambda _: self.fail("must not preflight"),
+                compose=lambda *_a, **_k: self.fail("must not compose"),
+            )
+
+    def test_rejects_an_artifact_that_ignored_the_planned_duck(self):
+        plan = music_plan(
+            music_parameters={
+                "duration_policy": "loop_to_timeline",
+                "gain_db": -18,
+                "duck_db": -9,
+            }
+        )
+        bad_artifact = SequenceArtifact(
+            source_paths=plan.sources[:2],
+            output_path=plan.output_path,
+            duration_seconds=3.5,
+            file_size_bytes=500,
+            narration_source_path=plan.sources[2],
+            caption_count=2,
+            music_source_path=plan.sources[3],
+            music_gain_db=-18.0,
+        )
+
+        with self.assertRaisesRegex(SequenceWorkflowError, "unexpected music metadata"):
+            run_sequence_workflow(
+                plan,
+                preflight=music_preflight,
+                compose=lambda *_args, **_kwargs: bad_artifact,
+            )
 
     def test_rejects_music_fades_longer_than_the_timeline(self):
         plan = music_plan(

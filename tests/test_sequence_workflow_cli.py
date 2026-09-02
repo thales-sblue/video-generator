@@ -55,6 +55,27 @@ class SequenceWorkflowSummaryTests(unittest.TestCase):
             ),
         )
 
+    def test_music_line_reports_the_duck_under_the_voice(self):
+        self.assertIn(
+            "Music: included\n",
+            _format_sequence_workflow(
+                self._report(music_source_path="bed.wav", music_gain_db=-18.0),
+                Path("m.json"),
+            ),
+        )
+        self.assertIn(
+            "Music: included, ducked -9.0dB under the voice",
+            _format_sequence_workflow(
+                self._report(
+                    music_source_path="bed.wav",
+                    music_gain_db=-18.0,
+                    narration_source_path="voice.wav",
+                    music_duck_db=-9.0,
+                ),
+                Path("m.json"),
+            ),
+        )
+
     def test_fade_line_reports_the_black_spans(self):
         self.assertIn(
             "Fades: not applied",

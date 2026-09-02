@@ -79,6 +79,7 @@ class MusicSpec:
     gain_db: float
     fade_in_seconds: float
     fade_out_seconds: float
+    duck_db: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,11 +232,11 @@ def _caption_cues_from_file(source: str) -> tuple[CaptionCue, ...]:
 def _music_spec(parameters: Mapping[str, object]) -> MusicSpec:
     values = dict(parameters)
     required = {"duration_policy", "gain_db"}
-    allowed = required | {"fade_in_seconds", "fade_out_seconds"}
+    allowed = required | {"fade_in_seconds", "fade_out_seconds", "duck_db"}
     if not required <= set(values) or set(values) - allowed:
         raise SequenceWorkflowError(
             "music requires duration_policy=loop_to_timeline and gain_db, "
-            "with optional fade_in_seconds/fade_out_seconds"
+            "with optional fade_in_seconds/fade_out_seconds/duck_db"
         )
     if values["duration_policy"] != MUSIC_DURATION_POLICY:
         raise SequenceWorkflowError("music duration_policy must be loop_to_timeline")
@@ -254,7 +255,20 @@ def _music_spec(parameters: Mapping[str, object]) -> MusicSpec:
     fade_out = _runtime_number(
         values.get("fade_out_seconds", 0.0), "music fade_out_seconds", allow_zero=True
     )
-    return MusicSpec(float(gain), fade_in, fade_out)
+    duck = values.get("duck_db")
+    if duck is not None and (
+        isinstance(duck, bool)
+        or not isinstance(duck, (int, float))
+        or not math.isfinite(duck)
+        or duck < -60
+        or duck >= 0
+    ):
+        raise SequenceWorkflowError(
+            "music duck_db must be a finite number from -60 to less than 0"
+        )
+    return MusicSpec(
+        float(gain), fade_in, fade_out, float(duck) if duck is not None else None
+    )
 
 
 def _fade_spec(parameters: Mapping[str, object]) -> FadeSpec:
@@ -574,7 +588,7 @@ def _synthesise_narration(
 
 def _validate_narration(
     probes: dict[str, MediaProbe], narration_path: str, expected_duration: float, tolerance: float
-) -> None:
+) -> float:
     source = probes.get(_normalized(narration_path))
     if source is None:
         raise SequenceWorkflowError("preflight omitted the narration source")
@@ -591,6 +605,7 @@ def _validate_narration(
             f"narration duration {source.duration_seconds} must match timeline duration "
             f"{expected_duration} within {tolerance} seconds"
         )
+    return source.duration_seconds
 
 
 def _validate_music(probes: dict[str, MediaProbe], music_path: str) -> None:
@@ -661,6 +676,13 @@ def run_sequence_workflow(
         raise SequenceWorkflowError(
             "music fades must not be longer than the sequence duration"
         )
+    if (
+        music is not None
+        and music.duck_db is not None
+        and narration_path is None
+        and narration_text is None
+    ):
+        raise SequenceWorkflowError("music duck_db requires a narration operation")
     if captions and captions[-1].end_seconds > expected_duration:
         raise SequenceWorkflowError(
             "caption end_seconds must not exceed the sequence duration"
@@ -678,6 +700,8 @@ def run_sequence_workflow(
     canvas = _video_shape(probes, segments)
     synth_dir: str | None = None
     narration_text_sha256: str | None = None
+    # the voice track's own length, so a ducked bed knows when to come back up
+    narration_duration: float | None = None
     # a lead-in belongs to text-mode narration only; a narration file carries
     # any leading silence itself and must still match the timeline duration
     narration_lead_in = (
@@ -697,6 +721,7 @@ def run_sequence_workflow(
             ) = _synthesise_narration(
                 narration_text, plan.output_path, expected_duration, tolerance, timeout
             )
+            narration_duration = narration_seconds
             if captions_from_narration:
                 lead_in = narration_text.lead_in_seconds
                 span = min(narration_seconds, expected_duration - lead_in)
@@ -720,7 +745,9 @@ def run_sequence_workflow(
                         "derived caption end_seconds must not exceed the sequence duration"
                     )
         elif narration_path is not None:
-            _validate_narration(probes, narration_path, expected_duration, tolerance)
+            narration_duration = _validate_narration(
+                probes, narration_path, expected_duration, tolerance
+            )
         if music_path is not None:
             _validate_music(probes, music_path)
         if before_compose is not None:
@@ -740,6 +767,10 @@ def run_sequence_workflow(
                 compose_kwargs["music_gain_db"] = music.gain_db
                 compose_kwargs["music_fade_in_seconds"] = music.fade_in_seconds
                 compose_kwargs["music_fade_out_seconds"] = music.fade_out_seconds
+                if music.duck_db is not None:
+                    compose_kwargs["music_duck_db"] = music.duck_db
+                    if narration_duration is not None:
+                        compose_kwargs["narration_duration_seconds"] = narration_duration
             if fade is not None:
                 compose_kwargs["video_fade_in_seconds"] = fade.from_black_seconds
                 compose_kwargs["video_fade_out_seconds"] = fade.to_black_seconds
@@ -781,11 +812,13 @@ def run_sequence_workflow(
         expected_gain = music.gain_db if music is not None else None
         expected_fade_in = music.fade_in_seconds if music is not None else 0.0
         expected_fade_out = music.fade_out_seconds if music is not None else 0.0
+        expected_duck = music.duck_db if music is not None else None
         if (
             actual_music != expected_music
             or artifact.music_gain_db != expected_gain
             or artifact.music_fade_in_seconds != expected_fade_in
             or artifact.music_fade_out_seconds != expected_fade_out
+            or artifact.music_duck_db != expected_duck
         ):
             raise SequenceWorkflowError("compose returned unexpected music metadata")
         expected_video_fade_in = fade.from_black_seconds if fade is not None else 0.0
