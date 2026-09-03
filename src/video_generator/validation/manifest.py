@@ -99,7 +99,18 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
             if (
                 segment.start_seconds is not None
                 or segment.end_seconds is not None
-                or set(parameters) != {"duration_seconds"}
+                or "duration_seconds" not in parameters
+                or set(parameters) - {"duration_seconds", "fit", "motion"}
+                or parameters.get("fit") not in (None, "contain", "cover")
+                or parameters.get("motion") not in (
+                    None,
+                    "zoom_in",
+                    "zoom_out",
+                    "pan_left",
+                    "pan_right",
+                    "pan_up",
+                    "pan_down",
+                )
                 or isinstance(duration, bool)
                 or not isinstance(duration, (int, float))
                 or not math.isfinite(duration)
@@ -119,7 +130,9 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
             clip_count += 1
         used_sources.add(segment.source)
         index += 1
-    if index < 2 or clip_count < 1:
+    if index < 2 or (clip_count < 1 and plan.target_format is None):
+        # An all-image timeline is only coherent when the plan pins an explicit
+        # delivery canvas via target_format.
         return False
     if index < len(operations) and operations[index].kind == "captions":
         captions = operations[index]

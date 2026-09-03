@@ -1219,7 +1219,7 @@ class SequenceWorkflowTests(unittest.TestCase):
                 compose=lambda *_a, **_k: self.fail("must not compose"),
             )
 
-    def test_rejects_a_timeline_without_any_video_clip(self):
+    def test_rejects_an_all_image_timeline_without_a_target_format(self):
         first_image = str(Path("inputs/card-a.png").resolve())
         second_image = str(Path("inputs/card-b.png").resolve())
         plan = EditPlan(
@@ -1233,12 +1233,66 @@ class SequenceWorkflowTests(unittest.TestCase):
             ),
         )
 
-        with self.assertRaisesRegex(SequenceWorkflowError, "at least one sequence_clip"):
+        with self.assertRaisesRegex(SequenceWorkflowError, "requires the plan to declare a target_format"):
             run_sequence_workflow(
                 plan,
                 preflight=lambda _: self.fail("must not preflight"),
                 compose=lambda *_a, **_k: self.fail("must not compose"),
             )
+
+    def test_composes_an_all_image_timeline_when_a_target_format_is_declared(self):
+        from video_generator.domain import TargetFormat
+
+        first_image = str(Path("inputs/card-a.png").resolve())
+        second_image = str(Path("inputs/card-b.png").resolve())
+        plan = EditPlan(
+            "plan-image-only-tf",
+            "brief-dark",
+            (first_image, second_image),
+            str(Path("output/timeline.mp4").resolve()),
+            (
+                EditOperation(
+                    "image-1", "image_clip", first_image,
+                    parameters={"duration_seconds": 3, "motion": "zoom_in"},
+                ),
+                EditOperation(
+                    "image-2", "image_clip", second_image,
+                    parameters={"duration_seconds": 4},
+                ),
+            ),
+            TargetFormat(1920, 1080, "cover"),
+        )
+        seen = {}
+
+        def preflight(value):
+            probes = tuple(
+                MediaProbe(
+                    source, 1000, "image2", 0.04, 1000,
+                    (StreamProbe(0, "video", "mjpeg", None, 1920, 1080, None, None),),
+                )
+                for source in value.sources
+            )
+            return PreflightReport(value.plan_id, True, (), probes)
+
+        def compose(clips, output, **kwargs):
+            seen["canvas"] = kwargs.get("canvas")
+            seen["kinds"] = [type(clip).__name__ for clip in clips]
+            return SequenceArtifact(
+                tuple(clip.source_path for clip in clips), plan.output_path, 7.0, 500,
+                image_count=2,
+            )
+
+        report = run_sequence_workflow(
+            plan,
+            preflight=preflight,
+            compose=compose,
+            validate=lambda artifact, **_k: SequenceValidationReport(
+                True, artifact, 7.0, 0.15, (), None
+            ),
+        )
+        self.assertTrue(report.valid)
+        self.assertEqual(seen["canvas"], (1920, 1080))
+        self.assertEqual(seen["kinds"], ["SequenceImage", "SequenceImage"])
 
     def test_letterboxes_an_image_whose_dimensions_differ_from_the_clips(self):
         seen = {}

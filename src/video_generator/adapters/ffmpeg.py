@@ -618,8 +618,13 @@ def compose_video_sequence(
         raise FFmpegError("video sequence requires at least two timeline segments")
     if not all(isinstance(clip, (SequenceClip, SequenceImage)) for clip in normalized_clips):
         raise FFmpegError("clips must contain only SequenceClip or SequenceImage values")
-    if not any(isinstance(clip, SequenceClip) for clip in normalized_clips):
-        raise FFmpegError("video sequence requires at least one video SequenceClip")
+    if (
+        not any(isinstance(clip, SequenceClip) for clip in normalized_clips)
+        and canvas is None
+    ):
+        raise FFmpegError(
+            "an all-image video sequence requires a (width, height) canvas"
+        )
     if isinstance(captions, (str, bytes)) or not isinstance(captions, Sequence):
         raise FFmpegError("captions must be a sequence of CaptionCue values")
     normalized_captions = tuple(captions)

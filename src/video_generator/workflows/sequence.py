@@ -523,8 +523,14 @@ def _operations_from_plan(
         used_sources.add(operation.source)
     if len(segments) < 2:
         raise SequenceWorkflowError("video-sequence requires at least two timeline segments")
-    if not any(isinstance(segment, SequenceClip) for segment in segments):
-        raise SequenceWorkflowError("video-sequence requires at least one sequence_clip")
+    if plan.target_format is None and not any(
+        isinstance(segment, SequenceClip) for segment in segments
+    ):
+        # Without an explicit target_format the canvas is inferred from the video
+        # clips, so an all-image timeline has nothing to size itself against.
+        raise SequenceWorkflowError(
+            "an all-image video-sequence requires the plan to declare a target_format"
+        )
     if captions_from_narration and narration_text is None:
         raise SequenceWorkflowError(
             "captions from=narration require a narration text operation"

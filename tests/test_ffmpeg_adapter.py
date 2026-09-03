@@ -860,7 +860,7 @@ class FFmpegAdapterTests(unittest.TestCase):
             graph,
         )
 
-    def test_sequence_requires_at_least_one_video_clip(self):
+    def test_all_image_sequence_without_a_canvas_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             one = root / "one.png"
@@ -868,12 +868,26 @@ class FFmpegAdapterTests(unittest.TestCase):
             for path in (one, two):
                 path.write_bytes(path.stem.encode("utf-8"))
             with patch("video_generator.adapters.ffmpeg.resolve_media_tool") as resolve:
-                with self.assertRaisesRegex(FFmpegError, "at least one video"):
+                with self.assertRaisesRegex(FFmpegError, "all-image video sequence requires a .*canvas"):
                     compose_video_sequence(
                         (SequenceImage(str(one), 2), SequenceImage(str(two), 2)),
                         root / "out.mp4",
                     )
             resolve.assert_not_called()
+
+    def test_all_image_sequence_with_a_canvas_builds_a_concat_over_every_still(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            one = str(root / "one.png")
+            two = str(root / "two.png")
+            timeline = (
+                SequenceImage(one, 3, motion="zoom_in", fit="cover"),
+                SequenceImage(two, 4, fit="cover"),
+            )
+            _artifact, graph = self._run_fit_compose(timeline, (1920, 1080))
+        self.assertIn("concat=n=2:v=1:a=0", graph)
+        self.assertIn("zoompan=", graph)
+        self.assertIn("crop=1920:1080", graph)
 
     def test_sequence_requires_a_canvas_when_the_timeline_has_an_image(self):
         with tempfile.TemporaryDirectory() as directory:
