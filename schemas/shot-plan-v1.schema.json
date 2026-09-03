@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/thales-sblue/video-generator/schemas/shot-plan-v1.schema.json",
+  "title": "ShotPlan v1",
+  "description": "A dense sequence of short shots derived from a ScenePlan by the Shot Planner. Part of the future 'Storyboard' contract candidate from AGENTS.md. Editorial fields carry per-field provenance and are meant to be refined by the orchestrator; a resolved ShotPlan converts to an EditPlan for the video-sequence renderer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "plan_id", "scene_plan_id", "script_id", "seed", "policy", "shots"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "plan_id": {"type": "string", "minLength": 1},
+    "scene_plan_id": {"type": "string", "minLength": 1},
+    "script_id": {"type": "string", "minLength": 1},
+    "seed": {"type": "integer", "minimum": 0},
+    "policy": {"$ref": "#/$defs/rhythm_policy"},
+    "shots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "shot_id", "scene_id", "index", "duration_seconds", "asset_type",
+          "shot_type", "scale", "visual_query", "purpose", "beat", "asset_id",
+          "reuse_of", "framing", "justification", "provenance"
+        ],
+        "properties": {
+          "shot_id": {"type": "string", "pattern": "^scene_[0-9]{2,}_shot_[0-9]{2,}$"},
+          "scene_id": {"type": "string", "pattern": "^scene_[0-9]{2,}$"},
+          "index": {"type": "integer", "minimum": 1},
+          "duration_seconds": {"type": "number", "exclusiveMinimum": 0},
+          "asset_type": {"enum": ["image", "video"]},
+          "shot_type": {"type": "string", "minLength": 1},
+          "scale": {"type": "string", "minLength": 1},
+          "visual_query": {"type": "string", "minLength": 1},
+          "purpose": {"type": "string", "minLength": 1},
+          "beat": {"type": "boolean"},
+          "asset_id": {"type": "string", "minLength": 1},
+          "reuse_of": {"type": ["string", "null"], "minLength": 1},
+          "framing": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "motion": {
+                "type": ["string", "null"],
+                "enum": ["zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down", null]
+              },
+              "crop_bias": {"type": "string", "minLength": 1}
+            }
+          },
+          "justification": {"type": ["string", "null"], "minLength": 1},
+          "provenance": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "visual_query": {"enum": ["derived", "authored"]},
+              "purpose": {"enum": ["derived", "authored"]},
+              "shot_type": {"enum": ["derived", "authored"]}
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "rhythm_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Every field optional; an omitted field takes its documented default.",
+      "properties": {
+        "min_shot_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "ideal_shot_seconds_low": {"type": "number", "exclusiveMinimum": 0},
+        "ideal_shot_seconds_high": {"type": "number", "exclusiveMinimum": 0},
+        "soft_max_shot_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "absolute_max_shot_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "min_scene_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "max_scene_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "speaking_rate_wpm": {"type": "number", "minimum": 60, "maximum": 400},
+        "scale_cycle": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "shot_type_weights": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "number", "minimum": 0}},
+        "discouraged_cliches": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
+        "asset_type_for_shot_type": {"type": "object", "additionalProperties": {"enum": ["image", "video"]}},
+        "max_consecutive_same_scale": {"type": "integer", "minimum": 1},
+        "max_consecutive_same_shot_type": {"type": "integer", "minimum": 1},
+        "reuse_max_per_source": {"type": "integer", "minimum": 1},
+        "reuse_min_scene_gap": {"type": "integer", "minimum": 0},
+        "min_distinct_asset_ratio": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "duration_jitter_fraction": {"type": "number", "minimum": 0, "maximum": 0.9},
+        "duration_needed_headroom_seconds": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}

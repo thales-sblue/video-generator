@@ -9,6 +9,78 @@ A prioridade é um único caminho incremental para `dark-video`. Workflows de
 creator/talking-head, Shorts derivados de gravações e outros casos não devem ser
 construídos antes de `dark-video` v1.
 
+## Scene Planner / Shot Planner (antes do `EditPlan`)
+
+Camada pura e determinística que fica **entre `VideoBrief` e `EditPlan`**. Não
+toca FFmpeg, não baixa asset, não chama LLM. Vive em
+`src/video_generator/domain/planning.py` (stdlib, dependências apontando para
+dentro) e realiza os candidatos `Script` / `Storyboard` / `AssetPlan` do
+`AGENTS.md`:
+
+```text
+roteiro .txt  ──▶  NarrativeScript
+                        │  plan_scenes(script, policy, seed)
+                        ▼
+                   ScenePlan            (cenas: narração, duração, visual_intent, emphasis_offsets)
+                        │  plan_shots(scene_plan, policy, seed, orientation)
+                        ▼
+          ShotPlan  +  AssetRequirements   (shots de 2–6 s; specs de asset)
+                        │  apply_overrides(...)   ← refino editorial do agente
+                        ▼
+          shot_plan_to_edit_plan(shot_plan, asset_bindings, target_format)
+                        ▼
+                   EditPlan v1  ──▶  workflow `video-sequence`  ──▶  MP4
+```
+
+**Modelo híbrido.** `plan_scenes` / `plan_shots` produzem um rascunho completo:
+densidade (dezenas de shots curtos por bloco narrativo), rotação determinística
+de `shot_type` e de escala (`wide → medium → close → detail`), redistribuição
+*bounded* das durações (soma exata da cena, cada shot em
+`[min_shot_seconds, soft_max_shot_seconds]`, nenhum shot absorve o resíduo
+sozinho), e `visual_query` / `purpose` *derivados* por extração de palavras-chave
+do trecho de narração do shot. O agente orquestrador então sobrescreve os campos
+fracos via `apply_overrides`, que recebe os **três** documentos e devolve os três
+reconstruídos e re-validados; cada campo editorial carrega `provenance`
+(`derived` | `authored`). Reprodutível por `script + policy + seed + overrides`.
+
+**Política (`RhythmPolicy`).** Ritmo e densidade são configuração, não constantes
+fixas — ver [VIDEO_LANGUAGE.md](VIDEO_LANGUAGE.md). Fica embutida por valor no
+`ScenePlan` e no `ShotPlan`; `--policy` mescla um JSON parcial sobre os defaults.
+
+**Validação local × cross-document.** `__post_init__` só checa invariantes
+autocontidas. Regras que dependem de outro contrato ficam em
+`ScenePlan.validate_against(script)`, `ShotPlan.validate_against(scene_plan)` e
+`AssetRequirements.validate_against(shot_plan)` — os planners as chamam antes de
+retornar; a CLI as repete após ler os arquivos.
+
+**Ênfase.** Um `NarrativeBlock.emphasis=True` interior a uma cena vira um
+`emphasis_offset` (segundos desde o início da cena); o Shot Planner força uma
+fronteira de shot ali e marca aquele shot `beat=True`. Cada offset tem
+exatamente um shot `beat` na timeline.
+
+**Converter (`shot_plan_to_edit_plan`).** Função pura, sem I/O. `asset_bindings`
+mapeia cada `asset_id` para um path local. Emite exatamente os shapes que o
+`video-sequence` já aceita: `image_clip` com `parameters ⊆
+{duration_seconds, fit, motion}` (sem `start`/`end`), `sequence_clip` com
+`start_seconds`/`end_seconds` e `parameters ⊆ {fit}`. `fit` = `cover` para
+`close`/`detail`, `contain` para `on_screen_text`/`document`/`simple_graphic`,
+senão herda o `target_format.fit`. Shots com `reuse_of` apontam para o **mesmo
+`source`** com `motion`/`fit`/`start` diferentes. O converter **assume que cada
+asset de vídeo é longo o bastante** para as janelas cumulativas; validar durações
+reais é papel do estágio de aquisição de assets. `EditOperation`, `EditPlan`,
+`workflows/sequence.py` e `adapters/ffmpeg.py` ficam intactos.
+
+**CLI `plan-scenes`** (ver `README.md`): lê `--from-text` (parágrafos = blocos)
+ou `--script` (NarrativeScript JSON), roda os planners com `--seed`, aplica
+`--overrides` opcional, e escreve `scene-plan.json`, `shot-plan.json` e
+`asset-requirements.json` em `--out-dir`. `--emit-edit-plan` + `--assets`
+converte para um `EditPlan`. Read-only sobre `inputs/`/`assets/`; recusa
+sobrescrever sem `--force`.
+
+**Fora deste incremento:** aquisição de assets, novo render, `AssetProvenance`.
+O plano é editorialmente denso mas ainda depende de uma boa biblioteca de assets
+para deixar de parecer slideshow.
+
 ## `segment-extract`
 
 Esse workflow oferece o menor caminho audiovisual completo disponível:
@@ -45,23 +117,28 @@ EditPlan com sequence_clip / image_clip ordenados -> preflight -> FFmpeg concat 
               + narration opcional   -> ffprobe -> RenderManifest -> MP4
 ```
 
-O plano deve declarar pelo menos dois segmentos de timeline e ao menos um
-`sequence_clip`. Um `sequence_clip` tem source, início e fim. Um `image_clip`
-tem source (imagem local) e `parameters={"duration_seconds": N}`, sem início ou
-fim: a imagem é exibida por `N` segundos (limite de 600 s). A ordem das operações
-é a ordem da timeline. Todos os sources declarados devem ser usados; parâmetros
-inesperados e outputs diferentes de MP4 são recusados.
+O plano deve declarar pelo menos dois segmentos de timeline. Um `sequence_clip`
+tem source, início e fim. Um `image_clip` tem source (imagem local) e
+`parameters={"duration_seconds": N}` (mais `fit`/`motion` opcionais), sem início
+ou fim: a imagem é exibida por `N` segundos (limite de 600 s). Pelo menos um
+`sequence_clip` é obrigatório **apenas no modo legado** (sem `target_format`),
+onde o canvas vem dos clipes de vídeo; com `target_format` declarado a timeline
+pode ser inteiramente de `image_clip`. A ordem das operações é a ordem da
+timeline. Todos os sources declarados devem ser usados; parâmetros inesperados e
+outputs diferentes de MP4 são recusados.
 
 **Canvas — dois modos.** Sem `target_format` no plano (comportamento legado): os
 `sequence_clip` definem o canvas, precisam ter um stream de vídeo e dimensões
 iguais entre si, e clipes que não batem são recusados antes de qualquer render;
 cada `image_clip` só precisa de um stream de vídeo legível e é escalado para
-caber com letter-box (barras pretas) no canvas dos clipes.
+caber com letter-box (barras pretas) no canvas dos clipes. Por isso o modo
+legado exige pelo menos um `sequence_clip`.
 
 Com `target_format` (ver [VIDEO_LANGUAGE.md](VIDEO_LANGUAGE.md)): o canvas é a
-resolução de entrega declarada (`width`×`height`), sources de resoluções e
-proporções diferentes podem compor a mesma timeline, e cada segmento é
-normalizado deterministicamente para o canvas. Cada segmento resolve seu `fit`
+resolução de entrega declarada (`width`×`height`), a timeline pode ser
+inteiramente de `image_clip` (o canvas não depende dos clipes), sources de
+resoluções e proporções diferentes podem compor a mesma timeline, e cada
+segmento é normalizado deterministicamente para o canvas. Cada segmento resolve seu `fit`
 por `operation.parameters["fit"]` (override) ou, na ausência, por
 `target_format.fit`:
 

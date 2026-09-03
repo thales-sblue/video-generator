@@ -59,6 +59,36 @@ transformar preferências contextuais em automações universais.
   depois do `fit`. Sem `motion` a imagem fica congelada. É um gesto sutil e
   único por clipe — não um efeito para repetir em todo segmento.
 
+## Densidade e ritmo visual (`RhythmPolicy`)
+
+O Scene/Shot Planner (ver [WORKFLOWS.md](WORKFLOWS.md)) trata ritmo e densidade
+como **política/configuração**, não como lei universal — este arquivo registra
+os defaults, que devem evoluir a partir de experiência real.
+
+- **Duração de shot:** faixa ideal 2–6 s; mínimo 1,5 s; `soft_max` 8 s
+  (ultrapassar exige `justification`); teto duro 10 s. A meta de referência é um
+  vídeo de 4–6 min com ~50–100 eventos visuais.
+- **Alternância de escala:** ciclo `wide → medium → close → detail`, no máximo 2
+  shots seguidos na mesma escala.
+- **Variedade de tipo de shot:** paleta ampla (b-roll humano, ambiente, objeto,
+  tela, interface, documento, fotografia, gráfico simples, texto na tela,
+  close/detalhe, establishing, insert, simbólico), no máximo 1 shot seguido do
+  mesmo tipo. Nenhum tipo deve dominar a peça.
+- **Clichês visuais desencorajados:** "cérebro", "máscara", "silhueta",
+  "labirinto", "marionete" e afins não são tipos de shot — são conceitos que o
+  gerador de `visual_query` *derivada* substitui por uma alternativa concreta
+  para o rascunho não cair no lugar-comum. Podem existir por decisão editorial,
+  mas não por inércia do planner.
+- **Reuso de asset:** um mesmo source pode voltar com crop/zoom/enquadramento/
+  duração diferentes, respeitando um intervalo mínimo de cenas e um teto de usos
+  por source; um piso de assets distintos impede que o reuso vire baixa
+  variedade.
+- **Ênfase:** pontos marcados no roteiro forçam um corte e um shot `beat` na
+  posição exata.
+
+Esses valores vivem no `RhythmPolicy` (embutido no `ScenePlan`/`ShotPlan`) e são
+sobrescrevíveis por um JSON parcial via `--policy`.
+
 ## Formato de entrega (target format)
 
 - `target_format` no `VideoBrief`/`EditPlan` descreve o canvas final de forma
@@ -74,6 +104,11 @@ transformar preferências contextuais em automações universais.
   descartáveis; `contain` quando nada pode ser cortado (texto, gráficos, planos
   compostos). Um `fit` por segmento sobrepõe o default só quando há razão
   editorial.
+- Com `target_format` declarado o canvas não depende dos clipes de vídeo, então
+  uma peça pode ser inteiramente de `image_clip` (narração + captions + música
+  sobre imagens paradas com Ken Burns) — o formato faceless mais simples do
+  `dark-video`. Sem `target_format` continua valendo a regra legada de ≥1
+  `sequence_clip`.
 
 ## Critério de revisão
 

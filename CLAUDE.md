@@ -56,9 +56,10 @@ $env:PYTHONPATH = "src"; .\.venv\Scripts\python.exe -m unittest discover -s test
 ```
 
 CLI disponível hoje: `doctor`, `inspect`, `preflight`, `extract-segment`,
-`extract-audio`, `narrate`, `execute-segment-plan`, `execute-sequence-plan`,
-`execute-final-sequence-plan`, `validate-segment`, `validate-audio`,
-`validate-manifest`, `validate-project`. Veja `README.md` para exemplos.
+`extract-audio`, `narrate`, `plan-scenes`, `execute-segment-plan`,
+`execute-sequence-plan`, `execute-final-sequence-plan`, `validate-segment`,
+`validate-audio`, `validate-manifest`, `validate-project`. Veja `README.md` para
+exemplos.
 
 A mesma suíte roda no GitHub Actions (`.github/workflows/ci.yml`) em `push` para
 `main` e em pull requests, com Python 3.12 e `PYTHONPATH=src`.

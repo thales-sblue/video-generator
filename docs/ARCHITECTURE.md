@@ -41,6 +41,18 @@ Os JSON Schemas em `schemas/` são a fronteira interoperável v1. Os modelos
 produzem JSON-safe dictionaries equivalentes, com chaves ordenadas na
 serialização textual.
 
+`video_generator.domain.planning` acrescenta a camada de planejamento editorial
+que fica antes do `EditPlan`: `NarrativeScript`, `ScenePlan`, `ShotPlan` e
+`AssetRequirements` realizam os candidatos `Script` / `Storyboard` / `AssetPlan`
+do `AGENTS.md`. É stdlib pura, sem I/O, e só depende de `domain.models` (para
+`EditPlan`/`EditOperation`/`TargetFormat`); nada em `models` depende dela. As
+funções `plan_scenes` / `plan_shots` geram um rascunho determinístico,
+`apply_overrides` incorpora o refino do agente sobre os três documentos, e
+`shot_plan_to_edit_plan` converte um `ShotPlan` resolvido para o `EditPlan`
+existente sem alterar renderer, workflow ou `models`. Invariantes que dependem
+de outro contrato ficam em métodos `validate_against`, não no `__post_init__`.
+Ver [WORKFLOWS.md](WORKFLOWS.md) e [VIDEO_LANGUAGE.md](VIDEO_LANGUAGE.md).
+
 ### Configuração
 
 `config/default.toml` declara que processamento e render são locais e desabilita

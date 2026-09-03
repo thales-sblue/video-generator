@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/thales-sblue/video-generator/schemas/narrative-script-v1.schema.json",
+  "title": "NarrativeScript v1",
+  "description": "Input to the Scene Planner: a narrated script split into ordered blocks. Realises the future 'Script' contract candidate from AGENTS.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "script_id", "blocks"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "script_id": {"type": "string", "minLength": 1},
+    "language": {"type": "string", "minLength": 1},
+    "total_duration_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
+    "blocks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text"],
+        "properties": {
+          "text": {"type": "string", "minLength": 1},
+          "duration_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
+          "visual_intent": {"type": ["string", "null"], "minLength": 1},
+          "emphasis": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

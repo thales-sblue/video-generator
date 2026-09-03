@@ -29,9 +29,18 @@ from video_generator.doctor import format_report, run_doctor
 from video_generator.domain import (
     ContractError,
     EditPlan,
+    NarrativeScript,
+    PlanningError,
     RenderManifest,
+    RhythmPolicy,
+    ScenePlan,
+    TargetFormat,
     VideoBrief,
     VideoRequest,
+    apply_overrides,
+    plan_scenes,
+    plan_shots,
+    shot_plan_to_edit_plan,
 )
 from video_generator.manifests import (
     ManifestError,
@@ -263,6 +272,36 @@ def build_parser() -> argparse.ArgumentParser:
     validate_project.add_argument("--plan", required=True, help="EditPlan JSON path")
     validate_project.add_argument("--manifest", required=True, help="RenderManifest JSON path")
     validate_project.add_argument("--json", action="store_true", help="print a machine-readable report")
+
+    plan_scenes_cmd = subparsers.add_parser(
+        "plan-scenes",
+        help="turn a narrated script into a dense scene/shot/asset plan (pure, deterministic)",
+    )
+    plan_scenes_source = plan_scenes_cmd.add_mutually_exclusive_group(required=True)
+    plan_scenes_source.add_argument(
+        "--from-text", help="UTF-8 roteiro; paragraphs (blank-line separated) become blocks"
+    )
+    plan_scenes_source.add_argument("--script", help="a persisted NarrativeScript JSON path")
+    plan_scenes_cmd.add_argument(
+        "--total-duration", type=float, help="measured narration length in seconds (with --from-text)"
+    )
+    plan_scenes_cmd.add_argument("--policy", help="a partial RhythmPolicy JSON path (merged over defaults)")
+    plan_scenes_cmd.add_argument("--overrides", help="an editorial overrides JSON path")
+    plan_scenes_cmd.add_argument("--seed", type=int, default=0, help="deterministic seed (default: 0)")
+    plan_scenes_cmd.add_argument(
+        "--target", required=True, help="delivery canvas WxH[:fit], e.g. 1920x1080:cover"
+    )
+    plan_scenes_cmd.add_argument("--out-dir", required=True, help="directory for the three JSON artifacts")
+    plan_scenes_cmd.add_argument(
+        "--emit-edit-plan", help="also convert the shot plan to an EditPlan at this path (needs --assets)"
+    )
+    plan_scenes_cmd.add_argument(
+        "--assets", help="a JSON object mapping every asset_id to a local file path"
+    )
+    plan_scenes_cmd.add_argument(
+        "--force", action="store_true", help="overwrite existing output files"
+    )
+    plan_scenes_cmd.add_argument("--json", action="store_true", help="print the summary as JSON")
     return parser
 
 
@@ -778,4 +817,138 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(report.to_json() if args.json else _format_project_validation(report), end="")
         return 0 if report.technically_ready else 1
+    if args.command == "plan-scenes":
+        return _run_plan_scenes(args)
     return 2
+
+
+def _parse_target_format(value: str) -> TargetFormat:
+    canvas, _, fit = value.partition(":")
+    width, _, height = canvas.lower().partition("x")
+    try:
+        return TargetFormat(int(width), int(height), fit or "contain")
+    except (ValueError, ContractError) as exc:
+        raise PlanningError(f"invalid --target {value!r}: {exc}") from exc
+
+
+def _orientation_for(target: TargetFormat) -> str:
+    if target.width > target.height:
+        return "landscape"
+    if target.height > target.width:
+        return "portrait"
+    return "square"
+
+
+def _run_plan_scenes(args: argparse.Namespace) -> int:
+    try:
+        target = _parse_target_format(args.target)
+        orientation = _orientation_for(target)
+
+        if args.from_text is not None:
+            text = Path(args.from_text).expanduser().read_text(encoding="utf-8")
+            kwargs = {}
+            if args.total_duration is not None:
+                kwargs["total_duration_seconds"] = args.total_duration
+            script = NarrativeScript.from_text(
+                Path(args.from_text).stem, text, **kwargs
+            )
+        else:
+            script = NarrativeScript.from_dict(
+                json.loads(Path(args.script).expanduser().read_text(encoding="utf-8"))
+            )
+            if args.total_duration is not None:
+                raise PlanningError("--total-duration only applies with --from-text")
+
+        policy = RhythmPolicy()
+        if args.policy is not None:
+            policy = RhythmPolicy.from_dict(
+                json.loads(Path(args.policy).expanduser().read_text(encoding="utf-8"))
+            )
+
+        scene_plan = plan_scenes(script, policy=policy, seed=args.seed)
+        shot_plan, assets = plan_shots(
+            scene_plan, policy=policy, seed=args.seed, orientation=orientation
+        )
+
+        if args.overrides is not None:
+            overrides = json.loads(
+                Path(args.overrides).expanduser().read_text(encoding="utf-8")
+            )
+            scene_plan, shot_plan, assets = apply_overrides(
+                scene_plan, shot_plan, assets, overrides, script=script
+            )
+
+        scene_plan.validate_against(script)
+        shot_plan.validate_against(scene_plan)
+        assets.validate_against(shot_plan)
+
+        out_dir = Path(args.out_dir).expanduser()
+        targets = {
+            out_dir / "scene-plan.json": scene_plan.to_json(),
+            out_dir / "shot-plan.json": shot_plan.to_json(),
+            out_dir / "asset-requirements.json": assets.to_json(),
+        }
+        edit_plan = None
+        if args.emit_edit_plan is not None or args.assets is not None:
+            if args.emit_edit_plan is None or args.assets is None:
+                raise PlanningError("--emit-edit-plan and --assets must be given together")
+            bindings = json.loads(
+                Path(args.assets).expanduser().read_text(encoding="utf-8")
+            )
+            if not isinstance(bindings, dict):
+                raise PlanningError("--assets must be a JSON object of asset_id -> path")
+            edit_plan = shot_plan_to_edit_plan(
+                shot_plan,
+                bindings,
+                plan_id=f"{script.script_id}-edit-plan",
+                brief_id=f"{script.script_id}-brief",
+                output_path=str((out_dir / "video.mp4").resolve()),
+                target_format=target,
+            )
+            targets[Path(args.emit_edit_plan).expanduser()] = edit_plan.to_json()
+
+        if not args.force:
+            existing = sorted(str(p) for p in targets if p.exists())
+            if existing:
+                raise PlanningError(
+                    "refusing to overwrite existing output (use --force): "
+                    + ", ".join(existing)
+                )
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for path, payload in targets.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(payload, encoding="utf-8")
+    except (PlanningError, ContractError) as exc:
+        print(f"Planning error: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"Planning error: {exc}", file=sys.stderr)
+        return 2
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        print(f"Planning error: could not read input: {exc}", file=sys.stderr)
+        return 2
+
+    summary = {
+        "script_id": script.script_id,
+        "scenes": len(scene_plan.scenes),
+        "shots": len(shot_plan.shots),
+        "distinct_assets": len(assets.requirements),
+        "reuses": sum(1 for s in shot_plan.shots if s.reuse_of is not None),
+        "orientation": orientation,
+        "out_dir": str(out_dir),
+        "edit_plan": str(Path(args.emit_edit_plan)) if edit_plan is not None else None,
+    }
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", end="")
+    else:
+        print(
+            "plan-scenes\n"
+            f"  script: {summary['script_id']}\n"
+            f"  scenes: {summary['scenes']}\n"
+            f"  shots: {summary['shots']}\n"
+            f"  distinct assets: {summary['distinct_assets']} ({summary['reuses']} reuses)\n"
+            f"  orientation: {orientation}\n"
+            f"  written to: {out_dir}\n"
+        )
+    return 0

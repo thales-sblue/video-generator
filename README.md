@@ -84,6 +84,8 @@ python -m video_generator extract-segment inputs\clip.mp4 output\precise.mp4 --s
 python -m video_generator extract-audio inputs\clip.mp4 output\audio.wav --json
 python -m video_generator narrate output\narration.wav --text "Primeira linha do roteiro." --voice af_heart --json
 python -m video_generator narrate output\narration.wav --text-file inputs\script.txt --lang pt-br --json
+python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\roteiro_narracao.txt --total-duration 270 --target 1920x1080:cover --seed 20260902 --out-dir output
+python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\roteiro_narracao.txt --total-duration 270 --target 1920x1080:cover --seed 20260902 --overrides projects\desumanizando_01\shot-overrides.json --out-dir output --force
 python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 python -m video_generator execute-sequence-plan projects\example\sequence-plan.json --manifest projects\example\sequence-manifest.json --json
 python -m video_generator execute-final-sequence-plan projects\example\final-plan.json --manifest projects\example\final-manifest.json --json
@@ -145,15 +147,36 @@ operação `narration` consome. O artifact registra voz, velocidade, idioma e o
 SHA-256 do texto (o Kokoro é determinístico para essas entradas). Sucesso técnico
 não é revisão auditiva: ela permanece `not_performed`.
 
-`execute-sequence-plan` aceita ao menos dois segmentos de timeline ordenados, com
-ao menos um `sequence_clip` (source, início e fim). Um `image_clip` mostra uma
-imagem local por `duration_seconds` (até 600 s) sem início ou fim. Sem
+`plan-scenes` transforma um roteiro narrado em um plano visual denso **antes** do
+`EditPlan`, de forma pura e determinística (sem FFmpeg, sem download de asset, sem
+LLM). Lê `--from-text` (parágrafos separados por linha em branco viram blocos) ou
+`--script` (um `NarrativeScript` JSON), roda o Scene Planner e o Shot Planner com
+`--seed`, e escreve `scene-plan.json`, `shot-plan.json` e
+`asset-requirements.json` em `--out-dir`. O rascunho já traz dezenas de shots de
+2–6 s por cena, com `shot_type`/escala alternados, durações redistribuídas de
+forma *bounded* (soma exata da cena, sem shot único absorvendo o resíduo) e
+`visual_query`/`purpose` *derivados* do trecho de narração de cada shot; cada
+campo editorial carrega `provenance`. Um `--overrides` JSON incorpora o refino
+editorial do agente (só `visual_query`/`purpose`/`shot_type`/`motion` por shot e
+`visual_intent` por cena) e reescreve os três documentos. `--target WxH[:fit]`
+define a orientação dos assets; `--policy` mescla um `RhythmPolicy` parcial;
+`--emit-edit-plan` + `--assets` (um JSON `asset_id -> path`) converte o shot plan
+para um `EditPlan` v1 pronto para o `video-sequence`. É read-only sobre
+`inputs/`/`assets/` e recusa sobrescrever sem `--force`. Não renderiza MP4 e não
+adquire assets — isso pertence ao próximo estágio.
+
+`execute-sequence-plan` aceita ao menos dois segmentos de timeline ordenados. Um
+`sequence_clip` (source, início e fim) recorta um vídeo local; um `image_clip`
+mostra uma imagem local por `duration_seconds` (até 600 s) sem início ou fim. Sem
 `target_format` no plano, os `sequence_clip` precisam ter as mesmas dimensões e
-definem o canvas; imagens de qualquer tamanho são escaladas e letter-boxed nele
-e, havendo qualquer imagem, os segmentos são normalizados para 30 fps. Com
-`target_format` (`{"width":W,"height":H,"fit":"contain"|"cover"}`; W/H pares
-≤ 7680, `fit` default `contain`), o canvas é a resolução de entrega declarada e
-sources de resoluções/proporções diferentes podem compor a mesma timeline: cada
+definem o canvas (portanto pelo menos um `sequence_clip` é obrigatório); imagens
+de qualquer tamanho são escaladas e letter-boxed nele e, havendo qualquer imagem,
+os segmentos são normalizados para 30 fps. Com `target_format`
+(`{"width":W,"height":H,"fit":"contain"|"cover"}`; W/H pares ≤ 7680, `fit` default
+`contain`) o canvas é a resolução de entrega declarada — e a timeline pode ser
+inteiramente de `image_clip` (nenhum `sequence_clip`), já que o canvas não
+depende mais dos clipes —, e sources de resoluções/proporções diferentes podem
+compor a mesma timeline: cada
 segmento é escalado deterministicamente para o canvas — `contain` mantém todo o
 conteúdo e adiciona letterbox/pillarbox, `cover` preenche o canvas e corta pelo
 centro. `sequence_clip` e `image_clip` aceitam um `fit` opcional que sobrepõe o
@@ -293,8 +316,8 @@ A mesma suíte é executada pelo GitHub Actions em pushes e pull requests.
 config/                         configuração segura padrão
 config/ffmpeg-lock.json         proveniência e integridade do FFmpeg local aprovado
 docs/                           visão, arquitetura e linguagem audiovisual
-schemas/                        contratos JSON públicos v1, incluindo RenderManifest
-src/video_generator/domain/     modelos e invariantes puros
+schemas/                        contratos JSON públicos v1 (request, brief, edit-plan, manifest, narrative-script, scene-plan, shot-plan, asset-requirements)
+src/video_generator/domain/     modelos e invariantes puros; planning.py é o Scene/Shot Planner
 src/video_generator/adapters/   integrações locais, incluindo ffprobe e FFmpeg
 src/video_generator/workflows/  recorte e primeira timeline sequencial
 src/video_generator/validation/ preflight, mídia, integridade e rastreabilidade read-only

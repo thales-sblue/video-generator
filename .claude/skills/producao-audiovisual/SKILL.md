@@ -49,9 +49,11 @@ $env:PYTHONPATH = "src"; & $py -m unittest discover -s tests -v   # suíte compl
    as decisões — isso vira `VideoRequest` e `VideoBrief`.
 4. **Escolher o menor escopo executável** dentro de `dark-video`. Não crie um
    workflow novo se ampliar `video-sequence` resolve. Hoje o motor suporta:
-   `segment-extract` (um recorte) e `video-sequence` (≥2 segmentos ordenados, com
-   ≥1 `sequence_clip` e, opcionalmente, `image_clip` com `duration_seconds` +
-   `captions`/`music`/`narration` opcionais).
+   `segment-extract` (um recorte) e `video-sequence` (≥2 segmentos ordenados;
+   `sequence_clip` recorta vídeo, `image_clip` mostra uma imagem por
+   `duration_seconds` com `fit`/`motion` opcionais; ≥1 `sequence_clip` só é
+   exigido sem `target_format` — com `target_format` a timeline pode ser toda de
+   `image_clip` — mais `captions`/`music`/`narration` opcionais).
 5. **Fala local quando relevante**: `extract-audio` para separar faixa; narração
    a partir de texto via Kokoro (extra op-in `tts` + modelo em `.local-tools/kokoro/`)
    já existe — CLI `narrate` e o modo texto da operação `narration` no
