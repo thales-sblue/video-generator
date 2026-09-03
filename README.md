@@ -97,6 +97,7 @@ python -m video_generator narrate output\narration.wav --text-file inputs\script
 python -m video_generator align-captions output\narration.wav --text-file inputs\script.txt --out output\captions.srt --language pt --words-out output\narration-words.json --json
 python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\roteiro_narracao.txt --total-duration 270 --target 1920x1080:cover --seed 20260902 --out-dir output
 python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\roteiro_narracao.txt --total-duration 270 --target 1920x1080:cover --seed 20260902 --overrides projects\desumanizando_01\shot-overrides.json --out-dir output --force
+python -m video_generator plan-scenes --from-text output\preview\roteiro.txt --total-duration 68.347 --target 1920x1080:cover --seed 20260903 --semantic --hook-seconds 40 --text-events output\preview\text-events.json --out-dir output\preview\plan
 python -m video_generator resolve-assets --shot-plan output\shot-plan.json --asset-requirements output\asset-requirements.json --library assets\library --out-dir output\resolved-assets --json
 python -m video_generator resolve-assets --shot-plan output\shot-plan.json --asset-requirements output\asset-requirements.json --library assets\library --out-dir output\resolved-assets --providers local,pexels,pixabay --require-complete --force
 python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
@@ -202,13 +203,42 @@ para um `EditPlan` v1 pronto para o `video-sequence`. É read-only sobre
 `inputs/`/`assets/` e recusa sobrescrever sem `--force`. Não renderiza MP4 e não
 adquire assets — isso pertence ao `resolve-assets`.
 
+`--semantic` liga a camada editorial (`domain/editorial.py`): cada fatia de
+narração é lida como um **`NarrationBeat`** — conceito, entidades, emoção,
+intenção visual, papel editorial e uma lista ordenada de queries candidatas — e
+essa leitura passa a decidir o `visual_query` do shot, as alternativas
+(`asset_queries`) e o `shot_type` (como *viés* no sorteio, nunca como imposição:
+os limites de repetição continuam garantindo variedade). Duas escolhas
+deliberadas: **as queries saem em inglês** enquanto narração e `visual_intent`
+ficam no idioma do roteiro, porque todo banco gratuito que o projeto alcança
+indexa em inglês e uma query em português é comparada contra metadata inglesa e
+pontua perto de zero; e **um termo que aparece em mais de 25% dos beats nunca
+lidera uma query**, porque ele é o assunto do vídeo inteiro, não daquele trecho —
+é isso que impede que todo shot de um vídeo sobre Einstein peça "Einstein". Sem
+`--semantic` o planner é byte-a-byte o de antes, e os campos novos ficam ausentes.
+
+`--hook-seconds N` dá aos primeiros N segundos um teto de duração mais curto e
+proíbe reuso de asset ali (o piso e o jitter continuam: abertura cortada num
+metrônomo de 2 s é monotonia, não ritmo). `--text-events <path>` escreve a camada
+de **ênfase editorial** — que não é legenda: a legenda transcreve a voz, o
+`TextEvent` levanta um número, uma data ou uma virada do argumento na tela, com
+categoria, hierarquia, posição e animação próprias, sempre com palavras
+literais da narração. Poucos beats viram evento: é preciso importância
+suficiente **e** distância do evento anterior. Com `--emit-edit-plan`, a camada
+entra no plano como uma operação `text_events` carregando o `VisualStyle`
+(`dark-documentary-v1`: fundo escuro, texto claro, um único accent `#E5A33C`,
+tipografia e margens de segurança). A identidade veste o asset escolhido — ela
+nunca escolhe o asset: a ordem é relevância semântica primeiro, estética depois.
+
 `resolve-assets` consome `--shot-plan` + `--asset-requirements` e resolve cada
 requirement num arquivo local concreto com procedência. Passos separados:
 revisão semântica de reuse (um reuse estruturalmente válido só sobrevive se o
 shot compartilhar termos de conteúdo suficientes com o shot âncora; senão vira
 requirement próprio) → sanitização lexical da query (queries pobres como
 "outras / palavras" viram `needs_editorial_override` em vez de virar busca de
-lixo) → `providers.search` → ranking com `score_breakdown` inspecionável →
+lixo) → `providers.search` **por query candidata, na ordem, parando na primeira
+que encontra candidato com significado compartilhado** → ranking com
+`score_breakdown` inspecionável →
 seleção → `acquire` **só do escolhido** → SHA-256 + validação de
 tipo/dimensão/duração → `AssetProvenance`. `--library` aponta o
 `LocalAssetProvider` (offline, com sidecars `<arquivo>.json`); `--providers
@@ -217,7 +247,13 @@ local,pexels,pixabay` adiciona fontes gratuitas com chave em
 `asset-resolution-plan.json`, `asset-provenance.json`,
 `revised-asset-requirements.json` e `asset-bindings.json` (`{asset_id: path}`,
 consumido direto por `shot_plan_to_edit_plan`), mais os arquivos em
-`<out-dir>/files/`. Nunca sobrescreve um asset existente com bytes diferentes;
+`<out-dir>/files/`. Cada `ResolvedAsset` registra `matched_query` (qual das
+queries candidatas achou o arquivo) e `sanitized_query` (o que de fato foi
+pedido ao provider), então "por que esse shot ficou assim?" tem resposta de uma
+linha. Um requirement sem `queries` se comporta exatamente como antes; nesse
+caso, e só nesse, o `purpose` continua enriquecendo a query — uma query
+candidata já é uma frase visual deliberada e misturar o vocabulário da narração
+nela só dilui a busca. Nunca sobrescreve um asset existente com bytes diferentes;
 `--require-complete` sai com código 3 se sobrar requirement não resolvido. Sem
 API paga, sem scraping, sem download arbitrário de vídeo, sem remoção de
 watermark.
@@ -375,6 +411,7 @@ config/ffmpeg-lock.json         proveniência e integridade do FFmpeg local apro
 docs/                           visão, arquitetura e linguagem audiovisual
 schemas/                        contratos JSON públicos v1 (request, brief, edit-plan, manifest, narrative-script, scene-plan, shot-plan, asset-requirements)
 src/video_generator/domain/     modelos e invariantes puros; planning.py é o Scene/Shot Planner
+                                e editorial.py a camada semântica (beats, ênfases, identidade)
 src/video_generator/adapters/   integrações locais, incluindo ffprobe e FFmpeg
 src/video_generator/workflows/  recorte e primeira timeline sequencial
 src/video_generator/validation/ preflight, mídia, integridade e rastreabilidade read-only

@@ -18,10 +18,20 @@ import json
 import math
 import random
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
+from video_generator.domain.editorial import (
+    DEFAULT_EDITORIAL_POLICY,
+    EditorialPolicy,
+    HookPolicy,
+    NarrationBeat,
+    TextEvent,
+    VisualStyle,
+    plan_text_events,
+    read_beats,
+)
 from video_generator.domain.models import EditOperation, EditPlan, TargetFormat
 
 SCHEMA_VERSION = 1
@@ -883,6 +893,15 @@ class Shot:
     framing: Mapping[str, Any]
     justification: str | None
     provenance: Mapping[str, str]
+    # --- optional editorial semantics -------------------------------------- #
+    # Present when the shot was planned semantically; absent (and therefore
+    # unchanged) on every plan written before the editorial layer existed.
+    # ``visual_query`` stays the chosen query; ``asset_queries`` records the
+    # ordered alternatives the resolver may fall back to, so a bad pick can be
+    # diagnosed after the fact.
+    editorial_role: str | None = None
+    asset_queries: tuple[str, ...] = ()
+    beat_concept: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "shot_id", _text(self.shot_id, "shot_id"))
@@ -925,6 +944,18 @@ class Shot:
         if any(v not in PROVENANCE_VALUES for v in provenance.values()):
             raise PlanningError("provenance values must be derived or authored")
         object.__setattr__(self, "provenance", MappingProxyType(dict(provenance)))
+        object.__setattr__(
+            self, "editorial_role", _optional_text(self.editorial_role, "editorial_role")
+        )
+        queries = tuple(self.asset_queries)
+        if any(not isinstance(q, str) or not q.strip() for q in queries):
+            raise PlanningError("asset_queries must be non-empty strings")
+        if len(set(queries)) != len(queries):
+            raise PlanningError("asset_queries must be unique")
+        object.__setattr__(self, "asset_queries", queries)
+        object.__setattr__(
+            self, "beat_concept", _optional_text(self.beat_concept, "beat_concept")
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -943,6 +974,9 @@ class Shot:
             "framing": _thaw(self.framing),
             "justification": self.justification,
             "provenance": dict(self.provenance),
+            "editorial_role": self.editorial_role,
+            "asset_queries": list(self.asset_queries),
+            "beat_concept": self.beat_concept,
         }
 
     @classmethod
@@ -954,7 +988,7 @@ class Shot:
                 "shot_type", "scale", "visual_query", "purpose", "beat",
                 "asset_id", "reuse_of", "framing", "justification", "provenance",
             },
-            optional=set(),
+            optional={"editorial_role", "asset_queries", "beat_concept"},
         )
         return cls(
             shot_id=data["shot_id"],
@@ -972,6 +1006,9 @@ class Shot:
             framing=data["framing"],
             justification=data["justification"],
             provenance=data["provenance"],
+            editorial_role=data.get("editorial_role"),
+            asset_queries=tuple(data.get("asset_queries", ())),
+            beat_concept=data.get("beat_concept"),
         )
 
 
@@ -1153,6 +1190,10 @@ class AssetRequirement:
     used_by: tuple[str, ...]
     min_count: int = 1
     notes: str | None = None
+    # Ordered alternatives for ``query``, best first, when the shot was planned
+    # semantically. Empty means "just the one query", which is what every plan
+    # written before the editorial layer says.
+    queries: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "asset_id", _text(self.asset_id, "asset_id"))
@@ -1173,6 +1214,19 @@ class AssetRequirement:
         object.__setattr__(self, "used_by", used)
         _int(self.min_count, "min_count", minimum=1)
         object.__setattr__(self, "notes", _optional_text(self.notes, "notes"))
+        queries = tuple(self.queries)
+        if any(not isinstance(q, str) or not q.strip() for q in queries):
+            raise PlanningError("queries must be non-empty strings")
+        if len(set(queries)) != len(queries):
+            raise PlanningError("queries must be unique")
+        object.__setattr__(self, "queries", queries)
+
+    def search_queries(self) -> tuple[str, ...]:
+        """Every query the resolver may try, best first, always including the
+        primary ``query`` so an older requirement behaves exactly as before."""
+
+        ordered = [self.query] + [q for q in self.queries if q != self.query]
+        return tuple(dict.fromkeys(ordered))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1185,6 +1239,7 @@ class AssetRequirement:
             "used_by": list(self.used_by),
             "min_count": self.min_count,
             "notes": self.notes,
+            "queries": list(self.queries),
         }
 
     @classmethod
@@ -1195,7 +1250,7 @@ class AssetRequirement:
                 "asset_id", "type", "query", "duration_needed_seconds",
                 "orientation", "purpose", "used_by",
             },
-            optional={"min_count", "notes"},
+            optional={"min_count", "notes", "queries"},
         )
         return cls(
             asset_id=data["asset_id"],
@@ -1207,6 +1262,7 @@ class AssetRequirement:
             used_by=tuple(data["used_by"]),
             min_count=data.get("min_count", 1),
             notes=data.get("notes"),
+            queries=tuple(data.get("queries", ())),
         )
 
 
@@ -1442,6 +1498,34 @@ def _motion_for_scale(scale: str, rng: random.Random) -> tuple[str | None, str]:
     return None, "center"
 
 
+def _hook_rhythm(policy: RhythmPolicy, hook: HookPolicy) -> RhythmPolicy:
+    """The opening's rhythm: the same policy with a lower ceiling.
+
+    Only the ceiling moves. The floor and the jitter stay, because an opening
+    cut to a uniform two seconds reads as nervous, not urgent — what retains a
+    viewer is *variation* that trends short, not a metronome.
+    """
+
+    ceiling = max(policy.ideal_shot_seconds_low, float(hook.max_shot_seconds))
+    return replace(
+        policy,
+        ideal_shot_seconds_high=min(policy.ideal_shot_seconds_high, ceiling),
+        soft_max_shot_seconds=ceiling,
+        absolute_max_shot_seconds=max(ceiling, policy.absolute_max_shot_seconds),
+    )
+
+
+def _beat_summary(beat: "NarrationBeat") -> str:
+    """The one-line audit trail: what this shot was read as."""
+
+    bits = [beat.concept]
+    if beat.entities:
+        bits.append("/".join(beat.entities[:2]))
+    if beat.emotion:
+        bits.append(beat.emotion)
+    return " · ".join(bits)
+
+
 def plan_shots(
     scene_plan: "ScenePlan",
     *,
@@ -1450,8 +1534,26 @@ def plan_shots(
     orientation: str = "landscape",
     plan_id: str | None = None,
     asset_plan_id: str | None = None,
+    semantic: bool = False,
+    editorial_policy: "EditorialPolicy | None" = None,
+    hook_policy: "HookPolicy | None" = None,
 ) -> tuple["ShotPlan", "AssetRequirements"]:
-    """Densify a ScenePlan into many short shots plus the assets they need."""
+    """Densify a ScenePlan into many short shots plus the assets they need.
+
+    With ``semantic=False`` (the default) this is the original frequency-based
+    planner, byte-for-byte: a shot's query is the commonest words of its slice
+    and its type is a weighted draw.
+
+    With ``semantic=True`` every slice is first read as a
+    :class:`~video_generator.domain.editorial.NarrationBeat`, and that reading
+    drives three decisions the planner used to make blindly: which query the
+    shot asks for, which alternatives it may fall back to, and which shot type
+    the slice actually calls for (as a bias on the draw, never an override —
+    the run limits still guarantee variety).
+
+    ``hook_policy`` additionally gives the opening its own ceiling and forbids
+    asset reuse there.
+    """
 
     if not isinstance(scene_plan, ScenePlan):
         raise PlanningError("plan_shots needs a ScenePlan")
@@ -1472,6 +1574,46 @@ def plan_shots(
         scene_layouts.append((scene, layout))
     distinct_floor = math.ceil(policy.min_distinct_asset_ratio * total_shots)
 
+    # --- semantic pre-pass -------------------------------------------------- #
+    # Beats are read for the whole script at once (a term's weight depends on
+    # how common it is across every slice), which means the durations that
+    # define the slices have to exist first. They are drawn here from their own
+    # generator so the main loop's stream — and therefore the non-semantic
+    # output — is left exactly as it was.
+    beats_by_shot: "dict[str, NarrationBeat]" = {}
+    layout_cache: "dict[str, tuple[list[float], list[bool], list[str]]]" = {}
+    if semantic:
+        editorial_policy = editorial_policy or DEFAULT_EDITORIAL_POLICY
+        slice_rng = random.Random(seed)
+        elapsed = 0.0
+        slices: list[tuple[str, str, str]] = []
+        for scene, layout in scene_layouts:
+            scene_rhythm = policy
+            if hook_policy is not None and hook_policy.covers(elapsed):
+                scene_rhythm = _hook_rhythm(policy, hook_policy)
+            durations: list[float] = []
+            flags: list[bool] = []
+            for start, end, on_emphasis, _count in layout:
+                span = end - start
+                count = _shot_count(span, scene_rhythm)
+                for offset, duration in enumerate(
+                    _redistribute(span, count, slice_rng, scene_rhythm)
+                ):
+                    durations.append(duration)
+                    flags.append(on_emphasis and offset == 0)
+            texts = _slice_text(scene.narration, durations)
+            layout_cache[scene.scene_id] = (durations, flags, texts)
+            for index, text in enumerate(texts, start=1):
+                slices.append(
+                    (_shot_id(scene.scene_id, index), text, scene.narration)
+                )
+            elapsed += scene.duration_seconds
+        beats = read_beats(slices, policy=editorial_policy)
+        beats_by_shot = {b.beat_id: b for b in beats}
+        # the hook's tighter ceiling changes how many shots there are
+        total_shots = sum(len(v[0]) for v in layout_cache.values())
+        distinct_floor = math.ceil(policy.min_distinct_asset_ratio * total_shots)
+
     flat_scales: list[str] = []
     flat_types: list[str] = []
     shots: list[Shot] = []
@@ -1480,18 +1622,26 @@ def plan_shots(
     distinct = 0
     shots_emitted = 0
 
+    scene_start = 0.0
     for scene, layout in scene_layouts:
-        scene_shot_count = sum(count for *_rest, count in layout)
-        scene_shots: list[Shot] = []
         scale_pos = rng.randrange(len(policy.scale_cycle))
-        segment_durations: list[float] = []
-        segment_beat_flags: list[bool] = []
-        for start, end, on_emphasis, count in layout:
-            durs = _redistribute(end - start, count, rng, policy)
-            for j, d in enumerate(durs):
-                segment_durations.append(d)
-                segment_beat_flags.append(on_emphasis and j == 0)
-        text_slices = _slice_text(scene.narration, segment_durations)
+        if scene.scene_id in layout_cache:
+            segment_durations, segment_beat_flags, text_slices = layout_cache[
+                scene.scene_id
+            ]
+        else:
+            segment_durations = []
+            segment_beat_flags = []
+            for start, end, on_emphasis, count in layout:
+                durs = _redistribute(end - start, count, rng, policy)
+                for j, d in enumerate(durs):
+                    segment_durations.append(d)
+                    segment_beat_flags.append(on_emphasis and j == 0)
+            text_slices = _slice_text(scene.narration, segment_durations)
+        scene_shot_count = len(segment_durations)
+        scene_shots: list[Shot] = []
+        in_hook = hook_policy is not None and hook_policy.covers(scene_start)
+        scene_start += scene.duration_seconds
 
         for local_index, (dur, is_beat, slice_text) in enumerate(
             zip(segment_durations, segment_beat_flags, text_slices), start=1
@@ -1517,20 +1667,39 @@ def plan_shots(
                 for key, bonus in _BEAT_SHOT_TYPE_BONUS.items():
                     if weights.get(key, 0.0) > 0.0:
                         weights[key] += bonus
+            narration_beat = beats_by_shot.get(_shot_id(scene.scene_id, local_index))
+            if narration_beat is not None and narration_beat.shot_type_hint:
+                # a bias, not an override: the hinted type becomes the likely
+                # draw, while the run limits above still forbid a repeat
+                hint = narration_beat.shot_type_hint
+                if weights.get(hint, 0.0) > 0.0:
+                    weights[hint] += editorial_policy.shot_type_hint_bonus
             shot_type = _weighted_choice(rng, weights)
             asset_type = policy.asset_type_for(shot_type)
 
             motion, crop_bias = _motion_for_scale(scale, rng)
             framing = {"motion": motion, "crop_bias": crop_bias}
 
-            visual_query = _visual_query(scale, shot_type, slice_text, policy)
+            if narration_beat is not None:
+                visual_query = narration_beat.asset_queries[0]
+                asset_queries = narration_beat.asset_queries
+                editorial_role = narration_beat.editorial_role
+                beat_concept = _beat_summary(narration_beat)
+            else:
+                visual_query = _visual_query(scale, shot_type, slice_text, policy)
+                asset_queries = ()
+                editorial_role = None
+                beat_concept = None
             purpose = f"{scene.visual_intent} — beat {local_index}/{scene_shot_count}"
 
             # asset + reuse
             shots_left = total_shots - shots_emitted  # includes this one
             fresh_id = f"asset_{scene.scene_id}_{local_index:02d}"
             reuse_target: str | None = None
-            for asset_id, meta in reversed(list(reqs.items())):
+            forbid_reuse = (
+                in_hook and hook_policy is not None and hook_policy.forbid_asset_reuse
+            )
+            for asset_id, meta in () if forbid_reuse else reversed(list(reqs.items())):
                 if meta["shot_type"] != shot_type or meta["scale"] != scale:
                     continue
                 if len(meta["used_by"]) >= policy.reuse_max_per_source:
@@ -1590,6 +1759,9 @@ def plan_shots(
                     "purpose": "derived",
                     "shot_type": "derived",
                 },
+                editorial_role=editorial_role,
+                asset_queries=asset_queries,
+                beat_concept=beat_concept,
             )
             scene_shots.append(shot)
             flat_scales.append(scale)
@@ -1651,6 +1823,7 @@ def _asset_requirements_from_shots(
                 orientation=orientation,
                 purpose=users[0].purpose,
                 used_by=tuple(u.shot_id for u in users),
+                queries=users[0].asset_queries,
             )
         )
     return AssetRequirements(
@@ -1667,6 +1840,70 @@ def _asset_requirements_from_shots(
 # --------------------------------------------------------------------------- #
 _WRITABLE_SHOT_KEYS = ("visual_query", "purpose", "shot_type", "motion")
 _WRITABLE_SCENE_KEYS = ("visual_intent",)
+
+
+def _detached_asset_id(shot_id: str) -> str:
+    """Asset id for a shot that had to leave its shared asset. Distinct by
+    construction from the planner's ``asset_{scene_id}_{index:02d}`` ids, which
+    never carry a ``shot`` segment."""
+
+    return f"asset_{shot_id}"
+
+
+def _regroup_assets(
+    shots: "list[Shot]", policy: RhythmPolicy, retyped: "set[str]"
+) -> "list[Shot]":
+    """Repair the reuse graph after an editorial retype.
+
+    Changing a shot's ``shot_type`` can change its ``asset_type``, and a shot
+    that no longer shares a medium with the rest of its group cannot share a
+    file with it either. Such a shot is detached onto its own asset; the group
+    it left is then re-anchored, and any member the new anchor no longer
+    reaches back far enough for is detached too. Purely a repair: shot ids,
+    timing and every editorial field are untouched.
+    """
+
+    asset_ids = [s.asset_id for s in shots]
+
+    # 1. split a group that an override left holding two media types
+    groups: dict[str, list[int]] = {}
+    for position, shot in enumerate(shots):
+        groups.setdefault(shot.asset_id, []).append(position)
+    for asset_id, positions in groups.items():
+        if len({shots[i].asset_type for i in positions}) == 1:
+            continue
+        keep = next(
+            (i for i in positions if shots[i].shot_id not in retyped), positions[0]
+        )
+        anchor_type = shots[keep].asset_type
+        for i in positions:
+            if shots[i].asset_type != anchor_type:
+                asset_ids[i] = _detached_asset_id(shots[i].shot_id)
+
+    # 2. re-anchor every group and drop a reuse the new anchor is too close to
+    origin_ordinal: dict[str, int] = {}
+    for position, shot in enumerate(shots):
+        asset_id = asset_ids[position]
+        ordinal = int(shot.scene_id.split("_")[1])
+        if asset_id not in origin_ordinal:
+            origin_ordinal[asset_id] = ordinal
+        elif ordinal - origin_ordinal[asset_id] < policy.reuse_min_scene_gap:
+            asset_ids[position] = _detached_asset_id(shot.shot_id)
+            origin_ordinal.setdefault(asset_ids[position], ordinal)
+
+    # 3. rebuild reuse_of from the final grouping: first user owns, rest reuse
+    seen: set[str] = set()
+    rebuilt: list[Shot] = []
+    for position, shot in enumerate(shots):
+        asset_id = asset_ids[position]
+        reuse_of = asset_id if asset_id in seen else None
+        seen.add(asset_id)
+        if asset_id == shot.asset_id and reuse_of == shot.reuse_of:
+            rebuilt.append(shot)
+        else:
+            rebuilt.append(replace(shot, asset_id=asset_id, reuse_of=reuse_of))
+    return rebuilt
+
 
 
 def apply_overrides(
@@ -1752,6 +1989,7 @@ def apply_overrides(
         counts[shot.scene_id] = counts.get(shot.scene_id, 0) + 1
 
     new_shots = []
+    retyped: set[str] = set()
     for shot in shot_plan.shots:
         patch = dict(shot_overrides.get(shot.shot_id, {}))
         provenance = dict(shot.provenance)
@@ -1783,6 +2021,7 @@ def apply_overrides(
                 raise PlanningError(f"override shot_type is not in the policy: {shot_type}")
             asset_type = shot_plan.policy.asset_type_for(shot_type)
             provenance["shot_type"] = "authored"
+            retyped.add(shot.shot_id)
         if "motion" in patch:
             motion = patch["motion"]
             if motion is not None and motion not in IMAGE_MOTIONS:
@@ -1809,6 +2048,11 @@ def apply_overrides(
             )
         )
 
+    # An override that changed a shot's medium may have left it sharing an asset
+    # with shots of the other medium; repair the reuse graph before validating.
+    if retyped:
+        new_shots = _regroup_assets(new_shots, shot_plan.policy, retyped)
+
     new_shot_plan = ShotPlan(
         plan_id=shot_plan.plan_id,
         scene_plan_id=shot_plan.scene_plan_id,
@@ -1829,6 +2073,122 @@ def apply_overrides(
 # --------------------------------------------------------------------------- #
 # 6. shot_plan_to_edit_plan — bridge to the existing renderer (no I/O)
 # --------------------------------------------------------------------------- #
+def shot_timeline(shot_plan: "ShotPlan") -> "dict[str, tuple[float, float]]":
+    """Where every shot sits on the finished timeline.
+
+    Derived, never stored: the shot plan's ordered durations are the single
+    source of truth for time, and anything that needs absolute offsets — the
+    emphasis layer above all — reads them through here rather than keeping a
+    second copy that can drift.
+    """
+
+    if not isinstance(shot_plan, ShotPlan):
+        raise PlanningError("shot_timeline needs a ShotPlan")
+    out: dict[str, tuple[float, float]] = {}
+    cursor = 0.0
+    for shot in shot_plan.shots:
+        end = cursor + shot.duration_seconds
+        out[shot.shot_id] = (cursor, end)
+        cursor = end
+    return out
+
+
+def narration_slices(
+    scene_plan: "ScenePlan", shot_plan: "ShotPlan"
+) -> "tuple[tuple[str, str, str], ...]":
+    """``(shot_id, narration slice, scene narration)`` for every shot.
+
+    Recomputed from the scene narration and the shots' own durations rather
+    than stored on the shots: the slicing is deterministic, so deriving it
+    keeps the narration in exactly one place instead of two that can drift.
+    """
+
+    if not isinstance(scene_plan, ScenePlan) or not isinstance(shot_plan, ShotPlan):
+        raise PlanningError("narration_slices needs a ScenePlan and a ShotPlan")
+    out: list[tuple[str, str, str]] = []
+    for scene in scene_plan.scenes:
+        scene_shots = shot_plan.shots_for(scene.scene_id)
+        texts = _slice_text(
+            scene.narration, [s.duration_seconds for s in scene_shots]
+        )
+        out.extend(
+            (shot.shot_id, text, scene.narration)
+            for shot, text in zip(scene_shots, texts)
+        )
+    return tuple(out)
+
+
+def plan_shot_text_events(
+    scene_plan: "ScenePlan",
+    shot_plan: "ShotPlan",
+    *,
+    editorial_policy: "EditorialPolicy | None" = None,
+    hook_policy: "HookPolicy | None" = None,
+) -> "tuple[TextEvent, ...]":
+    """The emphasis layer for a planned video, timed against its own shots."""
+
+    beats = read_beats(
+        narration_slices(scene_plan, shot_plan),
+        policy=editorial_policy or DEFAULT_EDITORIAL_POLICY,
+    )
+    return plan_text_events(
+        beats,
+        shot_timeline(shot_plan),
+        policy=editorial_policy or DEFAULT_EDITORIAL_POLICY,
+        hook_policy=hook_policy,
+    )
+
+
+# Emphasis categories that deserve the accented, larger treatment. A keyword is
+# support; a number, a date, a question or a turn in the argument is the point.
+_EMPHASISED_CATEGORIES = ("number", "date", "question", "emphasis")
+
+
+def text_events_operation(
+    events: "Sequence[TextEvent]",
+    *,
+    visual_style: "VisualStyle | None" = None,
+    operation_id: str = "text_events",
+) -> EditOperation:
+    """Turn planned :class:`TextEvent` values into the renderer's operation.
+
+    The visual style travels with them because typography *is* the identity:
+    the same accent and the same font on every video is what makes two renders
+    look like the same channel.
+    """
+
+    items = []
+    for event in events:
+        if not isinstance(event, TextEvent):
+            raise PlanningError("events must be TextEvent values")
+        items.append(
+            {
+                "text": event.text,
+                "start_seconds": event.start_seconds,
+                "end_seconds": event.end_seconds,
+                "position": event.position,
+                "animation": event.animation,
+                "emphasis": event.category in _EMPHASISED_CATEGORIES,
+            }
+        )
+    if not items:
+        raise PlanningError("text_events_operation needs at least one event")
+    parameters: dict[str, Any] = {"items": items}
+    if visual_style is not None:
+        if not isinstance(visual_style, VisualStyle):
+            raise PlanningError("visual_style must be a VisualStyle")
+        parameters["style"] = {
+            "font_name": visual_style.font_name,
+            "foreground": visual_style.ass_colour("foreground"),
+            "accent": visual_style.ass_colour("accent"),
+            "emphasis_scale": visual_style.emphasis_font_scale,
+            "safe_margin_fraction": visual_style.safe_margin_fraction,
+        }
+    return EditOperation(
+        operation_id=operation_id, kind="text_events", parameters=parameters
+    )
+
+
 _COVER_SCALES = ("close", "detail")
 _CONTAIN_SHOT_TYPES = ("on_screen_text", "document", "simple_graphic")
 

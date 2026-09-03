@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -14,6 +15,10 @@ from typing import Callable
 
 from video_generator.adapters import (
     CaptionCue,
+    TEXT_EVENT_ANIMATIONS,
+    TEXT_EVENT_POSITIONS,
+    TextEventCue,
+    TextStyleSpec,
     FFmpegError,
     KokoroError,
     MediaProbe,
@@ -62,6 +67,14 @@ NARRATION_DEFAULT_LANG = "en-us"
 CAPTIONS_KIND = "captions"
 CAPTIONS_STYLE = "bottom_box"
 CAPTION_SUBTITLE_FORMATS = {".srt": "srt", ".vtt": "vtt"}
+# An ASS colour literal: &H then 6 (BGR) or 8 (ABGR) hex digits.
+_ASS_COLOUR = re.compile(r"^&H[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$")
+TEXT_EVENTS_KIND = "text_events"
+TEXT_EVENT_ITEM_KEYS = {"text", "start_seconds", "end_seconds"}
+TEXT_EVENT_ITEM_OPTIONAL = {"position", "animation", "emphasis"}
+TEXT_EVENT_STYLE_KEYS = {
+    "font_name", "foreground", "accent", "emphasis_scale", "safe_margin_fraction",
+}
 MUSIC_KIND = "music"
 MUSIC_DURATION_POLICY = "loop_to_timeline"
 FADE_KIND = "fade"
@@ -232,6 +245,128 @@ def _caption_cues_from_file(source: str) -> tuple[CaptionCue, ...]:
     return _validate_caption_cues(raw)
 
 
+def _text_event_cues(
+    parameters: Mapping[str, object]
+) -> "tuple[tuple[TextEventCue, ...], TextStyleSpec | None]":
+    """Parse a ``text_events`` operation into cues plus an optional style.
+
+    Emphasis is a separate layer from the captions: it may sit anywhere on the
+    frame and it does not transcribe the voice, so it gets its own operation
+    rather than more keys on the caption one.
+    """
+
+    values = dict(parameters)
+    unknown = set(values) - {"items", "style"}
+    if unknown:
+        raise SequenceWorkflowError(
+            f"text_events does not accept: {', '.join(sorted(unknown))}"
+        )
+    items = values.get("items")
+    if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
+        raise SequenceWorkflowError("text_events items must be an array")
+    if not items or len(items) > 200:
+        raise SequenceWorkflowError("text_events require between 1 and 200 items")
+
+    cues: list[TextEventCue] = []
+    previous_end = 0.0
+    for index, item in enumerate(items):
+        if not isinstance(item, Mapping):
+            raise SequenceWorkflowError(f"text event {index} must be an object")
+        missing = TEXT_EVENT_ITEM_KEYS - set(item)
+        if missing:
+            raise SequenceWorkflowError(
+                f"text event {index} requires {', '.join(sorted(missing))}"
+            )
+        extra = set(item) - TEXT_EVENT_ITEM_KEYS - TEXT_EVENT_ITEM_OPTIONAL
+        if extra:
+            raise SequenceWorkflowError(
+                f"text event {index} does not accept: {', '.join(sorted(extra))}"
+            )
+        text = item["text"]
+        if not isinstance(text, str):
+            raise SequenceWorkflowError(f"text event {index} text must be a string")
+        stripped = text.strip()
+        if not stripped or len(stripped) > 48:
+            raise SequenceWorkflowError(
+                f"text event {index} text must contain 1 to 48 characters"
+            )
+        if any(ord(character) < 32 for character in stripped):
+            raise SequenceWorkflowError(
+                f"text event {index} text must not contain control characters"
+            )
+        if any(character in stripped for character in "<>{}"):
+            raise SequenceWorkflowError(
+                f"text event {index} text must not contain subtitle markup characters"
+            )
+        start = _runtime_number(
+            item["start_seconds"], f"text event {index} start_seconds", allow_zero=True
+        )
+        end = _runtime_number(
+            item["end_seconds"], f"text event {index} end_seconds", allow_zero=False
+        )
+        if end <= start or round(end * 1000) <= round(start * 1000):
+            raise SequenceWorkflowError(f"text event {index} must last at least 1 ms")
+        if start < previous_end:
+            raise SequenceWorkflowError("text events must be ordered and non-overlapping")
+        position = item.get("position", "top")
+        animation = item.get("animation", "fade")
+        emphasis = item.get("emphasis", False)
+        if not isinstance(position, str) or position not in TEXT_EVENT_POSITIONS:
+            raise SequenceWorkflowError(
+                f"text event {index} position must be one of {TEXT_EVENT_POSITIONS}"
+            )
+        if not isinstance(animation, str) or animation not in TEXT_EVENT_ANIMATIONS:
+            raise SequenceWorkflowError(
+                f"text event {index} animation must be one of {TEXT_EVENT_ANIMATIONS}"
+            )
+        if not isinstance(emphasis, bool):
+            raise SequenceWorkflowError(f"text event {index} emphasis must be a boolean")
+        cues.append(
+            TextEventCue(stripped, start, end, position, animation, emphasis)
+        )
+        previous_end = end
+
+    style_values = values.get("style")
+    if style_values is None:
+        return tuple(cues), None
+    if not isinstance(style_values, Mapping):
+        raise SequenceWorkflowError("text_events style must be an object")
+    unknown_style = set(style_values) - TEXT_EVENT_STYLE_KEYS
+    if unknown_style:
+        raise SequenceWorkflowError(
+            f"text_events style does not accept: {', '.join(sorted(unknown_style))}"
+        )
+    defaults = TextStyleSpec()
+    font_name = style_values.get("font_name", defaults.font_name)
+    foreground = style_values.get("foreground", defaults.foreground)
+    accent = style_values.get("accent", defaults.accent)
+    for name, value in (("font_name", font_name), ("foreground", foreground), ("accent", accent)):
+        if not isinstance(value, str) or not value.strip():
+            raise SequenceWorkflowError(f"text_events style {name} must be a non-empty string")
+    for name, value in (("foreground", foreground), ("accent", accent)):
+        if not _ASS_COLOUR.match(value):
+            raise SequenceWorkflowError(
+                f"text_events style {name} must be an ASS colour like &H00BBGGRR"
+            )
+    scale = _runtime_number(
+        style_values.get("emphasis_scale", defaults.emphasis_scale),
+        "text_events style emphasis_scale",
+        allow_zero=False,
+    )
+    if not 1.0 <= scale <= 3.0:
+        raise SequenceWorkflowError("text_events style emphasis_scale must lie in [1, 3]")
+    margin = _runtime_number(
+        style_values.get("safe_margin_fraction", defaults.safe_margin_fraction),
+        "text_events style safe_margin_fraction",
+        allow_zero=True,
+    )
+    if margin > 0.2:
+        raise SequenceWorkflowError(
+            "text_events style safe_margin_fraction must lie in [0, 0.2]"
+        )
+    return tuple(cues), TextStyleSpec(font_name, foreground, accent, scale, margin)
+
+
 def _music_spec(parameters: Mapping[str, object]) -> MusicSpec:
     values = dict(parameters)
     required = {"duration_policy", "gain_db"}
@@ -363,6 +498,8 @@ def _operations_from_plan(
     str | None,
     MusicSpec | None,
     FadeSpec | None,
+    tuple[TextEventCue, ...],
+    TextStyleSpec | None,
 ]:
     if len(plan.operations) < 2:
         raise SequenceWorkflowError("video-sequence requires at least two operations")
@@ -376,6 +513,9 @@ def _operations_from_plan(
     caption_source: str | None = None
     captions_from_narration = False
     captions_seen = False
+    text_events: tuple[TextEventCue, ...] = ()
+    text_style: TextStyleSpec | None = None
+    text_events_seen = False
     music_path: str | None = None
     music: MusicSpec | None = None
     fade: FadeSpec | None = None
@@ -451,6 +591,22 @@ def _operations_from_plan(
                 )
             captions_seen = True
             continue
+        if operation.kind == TEXT_EVENTS_KIND:
+            if text_events_seen:
+                raise SequenceWorkflowError(
+                    "video-sequence accepts at most one text_events operation"
+                )
+            if len(segments) < 2:
+                raise SequenceWorkflowError("text_events must follow all timeline segments")
+            if music_path is not None:
+                raise SequenceWorkflowError("text_events must precede music")
+            if operation.source is not None:
+                raise SequenceWorkflowError("text_events does not take a source")
+            if operation.start_seconds is not None or operation.end_seconds is not None:
+                raise SequenceWorkflowError("text_events timing belongs to its items")
+            text_events, text_style = _text_event_cues(operation.parameters)
+            text_events_seen = True
+            continue
         if operation.kind == MUSIC_KIND:
             if music_path is not None:
                 raise SequenceWorkflowError("video-sequence accepts at most one music operation")
@@ -476,7 +632,12 @@ def _operations_from_plan(
             fade = _fade_spec(operation.parameters)
             continue
         if operation.kind == IMAGE_KIND:
-            if captions_seen or music_path is not None or fade is not None:
+            if (
+                captions_seen
+                or text_events_seen
+                or music_path is not None
+                or fade is not None
+            ):
                 raise SequenceWorkflowError(
                     "all timeline segments must precede captions, music and fades"
                 )
@@ -500,7 +661,12 @@ def _operations_from_plan(
             raise SequenceWorkflowError(
                 f"video-sequence does not support operation kind: {operation.kind}"
             )
-        if captions_seen or music_path is not None or fade is not None:
+        if (
+            captions_seen
+            or text_events_seen
+            or music_path is not None
+            or fade is not None
+        ):
             raise SequenceWorkflowError(
                 "all timeline segments must precede captions, music and fades"
             )
@@ -553,6 +719,8 @@ def _operations_from_plan(
         music_path,
         music,
         fade,
+        text_events,
+        text_style,
     )
 
 
@@ -723,6 +891,8 @@ def run_sequence_workflow(
         music_path,
         music,
         fade,
+        text_events,
+        text_style,
     ) = _operations_from_plan(plan)
     if caption_source is not None:
         captions = _caption_cues_from_file(caption_source)
@@ -835,6 +1005,10 @@ def run_sequence_workflow(
                 compose_kwargs["narration_lead_in_seconds"] = narration_lead_in
             if captions:
                 compose_kwargs["captions"] = captions
+            if text_events:
+                compose_kwargs["text_events"] = text_events
+                if text_style is not None:
+                    compose_kwargs["text_style"] = text_style
             if music_path is not None and music is not None:
                 compose_kwargs["music_path"] = music_path
                 compose_kwargs["music_gain_db"] = music.gain_db
@@ -874,6 +1048,8 @@ def run_sequence_workflow(
             raise SequenceWorkflowError("compose returned unexpected narration metadata")
         if artifact.caption_count != len(captions):
             raise SequenceWorkflowError("compose returned unexpected caption metadata")
+        if artifact.text_event_count != len(text_events):
+            raise SequenceWorkflowError("compose returned unexpected text event metadata")
         if artifact.image_count != expected_image_count:
             raise SequenceWorkflowError("compose returned unexpected image metadata")
         expected_music = _normalized(music_path) if music_path is not None else None

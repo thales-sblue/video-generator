@@ -33,6 +33,19 @@ from video_generator.domain.prosody import (
     ProsodyError,
     plan_narration_units,
 )
+from video_generator.domain.editorial import (
+    DARK_DOCUMENTARY_V1,
+    DEFAULT_EDITORIAL_POLICY,
+    DEFAULT_HOOK_POLICY,
+    EditorialError,
+    EditorialPolicy,
+    HookPolicy,
+    NarrationBeat,
+    TextEvent,
+    VisualStyle,
+    plan_text_events,
+    read_beats,
+)
 from video_generator.domain.planning import (
     DEFAULT_RHYTHM_POLICY,
     AssetRequirement,
@@ -48,7 +61,11 @@ from video_generator.domain.planning import (
     apply_overrides,
     plan_scenes,
     plan_shots,
+    narration_slices,
+    plan_shot_text_events,
     shot_plan_to_edit_plan,
+    shot_timeline,
+    text_events_operation,
 )
 
 __all__ = [
@@ -94,6 +111,21 @@ __all__ = [
     "plan_scenes",
     "plan_shots",
     "shot_plan_to_edit_plan",
+    "narration_slices",
+    "plan_shot_text_events",
+    "shot_timeline",
+    "text_events_operation",
+    "DARK_DOCUMENTARY_V1",
+    "DEFAULT_EDITORIAL_POLICY",
+    "DEFAULT_HOOK_POLICY",
+    "EditorialError",
+    "EditorialPolicy",
+    "HookPolicy",
+    "NarrationBeat",
+    "TextEvent",
+    "VisualStyle",
+    "plan_text_events",
+    "read_beats",
 ]
 # NOTE: implementation lands contract-by-contract via TDD; planning.py defines
 # placeholders for the not-yet-built names so this import stays resolvable.

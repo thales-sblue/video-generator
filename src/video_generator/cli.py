@@ -36,8 +36,10 @@ from video_generator.subtitles import (
 )
 from video_generator.doctor import format_report, run_doctor
 from video_generator.domain import (
+    DARK_DOCUMENTARY_V1,
     ContractError,
     EditPlan,
+    HookPolicy,
     NarrativeScript,
     PlanningError,
     RenderManifest,
@@ -48,8 +50,10 @@ from video_generator.domain import (
     VideoRequest,
     apply_overrides,
     plan_scenes,
+    plan_shot_text_events,
     plan_shots,
     shot_plan_to_edit_plan,
+    text_events_operation,
 )
 from video_generator.manifests import (
     ManifestError,
@@ -321,6 +325,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_scenes_cmd.add_argument(
         "--assets", help="a JSON object mapping every asset_id to a local file path"
+    )
+    plan_scenes_cmd.add_argument(
+        "--semantic",
+        action="store_true",
+        help="read every narration slice as an editorial beat and let it drive "
+        "the visual query, the fallback queries and the shot type",
+    )
+    plan_scenes_cmd.add_argument(
+        "--hook-seconds",
+        type=float,
+        help="give the opening its own tighter rhythm and no asset reuse "
+        "(needs --semantic)",
+    )
+    plan_scenes_cmd.add_argument(
+        "--text-events",
+        help="also write the editorial emphasis layer as JSON at this path "
+        "(needs --semantic)",
     )
     plan_scenes_cmd.add_argument(
         "--force", action="store_true", help="overwrite existing output files"
@@ -1085,9 +1106,21 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
                 json.loads(Path(args.policy).expanduser().read_text(encoding="utf-8"))
             )
 
+        semantic = bool(getattr(args, "semantic", False))
+        hook_seconds = getattr(args, "hook_seconds", None)
+        text_events_path = getattr(args, "text_events", None)
+        if not semantic and (hook_seconds is not None or text_events_path is not None):
+            raise PlanningError("--hook-seconds and --text-events require --semantic")
+        hook_policy = HookPolicy(hook_seconds=hook_seconds) if hook_seconds else None
+
         scene_plan = plan_scenes(script, policy=policy, seed=args.seed)
         shot_plan, assets = plan_shots(
-            scene_plan, policy=policy, seed=args.seed, orientation=orientation
+            scene_plan,
+            policy=policy,
+            seed=args.seed,
+            orientation=orientation,
+            semantic=semantic,
+            hook_policy=hook_policy,
         )
 
         if args.overrides is not None:
@@ -1108,6 +1141,27 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
             out_dir / "shot-plan.json": shot_plan.to_json(),
             out_dir / "asset-requirements.json": assets.to_json(),
         }
+        events = ()
+        if semantic:
+            events = plan_shot_text_events(
+                scene_plan, shot_plan, hook_policy=hook_policy
+            )
+            if text_events_path is not None:
+                targets[Path(text_events_path).expanduser()] = (
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "script_id": script.script_id,
+                            "style": DARK_DOCUMENTARY_V1.to_dict(),
+                            "events": [e.to_dict() for e in events],
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        indent=2,
+                    )
+                    + "\n"
+                )
+
         edit_plan = None
         if args.emit_edit_plan is not None or args.assets is not None:
             if args.emit_edit_plan is None or args.assets is None:
@@ -1117,6 +1171,11 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
             )
             if not isinstance(bindings, dict):
                 raise PlanningError("--assets must be a JSON object of asset_id -> path")
+            extra = ()
+            if events:
+                extra = (
+                    text_events_operation(events, visual_style=DARK_DOCUMENTARY_V1),
+                )
             edit_plan = shot_plan_to_edit_plan(
                 shot_plan,
                 bindings,
@@ -1124,6 +1183,7 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
                 brief_id=f"{script.script_id}-brief",
                 output_path=str((out_dir / "video.mp4").resolve()),
                 target_format=target,
+                extra_operations=extra,
             )
             targets[Path(args.emit_edit_plan).expanduser()] = edit_plan.to_json()
 

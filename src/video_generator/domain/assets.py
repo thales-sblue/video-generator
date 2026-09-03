@@ -872,6 +872,11 @@ class ResolvedAsset:
     requirement: AssetRequirement
     score: float
     provenance: AssetProvenance
+    # Which of the requirement's candidate queries actually found this file,
+    # and what the search was reduced to after sanitisation. Both are audit
+    # trail: they turn "why is this picture here?" into a one-line answer.
+    matched_query: str | None = None
+    sanitized_query: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "asset_id", _text(self.asset_id, "asset_id"))
@@ -888,6 +893,14 @@ class ResolvedAsset:
             )
         if self.provenance.asset_id != self.asset_id:
             raise AssetResolutionError("provenance asset_id must match the resolved asset_id")
+        object.__setattr__(
+            self, "matched_query", _optional_text(self.matched_query, "matched_query")
+        )
+        object.__setattr__(
+            self,
+            "sanitized_query",
+            _optional_text(self.sanitized_query, "sanitized_query"),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -897,6 +910,8 @@ class ResolvedAsset:
             "requirement": self.requirement.to_dict(),
             "score": self.score,
             "provenance": self.provenance.to_dict(),
+            "matched_query": self.matched_query,
+            "sanitized_query": self.sanitized_query,
         }
 
     def to_json(self) -> str:
@@ -910,7 +925,7 @@ class ResolvedAsset:
                 "asset_id", "local_path", "candidate_id", "requirement",
                 "score", "provenance",
             },
-            optional=set(),
+            optional={"matched_query", "sanitized_query"},
         )
         return cls(
             asset_id=data["asset_id"],
@@ -919,6 +934,8 @@ class ResolvedAsset:
             requirement=AssetRequirement.from_dict(data["requirement"]),
             score=data["score"],
             provenance=AssetProvenance.from_dict(data["provenance"]),
+            matched_query=data.get("matched_query"),
+            sanitized_query=data.get("sanitized_query"),
         )
 
 

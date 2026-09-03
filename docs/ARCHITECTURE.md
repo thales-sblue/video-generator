@@ -67,6 +67,39 @@ motor adquire assets externos automaticamente; `asset-bindings.json`
 (`{asset_id: path}`) liga o resultado ao `shot_plan_to_edit_plan` sem mudar o
 `EditPlan`.
 
+`video_generator.domain.editorial` responde a pergunta que o planejador de
+ritmo nunca fez: *o que este trecho está tentando dizer, e o que o espectador
+deveria estar olhando enquanto ele é dito?* `NarrationBeat` é a leitura
+semântica de uma fatia de narração (conceito, entidades, emoção, intenção
+visual, queries candidatas, importância, papel editorial); `TextEvent` é a
+camada de ênfase na tela, deliberadamente **separada da legenda** — a legenda
+transcreve a voz, o evento levanta uma ideia; `HookPolicy` dá à abertura um teto
+próprio; `VisualStyle` é o brand kit reutilizável (`dark-documentary-v1`).
+Tudo é heurística lexical determinística sobre léxicos que são **dados** na
+`EditorialPolicy` — sem modelo, sem embedding, sem rede — para que um mapeamento
+ruim seja uma linha de edição e toda decisão fique auditável depois. O módulo é
+stdlib puro e não importa nenhum irmão do domínio: `planning` depende dele,
+nunca o contrário.
+
+Três regras dessa camada valem registro porque não são óbvias:
+
+- **As queries de asset saem em inglês; narração e `visual_intent` ficam no
+  idioma do roteiro.** Todo banco gratuito que o projeto alcança indexa em
+  inglês, então uma query em português é comparada contra metadata inglesa e
+  pontua perto de zero. Traduzir na fronteira da busca é a diferença entre
+  "uma foto do Einstein" e "uma foto de uma prova".
+- **Um termo presente em mais de 25% dos beats nunca lidera uma query**: ele é o
+  assunto do vídeo, não daquele trecho.
+- **Relevância antes de estética.** A identidade visual veste o asset escolhido
+  (tipografia, accent, margens, composição); ela nunca participa da escolha do
+  asset. `vignette_strength` é o único tratamento que toca a imagem e está
+  limitado a 0,35 justamente para que consistência não vire repintura.
+
+O tempo continua tendo dono único: um beat não guarda timing. `shot_timeline` e
+`narration_slices` *derivam* offsets e fatias do `ShotPlan` e do `ScenePlan`, e
+os `TextEvent` são cronometrados contra essa derivação — nunca contra uma
+segunda cópia que pode divergir.
+
 ### Configuração
 
 `config/default.toml` declara que processamento e render são locais e desabilita

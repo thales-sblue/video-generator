@@ -8,7 +8,9 @@ from pathlib import Path
 from video_generator.cli import main
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ROTEIRO = REPO_ROOT / "assets" / "desumanizando" / "video_01" / "roteiro_narracao.txt"
+# A versioned fixture, so the CLI contract is exercised in every checkout; the
+# operator's real narration lives in the unversioned ``assets/`` tree.
+ROTEIRO = REPO_ROOT / "tests" / "fixtures" / "roteiro_einstein_exame.txt"
 
 
 def _run(argv):

@@ -61,6 +61,41 @@ class CaptionCue:
     end_seconds: float
 
 
+TEXT_EVENT_POSITIONS = ("top", "middle", "lower")
+TEXT_EVENT_ANIMATIONS = ("fade", "pop", "slide", "highlight")
+
+
+@dataclass(frozen=True, slots=True)
+class TextEventCue:
+    """One piece of on-screen editorial emphasis, burned alongside the captions.
+
+    Not a caption: it does not transcribe the voice, it may overlap a caption
+    in time, and it carries its own placement, motion and weight.
+    """
+
+    text: str
+    start_seconds: float
+    end_seconds: float
+    position: str = "top"
+    animation: str = "fade"
+    emphasis: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TextStyleSpec:
+    """The typographic half of a video's visual identity.
+
+    Plain values, not a domain object: the adapter stays a boundary and the
+    brand kit that produced these lives in the domain.
+    """
+
+    font_name: str = "Sans"
+    foreground: str = "&H00EEF3F5"
+    accent: str = "&H003CA3E5"
+    emphasis_scale: float = 1.6
+    safe_margin_fraction: float = 0.06
+
+
 @dataclass(frozen=True, slots=True)
 class SequenceArtifact:
     source_paths: tuple[str, ...]
@@ -79,6 +114,9 @@ class SequenceArtifact:
     video_fade_out_seconds: float = 0.0
     narration_lead_in_seconds: float = 0.0
     music_duck_db: float | None = None
+    # Appended, never inserted: this dataclass is built positionally in places,
+    # so a new field goes on the end or it silently shifts every argument.
+    text_event_count: int = 0
 
 
 IMAGE_TIMELINE_FPS = 30
@@ -147,6 +185,82 @@ _CAPTION_ASS_HEADER = (
     "[Events]\n"
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
 )
+
+# The emphasis layer rides in the same script as the captions: one libass pass,
+# one set of pixel coordinates, and no second filter competing for the frame.
+# Two weights only — an accented headline and a quieter keyword — because a
+# hierarchy nobody can read at a glance is not a hierarchy.
+_EMPHASIS_STYLE_TEMPLATE = (
+    "Style: Emphasis,{font},{emphasis_size},{accent},{accent},&H00101010,&H80000000,"
+    "1,0,0,0,100,100,0,0,1,{outline},{shadow},{align},{margin_x},{margin_x},{margin_y},1\n"
+    "Style: Keyword,{font},{keyword_size},{foreground},{foreground},&H00101010,&H80000000,"
+    "0,0,0,0,100,100,0,0,1,{outline},{shadow},{align},{margin_x},{margin_x},{margin_y},1\n"
+)
+
+# ASS alignment numbers for the three bands an event may occupy. "lower" sits
+# above the caption band rather than in it, so the two layers never collide.
+_POSITION_ALIGNMENT = {"top": 8, "middle": 5, "lower": 2}
+
+
+def _inline_colour(style_colour: str) -> str:
+    """``&H00BBGGRR`` (a style value) -> ``&HBBGGRR&`` (an override value)."""
+
+    digits = style_colour.removeprefix("&H").removesuffix("&")
+    if len(digits) == 8:
+        digits = digits[2:]
+    return f"&H{digits}&"
+
+
+def _emphasis_styles(width: int, height: int, style: "TextStyleSpec") -> str:
+    """The Emphasis and Keyword styles, scaled to the delivery canvas."""
+
+    base = max(12, round(height * _CAPTION_FONT_FRACTION))
+    margin_x = max(8, round(width * style.safe_margin_fraction))
+    margin_y = max(8, round(height * style.safe_margin_fraction))
+    return _EMPHASIS_STYLE_TEMPLATE.format(
+        font=style.font_name,
+        emphasis_size=max(14, round(base * style.emphasis_scale)),
+        keyword_size=max(12, round(base * 1.15)),
+        accent=style.accent,
+        foreground=style.foreground,
+        outline=max(2, round(height / 240)),
+        shadow=max(1, round(height / 720)),
+        align=8,
+        margin_x=margin_x,
+        margin_y=margin_y,
+    )
+
+
+def _event_override(
+    cue: "TextEventCue", width: int, height: int, style: "TextStyleSpec"
+) -> str:
+    """The ASS override run that places and animates one emphasis event.
+
+    Four presets, each doing one legible thing. Nothing here is decoration for
+    its own sake: a number should land, a question should breathe in.
+    """
+
+    alignment = _POSITION_ALIGNMENT.get(cue.position, 8)
+    parts = [f"\\an{alignment}"]
+    if cue.animation == "pop":
+        # arrive slightly small and settle: reads as emphasis, not as bounce
+        parts.append("\\fad(90,160)\\fscx88\\fscy88")
+        parts.append("\\t(0,150,\\fscx104\\fscy104)\\t(150,260,\\fscx100\\fscy100)")
+    elif cue.animation == "slide":
+        margin_x = max(8, round(width * style.safe_margin_fraction))
+        margin_y = max(8, round(height * style.safe_margin_fraction))
+        centre_x = width // 2
+        y = {8: margin_y, 5: height // 2, 2: height - margin_y}.get(alignment, margin_y)
+        travel = max(12, round(width * 0.03))
+        parts.append(
+            f"\\move({centre_x - travel},{y},{centre_x},{y},0,220)\\fad(120,180)"
+        )
+    elif cue.animation == "highlight":
+        # the accent moves to the outline, so the word is ringed, not repainted
+        parts.append(f"\\fad(110,160)\\3c{_inline_colour(style.accent)}")
+    else:  # fade
+        parts.append("\\fad(200,220)")
+    return "{" + "".join(parts) + "}"
 
 
 def _caption_ass_header(width: int, height: int) -> str:
@@ -752,6 +866,8 @@ def compose_video_sequence(
     narration_path: str | Path | None = None,
     narration_lead_in_seconds: float = 0.0,
     captions: Sequence[CaptionCue] = (),
+    text_events: Sequence[TextEventCue] = (),
+    text_style: "TextStyleSpec | None" = None,
     music_path: str | Path | None = None,
     music_gain_db: float | None = None,
     music_fade_in_seconds: float = 0.0,
@@ -896,8 +1012,48 @@ def compose_video_sequence(
             raise FFmpegError("caption end_seconds must not exceed the sequence duration")
         resolved_captions.append((text, start, end))
         previous_end = end
+    if isinstance(text_events, (str, bytes)) or not isinstance(text_events, Sequence):
+        raise FFmpegError("text_events must be a sequence of TextEventCue values")
+    normalized_events = tuple(text_events)
+    if len(normalized_events) > 200:
+        raise FFmpegError("video sequence accepts at most 200 text events")
+    if not all(isinstance(cue, TextEventCue) for cue in normalized_events):
+        raise FFmpegError("text_events must contain only TextEventCue values")
+    resolved_events: list[tuple[TextEventCue, float, float]] = []
+    for cue in normalized_events:
+        if not isinstance(cue.text, str) or not cue.text.strip():
+            raise FFmpegError("text event text must be a non-empty string")
+        text = cue.text.strip()
+        if len(text) > 48:
+            raise FFmpegError("text event text must contain at most 48 characters")
+        if any(ord(character) < 32 for character in text):
+            raise FFmpegError("text event text must not contain control characters")
+        if any(character in text for character in "<>{}"):
+            # the same rule the captions obey: emphasis text is data and must
+            # never be able to become ASS override syntax
+            raise FFmpegError("text event text must not contain subtitle markup characters")
+        if cue.position not in TEXT_EVENT_POSITIONS:
+            raise FFmpegError(f"text event position must be one of {TEXT_EVENT_POSITIONS}")
+        if cue.animation not in TEXT_EVENT_ANIMATIONS:
+            raise FFmpegError(f"text event animation must be one of {TEXT_EVENT_ANIMATIONS}")
+        start = _time(cue.start_seconds, "text event start_seconds")
+        end = _time(cue.end_seconds, "text event end_seconds")
+        if end <= start or round(end * 1000) <= round(start * 1000):
+            raise FFmpegError("text event end_seconds must be at least 1 ms after start_seconds")
+        if end > duration:
+            raise FFmpegError("text event end_seconds must not exceed the sequence duration")
+        resolved_events.append((cue, start, end))
+    # Text events may overlap each other and the captions by design, but two
+    # emphases on screen at once is noise, so they are ordered and disjoint.
+    for (_a, _s1, e1), (_b, s2, _e2) in zip(resolved_events, resolved_events[1:]):
+        if s2 < e1:
+            raise FFmpegError("text events must be ordered and non-overlapping")
     if resolved_captions and canvas_size is None:
         raise FFmpegError("captions require a (width, height) canvas for pixel-accurate layout")
+    if resolved_events and canvas_size is None:
+        raise FFmpegError(
+            "text events require a (width, height) canvas for pixel-accurate layout"
+        )
     narration: Path | None = None
     narration_lead_in = _time(narration_lead_in_seconds, "narration_lead_in_seconds")
     if narration_path is None:
@@ -988,8 +1144,19 @@ def compose_video_sequence(
             delete=False,
         ) as reserved:
             temporary = Path(reserved.name)
-        if resolved_captions:
+        if resolved_captions or resolved_events:
             caption_width, caption_height = canvas_size  # type: ignore[misc]
+            style = text_style or TextStyleSpec()
+            header = _caption_ass_header(caption_width, caption_height)
+            if resolved_events:
+                # the extra styles belong in the [V4+ Styles] block, which ends
+                # where the [Events] block begins
+                header = header.replace(
+                    "\n\n[Events]\n",
+                    "\n" + _emphasis_styles(caption_width, caption_height, style)
+                    + "\n[Events]\n",
+                    1,
+                )
             with tempfile.NamedTemporaryFile(
                 mode="w",
                 encoding="utf-8",
@@ -999,13 +1166,19 @@ def compose_video_sequence(
                 delete=False,
             ) as caption_stream:
                 caption_file = Path(caption_stream.name)
-                caption_stream.write(
-                    _caption_ass_header(caption_width, caption_height)
-                )
+                caption_stream.write(header)
                 for text, start, end in resolved_captions:
                     caption_stream.write(
                         f"Dialogue: 0,{_ass_timestamp(start)},{_ass_timestamp(end)},"
                         f"Caption,,0,0,0,,{text}\n"
+                    )
+                for cue, start, end in resolved_events:
+                    override = _event_override(cue, caption_width, caption_height, style)
+                    name = "Emphasis" if cue.emphasis else "Keyword"
+                    # layer 1: emphasis draws over a caption when they coincide
+                    caption_stream.write(
+                        f"Dialogue: 1,{_ass_timestamp(start)},{_ass_timestamp(end)},"
+                        f"{name},,0,0,0,,{override}{cue.text.strip()}\n"
                     )
     except OSError as exc:
         if temporary is not None:
@@ -1226,6 +1399,7 @@ def compose_video_sequence(
         file_size_bytes=size,
         narration_source_path=str(narration) if narration is not None else None,
         caption_count=len(resolved_captions),
+        text_event_count=len(resolved_events),
         music_source_path=str(music) if music is not None else None,
         music_gain_db=gain,
         image_count=sum(1 for kind, _, _, _ in resolved_clips if kind == "image"),

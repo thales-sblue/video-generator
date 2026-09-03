@@ -5,13 +5,37 @@
   "description": "An explicit specification of the assets a ShotPlan needs, one entry per distinct asset (shots that reuse a source share an entry). Realises the future 'AssetPlan' candidate from AGENTS.md as a specification only: nothing is downloaded, and provenance becomes a contract when the engine acquires external assets automatically.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "plan_id", "shot_plan_id", "script_id", "orientation", "requirements"],
+  "required": [
+    "schema_version",
+    "plan_id",
+    "shot_plan_id",
+    "script_id",
+    "orientation",
+    "requirements"
+  ],
   "properties": {
-    "schema_version": {"const": 1},
-    "plan_id": {"type": "string", "minLength": 1},
-    "shot_plan_id": {"type": "string", "minLength": 1},
-    "script_id": {"type": "string", "minLength": 1},
-    "orientation": {"enum": ["landscape", "portrait", "square"]},
+    "schema_version": {
+      "const": 1
+    },
+    "plan_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "shot_plan_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "script_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "orientation": {
+      "enum": [
+        "landscape",
+        "portrait",
+        "square"
+      ]
+    },
     "requirements": {
       "type": "array",
       "minItems": 1,
@@ -19,22 +43,71 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "asset_id", "type", "query", "duration_needed_seconds",
-          "orientation", "purpose", "used_by"
+          "asset_id",
+          "type",
+          "query",
+          "duration_needed_seconds",
+          "orientation",
+          "purpose",
+          "used_by"
         ],
         "properties": {
-          "asset_id": {"type": "string", "minLength": 1},
-          "type": {"enum": ["image", "video"]},
-          "query": {"type": "string", "minLength": 1},
-          "duration_needed_seconds": {"type": "number", "exclusiveMinimum": 0},
-          "orientation": {"enum": ["landscape", "portrait", "square"]},
-          "purpose": {"type": "string", "minLength": 1},
-          "used_by": {
-            "type": "array", "minItems": 1,
-            "items": {"type": "string", "pattern": "^scene_[0-9]{2,}_shot_[0-9]{2,}$"}
+          "asset_id": {
+            "type": "string",
+            "minLength": 1
           },
-          "min_count": {"type": "integer", "minimum": 1},
-          "notes": {"type": ["string", "null"], "minLength": 1}
+          "type": {
+            "enum": [
+              "image",
+              "video"
+            ]
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "duration_needed_seconds": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "orientation": {
+            "enum": [
+              "landscape",
+              "portrait",
+              "square"
+            ]
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 1
+          },
+          "used_by": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^scene_[0-9]{2,}_shot_[0-9]{2,}$"
+            }
+          },
+          "min_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "queries": {
+            "description": "Ordered alternative search queries, best first. Empty means the single 'query' field is all there is.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     }

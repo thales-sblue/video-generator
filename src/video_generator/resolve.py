@@ -12,13 +12,14 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from video_generator.adapters.asset_providers import AssetProvider, ProviderError
 from video_generator.domain.assets import (
     DEFAULT_SCORING_POLICY,
+    SanitizedQuery,
     AssetProvenance,
     AssetResolutionError,
     AssetResolutionPlan,
@@ -152,88 +153,110 @@ def resolve_assets(
     recent_bags: list[frozenset[str]] = []
 
     for req in revised.requirements:
-        sq = sanitize_query(req.query, req.purpose, policy=scoring_policy)
-        if not sq.usable:
-            unresolved.append(
-                UnresolvedRequirement(
+        adjacent = frozenset().union(*recent_bags) if recent_bags else frozenset()
+
+        # A requirement may offer several ways of asking for the same idea. Try
+        # them best-first and keep the first that finds something the shot
+        # actually shares meaning with; a picture of an exam beats a picture of
+        # the person the exam happened to, and the fallbacks are what make that
+        # reachable without a human rewriting the query.
+        attempts: list[tuple[str, "SanitizedQuery", list]] = []
+        failure: UnresolvedRequirement | None = None
+        ranked: list = []
+        chosen_query: str | None = None
+        chosen_sq = None
+        for query in req.search_queries():
+            # A frequency-derived query is thin, so it is enriched with the
+            # shot's purpose. A requirement that states its own candidate
+            # queries has already been enriched — folding the purpose in there
+            # too would dilute a deliberate visual phrase with the narration's
+            # own vocabulary, which is how a search stops meaning anything.
+            context = "" if req.queries else req.purpose
+            sq = sanitize_query(query, context, policy=scoring_policy)
+            if not sq.usable:
+                attempts.append((query, sq, []))
+                continue
+            attempt_req = replace(req, query=query)
+            raw_candidates = []
+            for provider in providers:
+                try:
+                    raw_candidates.extend(
+                        provider.search(
+                            sq.terms,
+                            media_type=req.type,
+                            orientation=req.orientation,
+                            min_duration_seconds=req.duration_needed_seconds,
+                            limit=max_candidates_per_requirement,
+                        )
+                    )
+                except ProviderError:
+                    continue
+            # de-dup identical candidate ids, keep first occurrence
+            seen_ids: set[str] = set()
+            candidates = []
+            for candidate in raw_candidates:
+                if candidate.candidate_id in seen_ids:
+                    continue
+                seen_ids.add(candidate.candidate_id)
+                candidates.append(candidate)
+
+            scored = rank_candidates(
+                attempt_req,
+                candidates,
+                scoring_policy,
+                uses_by_candidate=uses_by_candidate,
+                adjacent_terms=adjacent,
+            )
+            attempts.append((query, sq, candidates))
+            # Structural fit (type / orientation / resolution / duration) is
+            # not a match: a candidate only earns a slot when it shares a real
+            # visual term with the shot.
+            eligible = [c for c in scored if has_semantic_support(c, scoring_policy)]
+            if eligible:
+                ranked = eligible
+                chosen_query = query
+                chosen_sq = sq
+                break
+
+        if not ranked:
+            # report against the best attempt: the furthest one got
+            usable = [(q, sq, cands) for q, sq, cands in attempts if sq.usable]
+            if not usable:
+                first_sq = attempts[0][1] if attempts else None
+                failure = UnresolvedRequirement(
                     asset_id=req.asset_id,
                     requirement=req,
                     reason="needs_editorial_override",
                     detail="query has too few meaningful terms after sanitisation",
-                    sanitized_query=sq.to_text() or None,
+                    sanitized_query=(first_sq.to_text() if first_sq else None) or None,
                 )
-            )
-            continue
-
-        raw_candidates = []
-        for provider in providers:
-            try:
-                raw_candidates.extend(
-                    provider.search(
-                        sq.terms,
-                        media_type=req.type,
-                        orientation=req.orientation,
-                        min_duration_seconds=req.duration_needed_seconds,
-                        limit=max_candidates_per_requirement,
+            else:
+                query, sq, candidates = max(usable, key=lambda row: len(row[2]))
+                if not candidates:
+                    failure = UnresolvedRequirement(
+                        asset_id=req.asset_id,
+                        requirement=req,
+                        reason="no_candidates",
+                        detail=(
+                            "no provider returned a candidate for any of the "
+                            f"{len(usable)} candidate queries"
+                        ),
+                        sanitized_query=sq.to_text() or None,
                     )
-                )
-            except ProviderError:
-                continue
-        # de-dup identical candidate ids, keep first occurrence
-        seen_ids: set[str] = set()
-        candidates = []
-        for candidate in raw_candidates:
-            if candidate.candidate_id in seen_ids:
-                continue
-            seen_ids.add(candidate.candidate_id)
-            candidates.append(candidate)
-
-        adjacent = frozenset().union(*recent_bags) if recent_bags else frozenset()
-        ranked = rank_candidates(
-            req,
-            candidates,
-            scoring_policy,
-            uses_by_candidate=uses_by_candidate,
-            adjacent_terms=adjacent,
-        )
-        if not ranked:
-            unresolved.append(
-                UnresolvedRequirement(
-                    asset_id=req.asset_id,
-                    requirement=req,
-                    reason="no_candidates" if not candidates else "no_compatible_candidate",
-                    detail=(
-                        "no provider returned a candidate"
-                        if not candidates
-                        else "every candidate was disqualified on type / duration / resolution"
-                    ),
-                    sanitized_query=sq.to_text() or None,
-                )
-            )
+                else:
+                    failure = UnresolvedRequirement(
+                        asset_id=req.asset_id,
+                        requirement=req,
+                        reason="no_semantic_match",
+                        detail=(
+                            "no candidate query found a candidate sharing a "
+                            "visual term with the shot; needs an editorial "
+                            "visual query"
+                        ),
+                        sanitized_query=sq.to_text() or None,
+                    )
+            unresolved.append(failure)
             continue
-
-        # Structural fit (type / orientation / resolution / duration) is not a
-        # match: a candidate only earns a slot when it shares a real visual term
-        # with the shot. Anything below the floor needs an editorial override.
-        eligible = [c for c in ranked if has_semantic_support(c, scoring_policy)]
-        if not eligible:
-            best = semantic_support(ranked[0])
-            unresolved.append(
-                UnresolvedRequirement(
-                    asset_id=req.asset_id,
-                    requirement=req,
-                    reason="no_semantic_match",
-                    detail=(
-                        "best candidate matched only on type / orientation / "
-                        f"resolution (semantic score {best:.2f} <= floor "
-                        f"{scoring_policy.min_semantic_score:.2f}); needs an "
-                        "editorial visual query"
-                    ),
-                    sanitized_query=sq.to_text() or None,
-                )
-            )
-            continue
-        ranked = eligible
 
         chosen_resolved: ResolvedAsset | None = None
         last_failure = ""
@@ -298,6 +321,8 @@ def resolve_assets(
                 requirement=req,
                 score=candidate.score,
                 provenance=provenance,
+                matched_query=chosen_query,
+                sanitized_query=(chosen_sq.to_text() if chosen_sq else None) or None,
             )
             uses_by_candidate[candidate.candidate_id] = (
                 uses_by_candidate.get(candidate.candidate_id, 0) + 1
@@ -316,7 +341,7 @@ def resolve_assets(
                     requirement=req,
                     reason="below_quality_floor",
                     detail=last_failure or "no candidate could be acquired and validated",
-                    sanitized_query=sq.to_text() or None,
+                    sanitized_query=(chosen_sq.to_text() if chosen_sq else None) or None,
                 )
             )
             continue

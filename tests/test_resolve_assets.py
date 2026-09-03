@@ -101,6 +101,109 @@ def _shot_context(shot_plan):
     return ctx
 
 
+class CandidateQueryFallbackTests(unittest.TestCase):
+    """A requirement may offer several ways of asking for the same idea. The
+    resolver tries them best-first and records the one that worked."""
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.out = Path(self._tmp.name) / "resolved"
+        self.addCleanup(self._tmp.cleanup)
+
+    def _requirement(self, query, queries=()):
+        return AssetRequirements(
+            plan_id="p", shot_plan_id="sp", script_id="s", orientation="landscape",
+            requirements=(
+                AssetRequirement(
+                    asset_id="asset_scene_01_01",
+                    type="image",
+                    query=query,
+                    duration_needed_seconds=4.0,
+                    orientation="landscape",
+                    purpose="mostrar: exame — beat 1/1",
+                    used_by=("scene_01_shot_01",),
+                    queries=tuple(queries),
+                ),
+            ),
+        )
+
+    def _resolve(self, requirements, catalogue):
+        return resolve_assets(
+            _plans()[2], requirements, [_FakeProvider("local_library", catalogue)],
+            out_dir=self.out, do_review_reuse=False,
+            clock=lambda: "2026-09-03T10:00:00Z",
+        )
+
+    EXAM = {
+        "id": "exam", "media_type": "image",
+        "tags": ["student", "written", "exam", "desk"],
+        "description": "a student taking a written exam",
+        "width": 1920, "height": 1080,
+    }
+
+    def test_falls_back_to_the_next_query_when_the_first_finds_nothing(self):
+        requirements = self._requirement(
+            "kangaroo skateboard parade",
+            ("kangaroo skateboard parade", "student taking a written exam"),
+        )
+        result = self._resolve(requirements, [self.EXAM])
+        self.assertEqual(len(result.plan.resolved), 1, result.plan.unresolved)
+        resolved = result.plan.resolved[0]
+        self.assertEqual(resolved.matched_query, "student taking a written exam")
+        self.assertEqual(resolved.candidate_id, "local_library:exam")
+
+    def test_the_primary_query_is_tried_first_and_recorded(self):
+        requirements = self._requirement(
+            "student taking a written exam",
+            ("student taking a written exam", "empty classroom with wooden desks"),
+        )
+        resolved = self._resolve(requirements, [self.EXAM]).plan.resolved[0]
+        self.assertEqual(resolved.matched_query, "student taking a written exam")
+
+    def test_the_winning_query_is_auditable_after_the_fact(self):
+        requirements = self._requirement(
+            "student taking a written exam", ("student taking a written exam",)
+        )
+        resolved = self._resolve(requirements, [self.EXAM]).plan.resolved[0]
+        self.assertTrue(resolved.sanitized_query)
+        # the sanitised form is what the provider was actually asked for
+        for term in resolved.sanitized_query.split():
+            self.assertIn(term, resolved.matched_query.lower())
+
+    def test_a_requirement_without_alternatives_behaves_exactly_as_before(self):
+        requirements = self._requirement("student taking a written exam")
+        result = self._resolve(requirements, [self.EXAM])
+        self.assertEqual(len(result.plan.resolved), 1)
+        self.assertEqual(
+            result.plan.resolved[0].matched_query, "student taking a written exam"
+        )
+
+    def test_every_query_failing_leaves_one_honest_unresolved_row(self):
+        requirements = self._requirement(
+            "kangaroo skateboard parade",
+            ("kangaroo skateboard parade", "submarine ballet rehearsal"),
+        )
+        result = self._resolve(requirements, [self.EXAM])
+        self.assertEqual(result.plan.resolved, ())
+        self.assertEqual(len(result.plan.unresolved), 1)
+        self.assertEqual(result.plan.unresolved[0].reason, "no_semantic_match")
+
+    def test_relevance_beats_structural_fit_across_candidate_queries(self):
+        # a big, perfectly-shaped picture of the wrong thing must still lose to
+        # the right thing, however many queries it takes to reach it
+        decoy = {
+            "id": "decoy", "media_type": "image",
+            "tags": ["sunset", "beach"], "description": "a sunset over a beach",
+            "width": 3840, "height": 2160,
+        }
+        requirements = self._requirement(
+            "kangaroo skateboard parade",
+            ("kangaroo skateboard parade", "student taking a written exam"),
+        )
+        resolved = self._resolve(requirements, [decoy, self.EXAM]).plan.resolved[0]
+        self.assertEqual(resolved.candidate_id, "local_library:exam")
+
+
 class ResolveAssetsTests(unittest.TestCase):
     def setUp(self):
         self._tmp = TemporaryDirectory()

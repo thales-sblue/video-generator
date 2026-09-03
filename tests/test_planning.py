@@ -7,9 +7,11 @@ and the Desumanizando acceptance run.
 
 import json
 import math
+import tempfile
 import unittest
 from pathlib import Path
 
+from video_generator.domain.editorial import EDITORIAL_ROLES, HookPolicy
 from video_generator.domain import (
     DEFAULT_RHYTHM_POLICY,
     AssetRequirement,
@@ -31,9 +33,22 @@ from video_generator.domain import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# The planner's invariants are properties of the planner, not of one script, so
+# they are asserted against a versioned fixture that every checkout has. The
+# real narration lives under the immutable, unversioned ``assets/`` tree, so a
+# test that reads it only runs where the operator actually has it.
+FIXTURE = REPO_ROOT / "tests" / "fixtures" / "roteiro_einstein_exame.txt"
 ROTEIRO = REPO_ROOT / "assets" / "desumanizando" / "video_01" / "roteiro_narracao.txt"
-# The first Desumanizando narration runs ~4 min 30 s at Kokoro speed 0.92.
+# Both narrations run ~4 min 30 s at Kokoro speed 0.92.
 DESUMANIZANDO_TOTAL_SECONDS = 270.0
+FIXTURE_TOTAL_SECONDS = 270.0
+
+
+def _fixture_script(total=FIXTURE_TOTAL_SECONDS):
+    return NarrativeScript.from_text(
+        "einstein-exame", FIXTURE.read_text(encoding="utf-8"),
+        total_duration_seconds=total,
+    )
 
 
 class RhythmPolicyTests(unittest.TestCase):
@@ -327,21 +342,15 @@ class PlanScenesTests(unittest.TestCase):
         )
         self.assertEqual(plan_scenes(script, seed=7).to_json(), plan_scenes(script, seed=7).to_json())
 
-    def test_desumanizando_yields_at_least_eight_scenes(self):
-        script = NarrativeScript.from_text(
-            "desumanizando-01", ROTEIRO.read_text(encoding="utf-8"),
-            total_duration_seconds=DESUMANIZANDO_TOTAL_SECONDS,
-        )
+    def test_a_full_length_script_yields_at_least_eight_scenes(self):
+        script = _fixture_script()
         plan = plan_scenes(script)
         self.assertGreaterEqual(len(plan.scenes), 8)
         plan.validate_against(script)
 
 
 def _script_for_shots(total=270.0):
-    return NarrativeScript.from_text(
-        "desumanizando-01", ROTEIRO.read_text(encoding="utf-8"),
-        total_duration_seconds=total,
-    )
+    return _fixture_script(total)
 
 
 class ShotContractTests(unittest.TestCase):
@@ -736,6 +745,38 @@ class ApplyOverridesTests(unittest.TestCase):
         self.assertEqual(req.type, "video")
         ar.validate_against(shp)
 
+    def test_retype_detaches_the_shot_from_a_shared_asset(self):
+        # a retype that changes the medium cannot leave the shot sharing a file
+        # with shots of the other medium
+        shared = next(
+            s for s in self.shot_plan.shots
+            if s.asset_type == "image"
+            and sum(1 for o in self.shot_plan.shots if o.asset_id == s.asset_id) > 1
+        )
+        siblings = [
+            s.shot_id for s in self.shot_plan.shots
+            if s.asset_id == shared.asset_id and s.shot_id != shared.shot_id
+        ]
+        _sp, shp, ar = apply_overrides(
+            self.scene_plan, self.shot_plan, self.assets,
+            {"shots": {shared.shot_id: {"shot_type": "interface"}}}, script=self.script,
+        )
+        changed = next(s for s in shp.shots if s.shot_id == shared.shot_id)
+        self.assertEqual(changed.asset_type, "video")
+        self.assertNotEqual(changed.asset_id, shared.asset_id)
+        self.assertIsNone(changed.reuse_of)
+        # the shots it left keep their own asset and stay images
+        for sibling_id in siblings:
+            sibling = next(s for s in shp.shots if s.shot_id == sibling_id)
+            self.assertEqual(sibling.asset_type, "image")
+            self.assertNotEqual(sibling.asset_id, changed.asset_id)
+        # and every requirement still holds exactly one medium
+        for req in ar.requirements:
+            media = {s.asset_type for s in shp.shots if s.shot_id in req.used_by}
+            self.assertEqual(len(media), 1)
+        shp.validate_against(self.scene_plan)
+        ar.validate_against(shp)
+
     def test_rejects_structural_and_unknown_keys(self):
         first = self.shot_plan.shots[0].shot_id
         for bad in (
@@ -877,12 +918,176 @@ class ShotPlanToEditPlanTests(unittest.TestCase):
                 )
 
 
-class DesumanizandoAcceptanceTests(unittest.TestCase):
-    def test_full_pipeline_meets_the_editorial_bar(self):
-        script = NarrativeScript.from_text(
-            "desumanizando-01", ROTEIRO.read_text(encoding="utf-8"),
-            total_duration_seconds=DESUMANIZANDO_TOTAL_SECONDS,
+class SemanticPlanningTests(unittest.TestCase):
+    """plan_shots(semantic=True): beats drive the query, the alternatives, the
+    shot type and the opening's density — and none of it happens by default."""
+
+    def setUp(self):
+        self.script = _fixture_script()
+        self.scene_plan = plan_scenes(self.script)
+
+    def _semantic(self, **kwargs):
+        return plan_shots(
+            self.scene_plan, orientation="landscape", semantic=True, **kwargs
         )
+
+    def test_the_default_planner_is_untouched_by_the_editorial_layer(self):
+        shot_plan, assets = plan_shots(self.scene_plan, orientation="landscape")
+        for shot in shot_plan.shots:
+            self.assertIsNone(shot.editorial_role)
+            self.assertEqual(shot.asset_queries, ())
+            self.assertIsNone(shot.beat_concept)
+        for req in assets.requirements:
+            self.assertEqual(req.queries, ())
+            # an unenriched requirement still offers exactly its one query
+            self.assertEqual(req.search_queries(), (req.query,))
+
+    def test_a_plan_written_before_the_editorial_layer_still_loads(self):
+        shot_plan, assets = plan_shots(self.scene_plan, orientation="landscape")
+        legacy_shots = json.loads(shot_plan.to_json())
+        for shot in legacy_shots["shots"]:
+            for key in ("editorial_role", "asset_queries", "beat_concept"):
+                shot.pop(key)
+        restored = ShotPlan.from_dict(legacy_shots)
+        self.assertEqual(restored, shot_plan)
+        legacy_assets = json.loads(assets.to_json())
+        for req in legacy_assets["requirements"]:
+            req.pop("queries")
+        self.assertEqual(AssetRequirements.from_dict(legacy_assets), assets)
+
+    def test_every_semantic_shot_carries_its_editorial_reading(self):
+        shot_plan, _assets = self._semantic()
+        for shot in shot_plan.shots:
+            self.assertIn(shot.editorial_role, EDITORIAL_ROLES)
+            self.assertTrue(shot.asset_queries)
+            self.assertEqual(shot.visual_query, shot.asset_queries[0])
+            self.assertTrue(shot.beat_concept)
+
+    def test_a_semantic_query_describes_a_scene_not_a_shot_type(self):
+        shot_plan, _assets = self._semantic()
+        for shot in shot_plan.shots:
+            # the old query led with the scale and the shot type; a semantic
+            # one leads with the thing the camera should be pointed at
+            self.assertFalse(shot.visual_query.startswith(shot.scale))
+            self.assertGreaterEqual(len(shot.visual_query.split()), 2)
+
+    def test_requirements_carry_the_fallback_queries(self):
+        shot_plan, assets = self._semantic()
+        by_id = {s.asset_id: s for s in reversed(shot_plan.shots)}
+        for req in assets.requirements:
+            self.assertTrue(req.queries)
+            self.assertEqual(req.search_queries()[0], req.query)
+            self.assertEqual(req.queries, by_id[req.asset_id].asset_queries)
+
+    def test_relevance_outranks_novelty_when_the_two_disagree(self):
+        # the frequency planner made every query unique by construction, which
+        # bought novelty with noise; the semantic planner reuses a concrete
+        # visual concept when the narration keeps talking about it
+        old_plan, _ = plan_shots(self.scene_plan, orientation="landscape")
+        new_plan, _ = self._semantic()
+        old_queries = [s.visual_query for s in old_plan.shots]
+        new_queries = [s.visual_query for s in new_plan.shots]
+        self.assertEqual(len(set(old_queries)), len(old_queries))
+        self.assertLess(len(set(new_queries)), len(new_queries))
+        # but repetition stays bounded: no query may own the whole video
+        worst = max(new_queries.count(q) for q in set(new_queries))
+        self.assertLess(worst / len(new_queries), 0.2)
+
+    def test_diversity_still_prevents_a_run_of_identical_pictures(self):
+        new_plan, _ = self._semantic()
+        queries = [s.visual_query for s in new_plan.shots]
+        adjacent = sum(1 for a, b in zip(queries, queries[1:]) if a == b)
+        self.assertLess(adjacent / len(queries), 0.1)
+        # and three in a row is never acceptable
+        for a, b, c in zip(queries, queries[1:], queries[2:]):
+            self.assertFalse(a == b == c)
+
+    def test_the_hook_is_denser_than_the_body(self):
+        hook = HookPolicy(hook_seconds=40.0, max_shot_seconds=4.0)
+        shot_plan, _assets = self._semantic(hook_policy=hook)
+        elapsed, inside, outside = 0.0, [], []
+        for shot in shot_plan.shots:
+            (inside if elapsed < hook.hook_seconds else outside).append(shot)
+            elapsed += shot.duration_seconds
+        self.assertTrue(inside and outside)
+        mean_in = sum(s.duration_seconds for s in inside) / len(inside)
+        mean_out = sum(s.duration_seconds for s in outside) / len(outside)
+        self.assertLess(mean_in, mean_out)
+        # denser, not metronomic: the opening still varies
+        spread = max(s.duration_seconds for s in inside) - min(
+            s.duration_seconds for s in inside
+        )
+        self.assertGreater(spread, 0.5)
+
+    def test_the_hook_never_reuses_an_asset(self):
+        hook = HookPolicy(hook_seconds=40.0, forbid_asset_reuse=True)
+        shot_plan, _assets = self._semantic(hook_policy=hook)
+        elapsed = 0.0
+        for shot in shot_plan.shots:
+            if elapsed >= hook.hook_seconds:
+                break
+            self.assertIsNone(shot.reuse_of, shot.shot_id)
+            elapsed += shot.duration_seconds
+
+    def test_a_shot_type_hint_biases_without_dictating(self):
+        shot_plan, _assets = self._semantic()
+        types = {}
+        for shot in shot_plan.shots:
+            types[shot.shot_type] = types.get(shot.shot_type, 0) + 1
+        # the hint must not collapse the palette
+        self.assertGreaterEqual(len(types), 5)
+        self.assertLess(max(types.values()) / len(shot_plan.shots), 0.4)
+
+    def test_semantic_planning_is_reproducible(self):
+        first_shots, first_assets = self._semantic()
+        again_shots, again_assets = self._semantic()
+        self.assertEqual(first_shots.to_json(), again_shots.to_json())
+        self.assertEqual(first_assets.to_json(), again_assets.to_json())
+
+    def test_semantic_documents_still_match_their_schemas(self):
+        shot_plan, assets = self._semantic()
+        checker = SchemaAgreementTests()
+        checker._check("shot-plan-v1.schema.json", json.loads(shot_plan.to_json()))
+        checker._check(
+            "asset-requirements-v1.schema.json", json.loads(assets.to_json())
+        )
+
+    def test_a_semantic_plan_converts_to_an_edit_plan_unchanged(self):
+        shot_plan, assets = self._semantic()
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            bindings = {}
+            for req in assets.requirements:
+                suffix = ".mp4" if req.type == "video" else ".jpg"
+                path = tmp / f"{req.asset_id}{suffix}"
+                path.write_bytes(b"x")
+                bindings[req.asset_id] = str(path)
+            plan = shot_plan_to_edit_plan(
+                shot_plan, bindings, plan_id="p", brief_id="b",
+                output_path=str(tmp / "out.mp4"),
+                target_format=TargetFormat(1920, 1080, "cover"),
+            )
+        self.assertEqual(len(plan.operations), len(shot_plan.shots))
+
+
+class EditorialBarTests(unittest.TestCase):
+    """The full-length acceptance bar: density, rhythm, variety, coverage and
+    byte-for-byte reproducibility. Asserted on the versioned fixture, and on the
+    operator's real narration when that (unversioned) asset is present."""
+
+    def test_full_pipeline_meets_the_editorial_bar(self):
+        self._assert_editorial_bar(_fixture_script())
+
+    @unittest.skipUnless(ROTEIRO.is_file(), "real narration asset not present in this checkout")
+    def test_real_narration_meets_the_editorial_bar(self):
+        self._assert_editorial_bar(
+            NarrativeScript.from_text(
+                "desumanizando-01", ROTEIRO.read_text(encoding="utf-8"),
+                total_duration_seconds=DESUMANIZANDO_TOTAL_SECONDS,
+            )
+        )
+
+    def _assert_editorial_bar(self, script):
         scene_plan = plan_scenes(script)
         shot_plan, assets = plan_shots(scene_plan, orientation="landscape")
         shot_plan.validate_against(scene_plan)
@@ -948,10 +1153,7 @@ class SchemaAgreementTests(unittest.TestCase):
         check_object(data, schema)
 
     def test_generated_documents_match_their_schemas(self):
-        script = NarrativeScript.from_text(
-            "desumanizando-01", ROTEIRO.read_text(encoding="utf-8"),
-            total_duration_seconds=DESUMANIZANDO_TOTAL_SECONDS,
-        )
+        script = _fixture_script()
         scene_plan = plan_scenes(script)
         shot_plan, assets = plan_shots(scene_plan, orientation="landscape")
         self._check("narrative-script-v1.schema.json", json.loads(script.to_json()))

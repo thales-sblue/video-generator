@@ -565,8 +565,12 @@ class SchemaShapeTests(unittest.TestCase):
         )
         payload = json.loads(plan.to_json())
         self.assertEqual(set(payload), set(self.schema["required"]))
-        self.assertEqual(
-            set(payload["resolved"][0]), self._required("resolved_asset")
+        # every required key is present, and nothing is emitted that the schema
+        # does not declare (optional properties are allowed to appear)
+        resolved_keys = set(payload["resolved"][0])
+        self.assertTrue(self._required("resolved_asset").issubset(resolved_keys))
+        self.assertTrue(
+            resolved_keys.issubset(set(self.schema["$defs"]["resolved_asset"]["properties"]))
         )
         self.assertEqual(
             set(payload["resolved"][0]["provenance"]), self._required("asset_provenance")
