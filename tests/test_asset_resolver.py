@@ -155,6 +155,30 @@ class SanitizeQueryTests(unittest.TestCase):
         self.assertNotIn("wide", result.terms)
         self.assertFalse(result.usable)
 
+    def test_accents_are_folded_so_query_matches_unaccented_metadata(self):
+        result = sanitize_query("wide photography, escritório, evidências", purpose="")
+        self.assertIn("escritorio", result.terms)
+        self.assertIn("evidencias", result.terms)
+
+    def test_mente_adverbs_and_abstract_fragments_are_dropped(self):
+        result = sanitize_query(
+            "detail b roll human, algo, completamente, absurdo",
+            purpose="mostrar: tenha / provavelmente — beat 2/3",
+        )
+        self.assertNotIn("completamente", result.terms)
+        self.assertNotIn("provavelmente", result.terms)
+        self.assertNotIn("algo", result.terms)
+        # only "absurdo" survives -> a single term, not enough to search on
+        self.assertEqual(result.terms, ("absurdo",))
+        self.assertFalse(result.usable)
+        self.assertEqual(result.reason, "needs_editorial_override")
+
+    def test_folding_lets_score_match_across_accent_spelling(self):
+        req = _requirement(query="wide establishing, escritório, mesa")
+        cand = _candidate(tags=("escritorio", "mesa", "trabalho"))
+        breakdown = score_candidate(req, cand, DEFAULT_SCORING_POLICY)
+        self.assertGreater(breakdown.components["query_match"], 0.0)
+
 
 class ScoreCandidateTests(unittest.TestCase):
     def test_wrong_media_type_disqualifies(self):

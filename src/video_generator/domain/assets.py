@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
@@ -185,19 +186,39 @@ _STRUCTURAL_WORDS = frozenset(
     """.split()
 )
 
-# Meta words that read like a concept but are useless as a visual query.
+# Meta words that read like a concept but are useless as a visual query:
+# meta nouns, high-frequency abstract adverbs / pronouns, and vague verbs that
+# a keyword slice of narration often lands on. Kept small and explicit — this is
+# minimal deterministic sanitisation, not NLP. ``-mente`` adverbs are also
+# dropped by a rule in ``_content_tokens``.
 _GENERIC_WORDS = frozenset(
     """
     outras outra outros outro palavra palavras coisa coisas ideia ideias algo
     alguma alguns algumas tema temas assunto assuntos conceito conceitos
     exemplo exemplos geral gerais varios varias diverso diversos etc parte
     partes aspecto aspectos ponto pontos forma formas modo modos maneira
+    alguem ninguem qualquer algum nenhum toda todo todas todos cada
+    esse essa esses essas aquele aquela aqueles aquelas assim ainda apenas
+    tanto tanta quanto quao muitas muitos pouca poucas pouco poucos
+    talvez porque entao agora antes depois sempre nunca hoje ontem
+    conhece defenda tenha consiga imagine coloque parece existe existem
+    fazemos gostamos imaginamos chegamos observamos analisamos
     """.split()
 )
 
+_ADVERB_MENTE = re.compile(r"^[a-z]{5,}mente$")  # tokens are accent-folded
+
+
+def _fold(token: str) -> str:
+    """Lowercase and strip diacritics so a PT-BR query term matches candidate
+    metadata regardless of accent spelling (``escritório`` == ``escritorio``)."""
+
+    decomposed = unicodedata.normalize("NFKD", token.lower())
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
 
 def _raw_tokens(text: str) -> list[str]:
-    return [m.group(0).lower() for m in _WORD.finditer(text or "")]
+    return [_fold(m.group(0)) for m in _WORD.finditer(text or "")]
 
 
 def _content_tokens(text: str, *, drop_generic: bool) -> tuple[str, ...]:
@@ -209,7 +230,7 @@ def _content_tokens(text: str, *, drop_generic: bool) -> tuple[str, ...]:
     for token in _raw_tokens(text):
         if len(token) < 4 or token in _STOPWORDS or token in _STRUCTURAL_WORDS:
             continue
-        if drop_generic and token in _GENERIC_WORDS:
+        if drop_generic and (token in _GENERIC_WORDS or _ADVERB_MENTE.match(token)):
             continue
         seen.setdefault(token, None)
     return tuple(seen)
