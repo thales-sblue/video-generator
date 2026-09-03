@@ -8,7 +8,9 @@ inline caption items before FFmpeg burns them.
 
 from __future__ import annotations
 
+import difflib
 import re
+import unicodedata
 
 SUPPORTED_FORMATS = ("srt", "vtt")
 CAPTION_MAX_CHARS = 160
@@ -108,6 +110,9 @@ _WEAK_TRAILING_WORDS = frozenset(
         "nas", "em", "num", "numa", "um", "uma", "uns", "umas", "que", "se",
         "com", "por", "para", "pra", "ao", "aos", "à", "às", "seu", "sua",
         "seus", "suas", "meu", "minha", "nosso", "nossa",
+        "contra", "sobre", "entre", "sem", "sob", "após", "apos", "desde",
+        "até", "ate", "perante", "mas", "porque", "pelo", "pela", "pelos",
+        "pelas", "nem", "como",
         "the", "an", "of", "to", "in", "on", "and", "or", "for", "with", "that",
         "as", "at", "by",
     }
@@ -282,6 +287,197 @@ def captions_from_text(
             )
         result.append((chunk, start, end))
     return tuple(result)
+
+
+# --- captions measured against the rendered voice -------------------------
+
+# How long a cue may stay on screen after its last word, while the speaker
+# pauses. Holding the line reads better than blinking it out and back in; more
+# than this and a stale caption sits over the next shot.
+CAPTION_HOLD_SECONDS = 1.2
+# Cues must not touch: the workflow rejects overlapping items.
+_CUE_EPSILON = 0.002
+
+
+def _normalize_word(word: str) -> str:
+    """Fold a word to the form used for matching script text to a transcript."""
+
+    decomposed = unicodedata.normalize("NFKD", word)
+    stripped = "".join(
+        character
+        for character in decomposed
+        if not unicodedata.combining(character) and (character.isalnum() or character.isspace())
+    )
+    return stripped.casefold().strip()
+
+
+def _script_chunks(text: str) -> list[str]:
+    """Split ``text`` into the same display chunks :func:`captions_from_text` uses."""
+
+    sentences = [part.strip() for part in _SENTENCE_SPLIT.split(text.strip()) if part.strip()]
+    chunks: list[str] = []
+    for sentence in sentences:
+        chunks.extend(_pack_sentence(sentence))
+    if not chunks:
+        raise SubtitleParseError("narration text has no caption-able content")
+    chunks = _rebalance_weak_breaks(chunks, CAPTION_CHUNK_MAX_CHARS)
+    if any(len(chunk) > CAPTION_MAX_CHARS for chunk in chunks):
+        raise SubtitleParseError("a derived caption chunk exceeds the 160-character ceiling")
+    return chunks
+
+
+def _match_script_to_transcript(
+    script_words: list[str], spoken: tuple[tuple[str, float, float], ...]
+) -> dict[int, tuple[float, float]]:
+    """Map script word positions onto measured spans, by longest-match diffing.
+
+    The transcript is the model's own reading of the audio: it drops words,
+    merges them, and spells numbers differently. Only the stretches that agree
+    with the script are trusted; everything else is left unmapped for the caller
+    to interpolate across.
+    """
+
+    left = [_normalize_word(word) for word in script_words]
+    right = [_normalize_word(word) for word, _, _ in spoken]
+    matcher = difflib.SequenceMatcher(a=left, b=right, autojunk=False)
+    mapped: dict[int, tuple[float, float]] = {}
+    for block in matcher.get_matching_blocks():
+        for offset in range(block.size):
+            _, start, end = spoken[block.b + offset]
+            mapped[block.a + offset] = (start, end)
+    return mapped
+
+
+def cues_from_word_timings(
+    text: str,
+    spoken_words: tuple[tuple[str, float, float], ...],
+    *,
+    total_seconds: float,
+) -> tuple[tuple[str, float, float], ...]:
+    """Time ``text`` as caption cues against words actually heard in the audio.
+
+    ``spoken_words`` are ``(word, start, end)`` triples measured in the rendered
+    narration WAV. The script is split into the same short display chunks as
+    :func:`captions_from_text`, then each chunk is anchored to the measured span
+    of its own first and last words: a cue starts when its first word is spoken
+    and ends when its last one does. Chunks whose words the transcript missed are
+    interpolated between the anchors on either side, so a recognition gap shifts
+    nothing outside it.
+
+    Unlike :func:`captions_from_text`, this does not model tempo -- it reads it
+    off the audio. Cues may leave gaps where the speaker pauses; a cue holds at
+    most :data:`CAPTION_HOLD_SECONDS` past its last word.
+    """
+
+    if (
+        isinstance(total_seconds, bool)
+        or not isinstance(total_seconds, (int, float))
+        or total_seconds <= 0
+    ):
+        raise SubtitleParseError("caption duration must be positive")
+    if not isinstance(spoken_words, tuple) or not spoken_words:
+        raise SubtitleParseError("alignment requires at least one measured word")
+    previous = 0.0
+    for word, start, end in spoken_words:
+        if not isinstance(word, str) or not word.strip():
+            raise SubtitleParseError("every measured word needs text")
+        if end < start or start < previous - 1e-9:
+            raise SubtitleParseError("measured words must be ordered and non-overlapping")
+        previous = end
+
+    chunks = _script_chunks(text)
+    counts = [len(chunk.split()) for chunk in chunks]
+    script_words = [word for chunk in chunks for word in chunk.split()]
+    mapped = _match_script_to_transcript(script_words, spoken_words)
+    if not mapped:
+        raise SubtitleParseError("no script word could be matched to the measured audio")
+
+    # per-chunk anchors from the first and last word of the chunk that matched
+    spans: list[tuple[float | None, float | None]] = []
+    position = 0
+    for count in counts:
+        indices = [index for index in range(position, position + count) if index in mapped]
+        if indices:
+            spans.append((mapped[indices[0]][0], mapped[indices[-1]][1]))
+        else:
+            spans.append((None, None))
+        position += count
+
+    # interpolate across the chunks the transcript never reached
+    known = [index for index, span in enumerate(spans) if span[0] is not None]
+    first_known, last_known = known[0], known[-1]
+    resolved: list[tuple[float, float]] = []
+    for index, (start, end) in enumerate(spans):
+        if start is not None and end is not None:
+            resolved.append((float(start), float(end)))
+            continue
+        before = max((item for item in known if item < index), default=None)
+        after = min((item for item in known if item > index), default=None)
+        if before is None:
+            resolved.append((0.0, float(spans[first_known][0] or 0.0)))
+        elif after is None:
+            resolved.append((float(spans[last_known][1] or 0.0), float(total_seconds)))
+        else:
+            low = float(spans[before][1] or 0.0)
+            high = float(spans[after][0] or total_seconds)
+            step = (high - low) / (after - before)
+            resolved.append(
+                (low + step * (index - before), low + step * (index - before + 1))
+            )
+
+    # make the track monotonic, hold each line a little into the pause after it,
+    # and keep every cue inside the timeline
+    cues: list[tuple[str, float, float]] = []
+    limit = float(total_seconds)
+    floor = 0.0
+    for index, (chunk, (start, end)) in enumerate(zip(chunks, resolved)):
+        start = min(max(start, floor), limit)
+        end = min(max(end, start + _CUE_EPSILON), limit)
+        next_start = resolved[index + 1][0] if index + 1 < len(resolved) else limit
+        hold_to = min(next_start - _CUE_EPSILON, end + CAPTION_HOLD_SECONDS, limit)
+        if hold_to > end:
+            end = hold_to
+        if end <= start:
+            raise SubtitleParseError("measured audio is too short to hold every caption chunk")
+        cues.append((chunk, start, end))
+        floor = end + _CUE_EPSILON
+        if floor >= limit and index + 1 < len(chunks):
+            raise SubtitleParseError("measured audio is too short to hold every caption chunk")
+    return tuple(cues)
+
+
+def _srt_timestamp(seconds: float) -> str:
+    total_ms = int(round(seconds * 1000))
+    hours, remainder = divmod(total_ms, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole:02d},{milliseconds:03d}"
+
+
+def render_srt(cues: tuple[tuple[str, float, float], ...]) -> str:
+    """Serialise ordered cues as SubRip text the parser accepts back.
+
+    Written so an alignment can be persisted, reviewed and re-read by the
+    sequence workflow instead of living only inside one render.
+    """
+
+    if not isinstance(cues, tuple) or not cues:
+        raise SubtitleParseError("rendering SRT requires at least one cue")
+    blocks: list[str] = []
+    previous_end = None
+    for index, (text, start, end) in enumerate(cues, start=1):
+        clean = " ".join(str(text).split())
+        if not clean:
+            raise SubtitleParseError("cue has no text")
+        if any(character in clean for character in "<>{}"):
+            raise SubtitleParseError("cue text must not contain markup characters")
+        if end <= start or (previous_end is not None and start < previous_end):
+            raise SubtitleParseError("cues must be ordered and non-overlapping")
+        previous_end = end
+        blocks.append(
+            f"{index}\n{_srt_timestamp(start)} {_ARROW} {_srt_timestamp(end)}\n{clean}\n"
+        )
+    return "\n".join(blocks)
 
 
 CUE_ALIGN_TOLERANCE_SECONDS = 0.5

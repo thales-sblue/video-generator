@@ -19,6 +19,12 @@ SUPPORTED_TOOLS = {"ffmpeg", "ffprobe"}
 KOKORO_LOCAL_ROOT = PROJECT_ROOT / ".local-tools" / "kokoro"
 KOKORO_ASSET_NAMES = ("kokoro-v1.0.onnx", "voices-v1.0.bin")
 
+WHISPER_LOCAL_ROOT = PROJECT_ROOT / ".local-tools" / "whisper"
+# A CTranslate2 Whisper conversion is a directory, not one file: these four
+# entries are what faster-whisper loads, and all four must be present before a
+# caption alignment is attempted.
+WHISPER_ASSET_NAMES = ("model.bin", "config.json", "tokenizer.json", "vocabulary.txt")
+
 
 class ToolResolutionError(RuntimeError):
     """Raised when a project-local tool exists but fails its integrity lock."""
@@ -102,6 +108,57 @@ def resolve_kokoro_assets() -> tuple[str, str] | None:
             raise ToolResolutionError(f"Kokoro asset is empty: {name}")
         resolved.append(str(candidate.resolve()))
     return resolved[0], resolved[1]
+
+
+def whisper_assets_root() -> Path:
+    """Return the directory that should hold local Whisper model directories."""
+
+    override = os.environ.get("WHISPER_HOME")
+    return Path(override).expanduser() if override else WHISPER_LOCAL_ROOT
+
+
+def resolve_whisper_model(name: str | None = None) -> str | None:
+    """Return the local CTranslate2 Whisper model directory, or ``None``.
+
+    ``None`` means no model is installed at all, which degrades caption
+    alignment only. Fails closed with :class:`ToolResolutionError` when a model
+    directory exists but is incomplete, so a half-downloaded model never
+    silently produces worse timings than the estimate it replaces.
+    """
+
+    root = whisper_assets_root()
+    if not root.exists():
+        return None
+    if name is not None:
+        if "/" in name or "\\" in name or name in ("", ".", ".."):
+            raise ToolResolutionError(f"invalid Whisper model name: {name!r}")
+        candidates = [root / name]
+    else:
+        try:
+            candidates = sorted(
+                (item for item in root.iterdir() if item.is_dir() and not item.is_symlink()),
+                key=lambda item: item.name,
+            )
+        except OSError as exc:
+            raise ToolResolutionError("cannot list the local Whisper directory") from exc
+        if not candidates:
+            return None
+    for candidate in candidates:
+        if not candidate.is_dir() or candidate.is_symlink():
+            raise ToolResolutionError(f"Whisper model directory is missing: {candidate.name}")
+        for asset in WHISPER_ASSET_NAMES:
+            path = candidate / asset
+            if path.is_symlink() or not path.is_file():
+                raise ToolResolutionError(
+                    f"Whisper model file is missing or not a regular file: "
+                    f"{candidate.name}/{asset}"
+                )
+            if path.stat().st_size == 0:
+                raise ToolResolutionError(
+                    f"Whisper model file is empty: {candidate.name}/{asset}"
+                )
+        return str(candidate.resolve())
+    return None
 
 
 def resolve_media_tool(

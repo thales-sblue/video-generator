@@ -40,10 +40,14 @@ Microsoft Store no `PATH` não serve.
   contra `config/ffmpeg-lock.json`. É ignorada pelo Git — se `.local-tools/`
   sumir, copie de outra checkout ou rebaixe conforme `README.md`. Nada é
   adicionado ao `PATH` global.
-- Node, HyperFrames e Kokoro (TTS local) são opcionais e hoje ausentes; sua
-  falta degrada só capacidades específicas, nunca contratos/planejamento/
-  diagnóstico. Kokoro: extra op-in `pip install -e .[tts]` + arquivos do modelo
-  em `.local-tools/kokoro/` (ou `KOKORO_HOME`); `doctor` reporta o estado.
+- Node e HyperFrames são opcionais e hoje ausentes; sua falta degrada só
+  capacidades específicas, nunca contratos/planejamento/diagnóstico.
+- Kokoro (TTS local): extra opt-in `pip install -e .[tts]` + arquivos do modelo
+  em `.local-tools/kokoro/` (ou `KOKORO_HOME`).
+- Aligner (Whisper local, legendas cronometradas no áudio real): extra opt-in
+  `pip install -e .[align]` + um modelo CTranslate2 em
+  `.local-tools/whisper/<modelo>/` (ou `WHISPER_HOME`), carregado com download
+  desabilitado. `doctor` reporta o estado dos dois.
 
 ## Comandos essenciais
 
@@ -56,10 +60,10 @@ $env:PYTHONPATH = "src"; .\.venv\Scripts\python.exe -m unittest discover -s test
 ```
 
 CLI disponível hoje: `doctor`, `inspect`, `preflight`, `extract-segment`,
-`extract-audio`, `narrate`, `plan-scenes`, `resolve-assets`, `execute-segment-plan`,
-`execute-sequence-plan`, `execute-final-sequence-plan`, `validate-segment`,
-`validate-audio`, `validate-manifest`, `validate-project`. Veja `README.md` para
-exemplos.
+`extract-audio`, `narrate` (com `--prosody`), `align-captions`, `plan-scenes`,
+`resolve-assets`, `execute-segment-plan`, `execute-sequence-plan`,
+`execute-final-sequence-plan`, `validate-segment`, `validate-audio`,
+`validate-manifest`, `validate-project`. Veja `README.md` para exemplos.
 
 A mesma suíte roda no GitHub Actions (`.github/workflows/ci.yml`) em `push` para
 `main` e em pull requests, com Python 3.12 e `PYTHONPATH=src`.

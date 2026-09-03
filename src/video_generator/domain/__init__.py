@@ -28,6 +28,11 @@ from video_generator.domain.models import (
     VideoBrief,
     VideoRequest,
 )
+from video_generator.domain.prosody import (
+    NarrationUnit,
+    ProsodyError,
+    plan_narration_units,
+)
 from video_generator.domain.planning import (
     DEFAULT_RHYTHM_POLICY,
     AssetRequirement,
@@ -55,6 +60,9 @@ __all__ = [
     "AssetResolutionPlan",
     "AssetScoringPolicy",
     "ContractError",
+    "NarrationUnit",
+    "ProsodyError",
+    "plan_narration_units",
     "DEFAULT_RHYTHM_POLICY",
     "DEFAULT_SCORING_POLICY",
     "ResolvedAsset",

@@ -17,6 +17,11 @@ dependencies = []
 # present. Floors match the documented `Kokoro(model, voices).create(...)` API and
 # `soundfile.write`; revisit against a verified local install.
 tts = ["kokoro-onnx>=0.4.0", "soundfile>=0.12.0"]
+# Opt-in local forced alignment used by `align-captions` / the aligner adapter.
+# Captions fall back to the text-tempo estimate without it. Needs a CTranslate2
+# Whisper conversion under .local-tools/whisper/ (or WHISPER_HOME); the model is
+# loaded with downloads disabled, so nothing is fetched at render time.
+align = ["faster-whisper>=1.1.0"]
 
 [project.scripts]
 video-generator = "video_generator.cli:main"

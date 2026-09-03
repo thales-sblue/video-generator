@@ -14,6 +14,7 @@ from video_generator.adapters import (
     extract_audio,
     extract_segment,
 )
+from video_generator.adapters.ffmpeg import _caption_ass_header
 
 
 class DetectSilencesTests(unittest.TestCase):
@@ -1279,6 +1280,41 @@ class FFmpegAdapterTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertEqual(list(root.glob(".*.mp4")), [])
 
+
+class CaptionStyleScalingTests(unittest.TestCase):
+    """A caption sized for 720p is unreadable at 1080p: the style scales."""
+
+    def test_the_720p_style_is_the_calibration_point(self):
+        style = _style_line(_caption_ass_header(1280, 720))
+        self.assertTrue(style.startswith("Style: Caption,Sans,32,"))
+        self.assertTrue(style.endswith(",1,3,1,2,140,140,72,1"))
+
+    def test_font_outline_shadow_and_margins_grow_with_the_canvas(self):
+        style = _style_line(_caption_ass_header(1920, 1080))
+        self.assertTrue(style.startswith("Style: Caption,Sans,48,"))
+        # BorderStyle stays 1 (outline + shadow, never an opaque box)
+        self.assertTrue(style.endswith(",1,4,2,2,210,210,108,1"))
+
+    def test_a_portrait_canvas_scales_off_its_own_height_and_width(self):
+        style = _style_line(_caption_ass_header(1080, 1920))
+        self.assertIn("Sans,85,", style)
+        self.assertTrue(style.endswith(",1,8,3,2,118,118,192,1"))
+
+    def test_a_tiny_canvas_still_gets_usable_floors(self):
+        style = _style_line(_caption_ass_header(64, 64))
+        _, _, tail = style.partition("Sans,")
+        font_size = int(tail.split(",", 1)[0])
+        self.assertGreaterEqual(font_size, 12)
+        self.assertTrue(style.endswith(",1,2,1,2,8,8,8,1"))
+
+    def test_the_play_resolution_matches_the_frame(self):
+        header = _caption_ass_header(1920, 1080)
+        self.assertIn("PlayResX: 1920", header)
+        self.assertIn("PlayResY: 1080", header)
+
+
+def _style_line(header):
+    return next(line for line in header.splitlines() if line.startswith("Style:"))
 
 if __name__ == "__main__":
     unittest.main()

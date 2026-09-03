@@ -19,6 +19,8 @@ from video_generator.tooling import (
     kokoro_assets_root,
     resolve_kokoro_assets,
     resolve_media_tool,
+    resolve_whisper_model,
+    whisper_assets_root,
 )
 
 
@@ -188,6 +190,39 @@ def _kokoro_status() -> ToolStatus:
     )
 
 
+def _aligner_status() -> ToolStatus:
+    """Report readiness of the optional local Whisper caption aligner."""
+
+    package_ready = importlib.util.find_spec("faster_whisper") is not None
+    try:
+        model_dir = resolve_whisper_model()
+    except ToolResolutionError as exc:
+        return ToolStatus(name="Aligner", available=False, note=f"local model rejected: {exc}")
+    if model_dir is None:
+        return ToolStatus(
+            name="Aligner",
+            available=False,
+            note=(
+                "optional caption alignment not set up; add a CTranslate2 Whisper "
+                f"model directory under {whisper_assets_root()}"
+                + ("" if package_ready else " and install the 'align' extra")
+            ),
+        )
+    if not package_ready:
+        return ToolStatus(
+            name="Aligner",
+            available=False,
+            path=model_dir,
+            note="model files present; install the 'align' extra (faster-whisper)",
+        )
+    return ToolStatus(
+        name="Aligner",
+        available=True,
+        path=model_dir,
+        note="local Whisper model and faster-whisper package detected",
+    )
+
+
 def run_doctor(config: AppConfig) -> DoctorReport:
     node = _command_status("Node", "node", ("--version",))
     tools = (
@@ -198,6 +233,7 @@ def run_doctor(config: AppConfig) -> DoctorReport:
         _command_status("Git", "git", ("--version",)),
         _hyperframes_status(node),
         _kokoro_status(),
+        _aligner_status(),
     )
     return DoctorReport(
         operating_system=platform.system(),

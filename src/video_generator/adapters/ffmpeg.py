@@ -120,6 +120,14 @@ def _ass_timestamp(seconds: float) -> str:
 # dark footage without a black bar across the frame. Caption text carries no
 # override braces (the workflow already rejects "<>{}"), so it can never become
 # script syntax.
+# The caption style is expressed as fractions of the delivery canvas, not fixed
+# pixels: a 32 px line that reads well at 720p is only 3% of a 1080p frame and
+# disappears on a phone. The fractions are calibrated so a 1280x720 canvas keeps
+# the numbers this project shipped with, and every larger canvas scales with it.
+_CAPTION_FONT_FRACTION = 0.04444  # 32 px at 720p, 48 px at 1080p
+_CAPTION_SIDE_MARGIN_FRACTION = 0.109375  # 140 px at 1280 wide
+_CAPTION_BOTTOM_MARGIN_FRACTION = 0.1  # 72 px at 720 tall
+
 _CAPTION_ASS_HEADER = (
     "[Script Info]\n"
     "ScriptType: v4.00+\n"
@@ -133,12 +141,31 @@ _CAPTION_ASS_HEADER = (
     "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
     "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
     "MarginR, MarginV, Encoding\n"
-    "Style: Caption,Sans,32,&H00FFFFFF,&H00FFFFFF,&H00101010,&H80000000,"
-    "0,0,0,0,100,100,0,0,1,3,1,2,140,140,72,1\n"
+    "Style: Caption,Sans,{font_size},&H00FFFFFF,&H00FFFFFF,&H00101010,&H80000000,"
+    "0,0,0,0,100,100,0,0,1,{outline},{shadow},2,{margin_x},{margin_x},{margin_y},1\n"
     "\n"
     "[Events]\n"
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
 )
+
+
+def _caption_ass_header(width: int, height: int) -> str:
+    """Render the caption style scaled to the delivery canvas.
+
+    A burned caption competes with whatever is behind it, so the outline and the
+    shadow grow with the frame too: white text over a bright photo is only
+    readable because of them.
+    """
+
+    return _CAPTION_ASS_HEADER.format(
+        width=width,
+        height=height,
+        font_size=max(12, round(height * _CAPTION_FONT_FRACTION)),
+        outline=max(2, round(height / 240)),
+        shadow=max(1, round(height / 720)),
+        margin_x=max(8, round(width * _CAPTION_SIDE_MARGIN_FRACTION)),
+        margin_y=max(8, round(height * _CAPTION_BOTTOM_MARGIN_FRACTION)),
+    )
 
 
 def _fit_filter(fit: str, width: int, height: int) -> str:
@@ -462,6 +489,162 @@ def extract_audio(
     except OSError as exc:
         raise FFmpegError(f"could not inspect published output: {output}") from exc
     return AudioArtifact(str(source), str(output), 48000, 2, size)
+
+
+MAX_JOINED_SEGMENTS = 400
+
+
+def join_audio_segments(
+    segments: Sequence[tuple[str | Path, float]],
+    output_path: str | Path,
+    *,
+    lead_in_seconds: float = 0.0,
+    timeout_seconds: float = 600,
+) -> AudioArtifact:
+    """Join narration segments into one 48 kHz stereo WAV with explicit pauses.
+
+    ``segments`` is an ordered sequence of ``(wav_path, pause_after_seconds)``
+    pairs: each file is decoded, padded with exactly its own silence, and the
+    padded pieces are concatenated. ``lead_in_seconds`` prepends silence before
+    the first word so the timeline can open on an image before the voice starts.
+
+    The pauses are the whole point: a script synthesised as one block gets the
+    engine's own uniform spacing, while joining per-unit renders lets the caller
+    decide where the voice breathes. Every path is passed to FFmpeg as a
+    structured argument; nothing is interpolated into a shell or a filter path.
+    """
+
+    items = list(segments)
+    if not items:
+        raise FFmpegError("joining audio requires at least one segment")
+    if len(items) > MAX_JOINED_SEGMENTS:
+        raise FFmpegError(f"at most {MAX_JOINED_SEGMENTS} segments can be joined")
+    lead_in = _time(lead_in_seconds, "lead_in_seconds")
+    timeout = _time(timeout_seconds, "timeout_seconds")
+    if timeout == 0:
+        raise FFmpegError("timeout_seconds must be greater than zero")
+
+    output = Path(output_path).expanduser().resolve()
+    if output.suffix.lower() != ".wav":
+        raise FFmpegError("joining audio requires a .wav output_path")
+    if output.exists():
+        raise FFmpegError(f"output already exists: {output}")
+
+    sources: list[Path] = []
+    gaps: list[float] = []
+    for index, item in enumerate(items):
+        try:
+            raw_path, raw_gap = item
+        except (TypeError, ValueError) as exc:
+            raise FFmpegError(
+                f"segment {index} must be a (path, pause_after_seconds) pair"
+            ) from exc
+        source = Path(raw_path).expanduser().resolve()
+        if not source.is_file():
+            raise FFmpegError(f"segment {index} source does not exist: {source}")
+        if os.path.normcase(str(source)) == os.path.normcase(str(output)):
+            raise FFmpegError("output_path must not overwrite a segment source")
+        gap = _time(raw_gap, f"segment {index} pause_after_seconds")
+        if gap > 30:
+            raise FFmpegError(f"segment {index} pause must be at most 30 seconds")
+        sources.append(source)
+        gaps.append(gap)
+
+    try:
+        executable = resolve_media_tool("ffmpeg", path_lookup=shutil.which)
+    except ToolResolutionError as exc:
+        raise FFmpegError(str(exc)) from exc
+    if executable is None:
+        raise FFmpegError("ffmpeg is not available locally or on PATH")
+
+    steps: list[str] = []
+    labels: list[str] = []
+    for index, gap in enumerate(gaps):
+        label = f"s{index}"
+        chain = f"[{index}:a]aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=stereo"
+        if gap > 0:
+            chain += f",apad=pad_dur={gap:.3f}"
+        steps.append(f"{chain}[{label}]")
+        labels.append(label)
+    joined = "".join(f"[{label}]" for label in labels)
+    steps.append(f"{joined}concat=n={len(labels)}:v=0:a=1[voice]")
+    final_label = "voice"
+    if lead_in > 0:
+        delay_ms = int(round(lead_in * 1000))
+        steps.append(f"[voice]adelay={delay_ms}:all=1[out]")
+        final_label = "out"
+    filter_complex = ";".join(steps)
+
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{output.stem}-join-",
+            suffix=".wav",
+            dir=output.parent,
+            delete=False,
+        ) as reserved:
+            temporary = Path(reserved.name)
+    except OSError as exc:
+        raise FFmpegError(f"could not prepare output path: {output}") from exc
+
+    command = [executable, "-v", "error", "-nostdin", "-y"]
+    for source in sources:
+        command.extend(["-i", str(source)])
+    command.extend(
+        [
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            f"[{final_label}]",
+            "-vn",
+            "-sn",
+            "-dn",
+            "-c:a",
+            "pcm_s16le",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            str(temporary),
+        ]
+    )
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _cleanup(temporary)
+        raise FFmpegError("ffmpeg timed out while joining narration segments") from exc
+    except OSError as exc:
+        _cleanup(temporary)
+        raise FFmpegError(
+            f"ffmpeg could not join narration segments: {type(exc).__name__}"
+        ) from exc
+
+    if completed.returncode != 0:
+        _cleanup(temporary)
+        detail = (completed.stderr or completed.stdout).strip()
+        suffix = f": {detail}" if detail else ""
+        raise FFmpegError(f"ffmpeg exited with {completed.returncode}{suffix}")
+    if not temporary.is_file() or temporary.stat().st_size == 0:
+        _cleanup(temporary)
+        raise FFmpegError("ffmpeg reported success without creating a non-empty audio artifact")
+    try:
+        os.link(temporary, output)
+    except OSError as exc:
+        _cleanup(temporary)
+        raise FFmpegError(f"could not publish output without overwriting: {output}") from exc
+    _cleanup(temporary)
+    try:
+        size = output.stat().st_size
+    except OSError as exc:
+        raise FFmpegError(f"could not inspect published output: {output}") from exc
+    return AudioArtifact(str(sources[0]), str(output), 48000, 2, size)
 
 
 # Defaults for :func:`detect_silences`. -35 dBFS sits below a synthesised voice
@@ -817,7 +1000,7 @@ def compose_video_sequence(
             ) as caption_stream:
                 caption_file = Path(caption_stream.name)
                 caption_stream.write(
-                    _CAPTION_ASS_HEADER.format(width=caption_width, height=caption_height)
+                    _caption_ass_header(caption_width, caption_height)
                 )
                 for text, start, end in resolved_captions:
                     caption_stream.write(

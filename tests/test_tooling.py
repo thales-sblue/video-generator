@@ -116,5 +116,55 @@ class KokoroAssetResolutionTests(unittest.TestCase):
                 self.assertIsNotNone(tooling.resolve_kokoro_assets())
 
 
+class WhisperModelResolutionTests(unittest.TestCase):
+    def _install(self, root, name):
+        model = root / name
+        model.mkdir(parents=True)
+        for asset in tooling.WHISPER_ASSET_NAMES:
+            (model / asset).write_bytes(b"x")
+        return model
+
+    def test_returns_none_when_nothing_is_installed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "whisper"
+            with patch.object(tooling, "WHISPER_LOCAL_ROOT", root):
+                self.assertIsNone(tooling.resolve_whisper_model())
+            root.mkdir()
+            with patch.object(tooling, "WHISPER_LOCAL_ROOT", root):
+                self.assertIsNone(tooling.resolve_whisper_model())
+
+    def test_picks_the_first_complete_model_and_fails_closed_on_a_partial_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "whisper"
+            model = self._install(root, "faster-whisper-medium")
+            with patch.object(tooling, "WHISPER_LOCAL_ROOT", root):
+                self.assertEqual(tooling.resolve_whisper_model(), str(model.resolve()))
+                (model / "tokenizer.json").unlink()
+                with self.assertRaisesRegex(tooling.ToolResolutionError, "tokenizer.json"):
+                    tooling.resolve_whisper_model()
+                (model / "tokenizer.json").write_bytes(b"")
+                with self.assertRaisesRegex(tooling.ToolResolutionError, "empty"):
+                    tooling.resolve_whisper_model()
+
+    def test_rejects_a_model_name_that_escapes_the_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "whisper"
+            self._install(root, "small")
+            with patch.object(tooling, "WHISPER_LOCAL_ROOT", root):
+                for name in ("..", "../elsewhere", "a/b", ""):
+                    with self.subTest(name=name):
+                        with self.assertRaises(tooling.ToolResolutionError):
+                            tooling.resolve_whisper_model(name)
+                self.assertIsNotNone(tooling.resolve_whisper_model("small"))
+
+    def test_honours_the_whisper_home_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "elsewhere"
+            self._install(root, "tiny")
+            with patch.dict("os.environ", {"WHISPER_HOME": str(root)}, clear=False):
+                self.assertEqual(tooling.whisper_assets_root(), root)
+                self.assertIsNotNone(tooling.resolve_whisper_model())
+
+
 if __name__ == "__main__":
     unittest.main()

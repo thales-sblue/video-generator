@@ -41,11 +41,20 @@ letter-boxed no canvas dos clipes e podem receber um Ken Burns determinístico
   FFmpeg é necessário apenas para operações de mídia e ffprobe para inspeção,
   preflight e validação técnica.
 
-Nenhuma dependência Python de runtime é necessária. A narração local a partir de
-texto (futura) é opt-in: `pip install -e .[tts]` instala `kokoro-onnx` e
-`soundfile`, e os arquivos do modelo (`kokoro-v1.0.onnx`, `voices-v1.0.bin`) vão
-em `.local-tools/kokoro/` (ou no diretório de `KOKORO_HOME`). Enquanto faltarem,
-`doctor` reporta Kokoro como `missing` e nada mais é afetado.
+Nenhuma dependência Python de runtime é necessária. Duas capacidades locais são
+opt-in e falham fechado, sem afetar contratos, planejamento ou diagnóstico:
+
+- **Narração** — `pip install -e .[tts]` instala `kokoro-onnx` e `soundfile`, e os
+  arquivos do modelo (`kokoro-v1.0.onnx`, `voices-v1.0.bin`) vão em
+  `.local-tools/kokoro/` (ou no diretório de `KOKORO_HOME`).
+- **Alinhamento de legendas** — `pip install -e .[align]` instala
+  `faster-whisper`, e um modelo Whisper convertido para CTranslate2 (os quatro
+  arquivos `model.bin`, `config.json`, `tokenizer.json`, `vocabulary.txt`) vai em
+  `.local-tools/whisper/<modelo>/` (ou no diretório de `WHISPER_HOME`). O modelo é
+  carregado com download desabilitado: nada sai da máquina em tempo de render.
+
+Enquanto faltarem, `doctor` reporta `Kokoro` / `Aligner` como `missing` e nada
+mais é afetado.
 
 O Windows x64 deste ambiente usa o build `n8.1.2-50-g1a748fe2cd-20260829` do
 ramo estável 8.1, LGPL/shared, instalado somente em `.local-tools/` e ignorado
@@ -84,6 +93,8 @@ python -m video_generator extract-segment inputs\clip.mp4 output\precise.mp4 --s
 python -m video_generator extract-audio inputs\clip.mp4 output\audio.wav --json
 python -m video_generator narrate output\narration.wav --text "Primeira linha do roteiro." --voice af_heart --json
 python -m video_generator narrate output\narration.wav --text-file inputs\script.txt --lang pt-br --json
+python -m video_generator narrate output\narration.wav --text-file inputs\script.txt --lang pt-br --voice pm_alex --prosody --lead-in-seconds 0.6 --units-out output\narration-units.json --json
+python -m video_generator align-captions output\narration.wav --text-file inputs\script.txt --out output\captions.srt --language pt --words-out output\narration-words.json --json
 python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\roteiro_narracao.txt --total-duration 270 --target 1920x1080:cover --seed 20260902 --out-dir output
 python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\roteiro_narracao.txt --total-duration 270 --target 1920x1080:cover --seed 20260902 --overrides projects\desumanizando_01\shot-overrides.json --out-dir output --force
 python -m video_generator resolve-assets --shot-plan output\shot-plan.json --asset-requirements output\asset-requirements.json --library assets\library --out-dir output\resolved-assets --json
@@ -148,6 +159,30 @@ normalizada pelo FFmpeg travado para o mesmo WAV 48 kHz/estéreo/PCM 16-bit que 
 operação `narration` consome. O artifact registra voz, velocidade, idioma e o
 SHA-256 do texto (o Kokoro é determinístico para essas entradas). Sucesso técnico
 não é revisão auditiva: ela permanece `not_performed`.
+
+`narrate --prosody` fala o roteiro **unidade por unidade** em vez de sintetizar o
+texto inteiro como um bloco homogêneo. `domain/prosody.py` decide as unidades a
+partir da pontuação e do formato dos parágrafos: um parágrafo curto isolado vira
+um *beat* (falado mais devagar, com silêncio antes e depois, para a frase de
+impacto aterrissar), uma sequência de frases curtas vira uma *run* (falada um
+pouco mais rápido, porque uma lista perde o ritmo se cada fragmento for
+sintetizado e preenchido separadamente), e o resto recebe a pausa de frase ou de
+parágrafo. O adapter FFmpeg junta as unidades com exatamente o silêncio pedido
+(`join_audio_segments`) e `--lead-in-seconds` abre a faixa com silêncio, para a
+timeline começar numa imagem antes da voz. `--units-out` grava onde cada unidade
+caiu no WAV final, **medido** com ffprobe, não estimado.
+
+`align-captions` cronometra o roteiro contra a narração já renderizada. Transcreve
+o WAV com o Whisper local (`word_timestamps`), casa a sequência de palavras
+reconhecidas com a do roteiro por diff de blocos iguais — acentos e caixa são
+normalizados — e ancora cada legenda no span medido da sua primeira e da sua
+última palavra. Trechos que a transcrição não alcançou são interpolados entre as
+âncoras vizinhas, então uma falha de reconhecimento não desloca nada fora dela.
+Uma legenda segura até 1,2 s dentro da pausa seguinte em vez de piscar. Como um
+decoder costuma reportar a primeira palavra em 0,0 mesmo quando a gravação abre
+em silêncio, o comando mede o silêncio inicial com `silencedetect` e nunca põe a
+primeira legenda antes da voz. Diferente de `captions_from_text`, isto não modela
+o ritmo — lê o ritmo do áudio.
 
 `plan-scenes` transforma um roteiro narrado em um plano visual denso **antes** do
 `EditPlan`, de forma pura e determinística (sem FFmpeg, sem download de asset, sem

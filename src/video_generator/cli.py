@@ -12,6 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from video_generator.adapters import (
+    AlignerError,
     AudioArtifact,
     FFmpegError,
     KokoroError,
@@ -19,12 +20,20 @@ from video_generator.adapters import (
     NarrationArtifact,
     ProbeError,
     SegmentArtifact,
+    detect_silences,
     extract_audio,
     extract_segment,
     probe_media,
     synthesize_narration,
+    transcribe_words,
 )
 from video_generator.config import ConfigurationError, load_config
+from video_generator.narration import NarrationError, render_prosodic_narration
+from video_generator.subtitles import (
+    SubtitleParseError,
+    cues_from_word_timings,
+    render_srt,
+)
 from video_generator.doctor import format_report, run_doctor
 from video_generator.domain import (
     ContractError,
@@ -139,6 +148,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=300,
         help="maximum normalisation time (default: 300)",
+    )
+    narrate.add_argument(
+        "--prosody",
+        action="store_true",
+        help="speak the script unit by unit with planned pauses instead of one flat block",
+    )
+    narrate.add_argument(
+        "--lead-in-seconds",
+        type=float,
+        default=0.0,
+        help="silence before the first word, with --prosody (default: 0)",
+    )
+    narrate.add_argument(
+        "--units-out",
+        help="with --prosody, also write the measured per-unit layout as JSON here",
     )
     narrate.add_argument("--json", action="store_true", help="print artifact metadata as JSON")
     execute_segment = subparsers.add_parser(
@@ -302,6 +326,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="overwrite existing output files"
     )
     plan_scenes_cmd.add_argument("--json", action="store_true", help="print the summary as JSON")
+
+    align_captions_cmd = subparsers.add_parser(
+        "align-captions",
+        help="time a script as captions against a rendered narration WAV (optional Whisper)",
+    )
+    align_captions_cmd.add_argument("audio", help="the rendered narration .wav to measure")
+    align_captions_text = align_captions_cmd.add_mutually_exclusive_group(required=True)
+    align_captions_text.add_argument("--text", help="the spoken script")
+    align_captions_text.add_argument("--text-file", help="path to a UTF-8 file with the script")
+    align_captions_cmd.add_argument("--out", required=True, help="new .srt path; existing files are refused")
+    align_captions_cmd.add_argument("--language", default="pt", help="spoken language code (default: pt)")
+    align_captions_cmd.add_argument("--model", help="Whisper model directory name under .local-tools/whisper")
+    align_captions_cmd.add_argument(
+        "--words-out", help="also write the raw measured word timings as JSON here"
+    )
+    align_captions_cmd.add_argument("--json", action="store_true", help="print the summary as JSON")
 
     resolve_assets_cmd = subparsers.add_parser(
         "resolve-assets",
@@ -696,6 +736,41 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 2
         else:
             text = args.text
+        if args.prosody:
+            try:
+                narration = render_prosodic_narration(
+                    text,
+                    args.output,
+                    voice=args.voice,
+                    lang=args.lang,
+                    base_speed=args.speed,
+                    lead_in_seconds=args.lead_in_seconds,
+                    timeout_seconds=args.timeout_seconds,
+                )
+            except NarrationError as exc:
+                print(f"Narration error: {exc}", file=sys.stderr)
+                return 2
+            payload = narration.to_dict()
+            if args.units_out:
+                try:
+                    Path(args.units_out).expanduser().write_text(
+                        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                except OSError as exc:
+                    print(f"Narration error: cannot write units: {exc}", file=sys.stderr)
+                    return 2
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            else:
+                print(f"Narration: {narration.output_path}")
+                print(f"Units: {len(narration.units)} ({narration.voice}, {narration.lang})")
+                print(
+                    f"Duration: {narration.total_seconds:.3f} s "
+                    f"({narration.spoken_seconds:.3f} s spoken, "
+                    f"{narration.pause_seconds:.3f} s planned pause)"
+                )
+            return 0
         try:
             artifact = synthesize_narration(
                 text,
@@ -853,11 +928,118 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(report.to_json() if args.json else _format_project_validation(report), end="")
         return 0 if report.technically_ready else 1
+    if args.command == "align-captions":
+        return _run_align_captions(args)
     if args.command == "plan-scenes":
         return _run_plan_scenes(args)
     if args.command == "resolve-assets":
         return _run_resolve_assets(args)
     return 2
+
+
+def _run_align_captions(args: argparse.Namespace) -> int:
+    if args.text_file is not None:
+        try:
+            text = Path(args.text_file).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"Alignment error: cannot read text file: {exc}", file=sys.stderr)
+            return 2
+        except UnicodeDecodeError:
+            print("Alignment error: text file must be UTF-8", file=sys.stderr)
+            return 2
+    else:
+        text = args.text
+
+    destination = Path(args.out).expanduser()
+    if destination.suffix.lower() != ".srt":
+        print("Alignment error: --out must be a .srt path", file=sys.stderr)
+        return 2
+    if destination.exists():
+        print(f"Alignment error: output already exists: {destination}", file=sys.stderr)
+        return 2
+
+    try:
+        probe = probe_media(args.audio)
+    except ProbeError as exc:
+        print(f"Alignment error: cannot inspect the narration: {exc}", file=sys.stderr)
+        return 2
+    if probe.duration_seconds is None or probe.duration_seconds <= 0:
+        print("Alignment error: the narration has no usable duration", file=sys.stderr)
+        return 2
+
+    try:
+        words = transcribe_words(args.audio, language=args.language, model_name=args.model)
+    except AlignerError as exc:
+        print(f"Alignment error: {exc}", file=sys.stderr)
+        return 2
+    # A decoder routinely reports its first word as starting at 0.0, even when
+    # the take opens on silence: that would put the first caption on screen
+    # before anyone speaks. Silence detection measures where the voice actually
+    # starts, so trust it over the transcript for that one edge.
+    voice_start = 0.0
+    try:
+        silences = detect_silences(args.audio)
+    except FFmpegError:
+        silences = ()
+    for silence_start, silence_end in silences:
+        if silence_start <= 0.01:
+            voice_start = max(voice_start, silence_end)
+        break
+    # clamping every word (not just the first) keeps the sequence ordered; only
+    # the words the decoder placed inside the opening silence actually move
+    triples = tuple(
+        (word.text, max(word.start_seconds, voice_start), max(word.end_seconds, voice_start))
+        for word in words
+    )
+    try:
+        cues = cues_from_word_timings(text, triples, total_seconds=float(probe.duration_seconds))
+        srt = render_srt(cues)
+    except SubtitleParseError as exc:
+        print(f"Alignment error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(srt, encoding="utf-8")
+        if args.words_out:
+            Path(args.words_out).expanduser().write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "audio_path": str(Path(args.audio).expanduser().resolve()),
+                        "language": args.language,
+                        "audio_seconds": round(float(probe.duration_seconds), 3),
+                        "words": [word.to_dict() for word in words],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+    except OSError as exc:
+        print(f"Alignment error: cannot write output: {exc}", file=sys.stderr)
+        return 2
+
+    summary = {
+        "captions_path": str(destination.resolve()),
+        "cue_count": len(cues),
+        "measured_words": len(words),
+        "audio_seconds": round(float(probe.duration_seconds), 3),
+        "voice_start_seconds": round(voice_start, 3),
+        "first_cue_start_seconds": round(cues[0][1], 3),
+        "last_cue_end_seconds": round(cues[-1][2], 3),
+    }
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(f"Captions: {summary['captions_path']}")
+        print(f"Cues: {summary['cue_count']} from {summary['measured_words']} measured words")
+        print(
+            f"Span: {summary['first_cue_start_seconds']:.3f} s -> "
+            f"{summary['last_cue_end_seconds']:.3f} s of {summary['audio_seconds']:.3f} s"
+        )
+    return 0
 
 
 def _parse_target_format(value: str) -> TargetFormat:
