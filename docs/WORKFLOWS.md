@@ -77,9 +77,50 @@ ou `--script` (NarrativeScript JSON), roda os planners com `--seed`, aplica
 converte para um `EditPlan`. Read-only sobre `inputs/`/`assets/`; recusa
 sobrescrever sem `--force`.
 
-**Fora deste incremento:** aquisição de assets, novo render, `AssetProvenance`.
-O plano é editorialmente denso mas ainda depende de uma boa biblioteca de assets
-para deixar de parecer slideshow.
+## Asset Resolver / Asset Provenance (entre `AssetRequirements` e o converter)
+
+Consome `asset-requirements.json` + `shot-plan.json` e produz, para cada
+requirement, ou um **`ResolvedAsset`** (arquivo local real + `AssetProvenance`
+completa) ou um **`UnresolvedRequirement`** com motivo. Cada `asset_id` aparece
+exatamente uma vez.
+
+```text
+AssetRequirement -> revisão semântica de reuse -> sanitização da query
+  -> providers.search -> rank (score_breakdown inspecionável) -> seleção
+  -> acquire (só o escolhido) -> SHA-256 + validação -> AssetProvenance
+  -> AssetResolutionPlan + asset-bindings.json
+```
+
+- **Domínio puro** (`domain/assets.py`, stdlib): contratos + `AssetScoringPolicy`
+  (pesos como configuração), `sanitize_query` (lexical, determinística —
+  remove stopwords/termos estruturais/genéricos; poucos termos úteis ⇒
+  `needs_editorial_override`), `score_candidate`/`rank_candidates` (match de
+  query/purpose/intent, tipo, orientação, resolução, duração de vídeo,
+  penalização por repetição e por similaridade com shots adjacentes),
+  `review_reuse` (um reuse estruturalmente válido só permanece se o shot
+  compartilhar ≥ `reuse_semantic_min_shared_terms` termos de conteúdo com o
+  shot âncora; senão vira requirement próprio).
+- **Providers** (`adapters/asset_providers.py`, podem tocar disco/rede):
+  `LocalAssetProvider` indexa `assets/library/**` + sidecars `<arquivo>.json`
+  (100% offline); `PexelsProvider`/`PixabayProvider` usam APIs gratuitas com
+  chave em `PEXELS_API_KEY`/`PIXABAY_API_KEY` — sem chave, o provider some do run
+  sem quebrar nada. Sem API paga, sem scraping, sem download arbitrário de vídeo,
+  sem remoção de watermark.
+- **Orquestrador** (`resolve.py`, impuro): `search -> rank -> select -> acquire`;
+  baixa só o asset escolhido; calcula SHA-256; valida tipo/dimensão/duração via
+  ffprobe quando disponível; nunca sobrescreve um arquivo existente com bytes
+  diferentes (stage + compara hash).
+- **CLI `resolve-assets`** (ver `README.md`): escreve
+  `asset-resolution-plan.json`, `asset-provenance.json`,
+  `revised-asset-requirements.json` e `asset-bindings.json` (`{asset_id: path}`,
+  alimenta `shot_plan_to_edit_plan` sem tocar no `EditPlan`), além dos arquivos
+  adquiridos em `<out-dir>/files/`. `--require-complete` sai com 3 se sobrar
+  requirement não resolvido; nunca finge sucesso.
+
+100% dos assets resolvidos têm `AssetProvenance`. Não é obrigatório resolver
+100% dos requirements neste estágio se a biblioteca/fontes gratuitas não
+cobrirem o plano — e é proibido preencher queries ruins com assets irrelevantes
+só para bater 100%.
 
 ## `segment-extract`
 

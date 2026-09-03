@@ -86,6 +86,8 @@ python -m video_generator narrate output\narration.wav --text "Primeira linha do
 python -m video_generator narrate output\narration.wav --text-file inputs\script.txt --lang pt-br --json
 python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\roteiro_narracao.txt --total-duration 270 --target 1920x1080:cover --seed 20260902 --out-dir output
 python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\roteiro_narracao.txt --total-duration 270 --target 1920x1080:cover --seed 20260902 --overrides projects\desumanizando_01\shot-overrides.json --out-dir output --force
+python -m video_generator resolve-assets --shot-plan output\shot-plan.json --asset-requirements output\asset-requirements.json --library assets\library --out-dir output\resolved-assets --json
+python -m video_generator resolve-assets --shot-plan output\shot-plan.json --asset-requirements output\asset-requirements.json --library assets\library --out-dir output\resolved-assets --providers local,pexels,pixabay --require-complete --force
 python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 python -m video_generator execute-sequence-plan projects\example\sequence-plan.json --manifest projects\example\sequence-manifest.json --json
 python -m video_generator execute-final-sequence-plan projects\example\final-plan.json --manifest projects\example\final-manifest.json --json
@@ -163,7 +165,27 @@ define a orientação dos assets; `--policy` mescla um `RhythmPolicy` parcial;
 `--emit-edit-plan` + `--assets` (um JSON `asset_id -> path`) converte o shot plan
 para um `EditPlan` v1 pronto para o `video-sequence`. É read-only sobre
 `inputs/`/`assets/` e recusa sobrescrever sem `--force`. Não renderiza MP4 e não
-adquire assets — isso pertence ao próximo estágio.
+adquire assets — isso pertence ao `resolve-assets`.
+
+`resolve-assets` consome `--shot-plan` + `--asset-requirements` e resolve cada
+requirement num arquivo local concreto com procedência. Passos separados:
+revisão semântica de reuse (um reuse estruturalmente válido só sobrevive se o
+shot compartilhar termos de conteúdo suficientes com o shot âncora; senão vira
+requirement próprio) → sanitização lexical da query (queries pobres como
+"outras / palavras" viram `needs_editorial_override` em vez de virar busca de
+lixo) → `providers.search` → ranking com `score_breakdown` inspecionável →
+seleção → `acquire` **só do escolhido** → SHA-256 + validação de
+tipo/dimensão/duração → `AssetProvenance`. `--library` aponta o
+`LocalAssetProvider` (offline, com sidecars `<arquivo>.json`); `--providers
+local,pexels,pixabay` adiciona fontes gratuitas com chave em
+`PEXELS_API_KEY`/`PIXABAY_API_KEY` (sem chave, some do run). Escreve
+`asset-resolution-plan.json`, `asset-provenance.json`,
+`revised-asset-requirements.json` e `asset-bindings.json` (`{asset_id: path}`,
+consumido direto por `shot_plan_to_edit_plan`), mais os arquivos em
+`<out-dir>/files/`. Nunca sobrescreve um asset existente com bytes diferentes;
+`--require-complete` sai com código 3 se sobrar requirement não resolvido. Sem
+API paga, sem scraping, sem download arbitrário de vídeo, sem remoção de
+watermark.
 
 `execute-sequence-plan` aceita ao menos dois segmentos de timeline ordenados. Um
 `sequence_clip` (source, início e fim) recorta um vídeo local; um `image_clip`

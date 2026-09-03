@@ -53,6 +53,20 @@ existente sem alterar renderer, workflow ou `models`. Invariantes que dependem
 de outro contrato ficam em métodos `validate_against`, não no `__post_init__`.
 Ver [WORKFLOWS.md](WORKFLOWS.md) e [VIDEO_LANGUAGE.md](VIDEO_LANGUAGE.md).
 
+`video_generator.domain.assets` fecha a lacuna entre `AssetRequirements` e o
+converter: os contratos `AssetCandidate`, `AssetProvenance`, `ResolvedAsset` e
+`AssetResolutionPlan` (mais `AssetScoringPolicy` com pesos como configuração),
+`sanitize_query` lexical, `score_candidate`/`rank_candidates` e `review_reuse`
+são stdlib puros e determinísticos, sem rede. A obtenção real vive fora do
+domínio: `adapters.asset_providers` (`LocalAssetProvider` offline;
+`Pexels`/`Pixabay` opt-in por chave de API gratuita, isolados e removíveis) e o
+orquestrador impuro `video_generator.resolve` (copy/stage, SHA-256, ffprobe,
+fail-closed contra sobrescrita). `AssetProvenance` — origem, licença, autor,
+`acquired_at`, SHA-256 — deixa de ser candidato e passa a contrato agora que o
+motor adquire assets externos automaticamente; `asset-bindings.json`
+(`{asset_id: path}`) liga o resultado ao `shot_plan_to_edit_plan` sem mudar o
+`EditPlan`.
+
 ### Configuração
 
 `config/default.toml` declara que processamento e render são locais e desabilita

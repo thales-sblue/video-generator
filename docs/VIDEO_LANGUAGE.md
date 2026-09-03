@@ -89,6 +89,20 @@ os defaults, que devem evoluir a partir de experiência real.
 Esses valores vivem no `RhythmPolicy` (embutido no `ScenePlan`/`ShotPlan`) e são
 sobrescrevíveis por um JSON parcial via `--policy`.
 
+### Seleção de asset (`AssetScoringPolicy`)
+
+Quando o `resolve-assets` escolhe um arquivo concreto para um shot, o critério é
+explícito e auditável, não uma fórmula escondida. Cada candidato recebe um
+`score_breakdown` com componentes somáveis: correspondência lexical de
+`visual_query`, de `purpose` e de `visual_intent` com título/descrição/tags do
+candidato; casamento de tipo (image/video) e de orientação; resolução mínima;
+folga de duração para vídeo; e penalizações por repetir o mesmo arquivo e por
+similaridade com shots adjacentes. Os pesos são configuração
+(`--scoring-policy`), como o `RhythmPolicy`. Um reuse herdado do Shot Planner só
+permanece se o shot compartilhar termos de conteúdo suficientes com o shot
+âncora; uma `visual_query` pobre demais (ex.: "outras / palavras") vira
+`needs_editorial_override` em vez de disparar uma busca por lixo.
+
 ## Formato de entrega (target format)
 
 - `target_format` no `VideoBrief`/`EditPlan` descreve o canvas final de forma

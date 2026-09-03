@@ -302,6 +302,42 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="overwrite existing output files"
     )
     plan_scenes_cmd.add_argument("--json", action="store_true", help="print the summary as JSON")
+
+    resolve_assets_cmd = subparsers.add_parser(
+        "resolve-assets",
+        help="resolve every AssetRequirement to a concrete local file with provenance",
+    )
+    resolve_assets_cmd.add_argument("--shot-plan", required=True, help="a persisted ShotPlan JSON path")
+    resolve_assets_cmd.add_argument(
+        "--asset-requirements", required=True, help="a persisted AssetRequirements JSON path"
+    )
+    resolve_assets_cmd.add_argument(
+        "--library", required=True, help="local asset library root (indexed offline)"
+    )
+    resolve_assets_cmd.add_argument("--out-dir", required=True, help="directory for the resolution artifacts")
+    resolve_assets_cmd.add_argument(
+        "--providers",
+        default="local",
+        help="comma list of providers to consult (local, pexels, pixabay); default: local",
+    )
+    resolve_assets_cmd.add_argument(
+        "--scoring-policy", help="a partial AssetScoringPolicy JSON path (merged over defaults)"
+    )
+    resolve_assets_cmd.add_argument(
+        "--bindings-out", help="where to also write asset-bindings.json (default: <out-dir>/asset-bindings.json)"
+    )
+    resolve_assets_cmd.add_argument("--seed", type=int, default=0, help="accepted for reproducibility bookkeeping")
+    resolve_assets_cmd.add_argument(
+        "--no-reuse-review", action="store_true", help="skip the semantic reuse-compatibility check"
+    )
+    resolve_assets_cmd.add_argument(
+        "--no-probe", action="store_true", help="do not probe acquired files with ffprobe"
+    )
+    resolve_assets_cmd.add_argument(
+        "--require-complete", action="store_true", help="exit 3 if any requirement is unresolved"
+    )
+    resolve_assets_cmd.add_argument("--force", action="store_true", help="overwrite existing artifacts")
+    resolve_assets_cmd.add_argument("--json", action="store_true", help="print the summary as JSON")
     return parser
 
 
@@ -819,6 +855,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if report.technically_ready else 1
     if args.command == "plan-scenes":
         return _run_plan_scenes(args)
+    if args.command == "resolve-assets":
+        return _run_resolve_assets(args)
     return 2
 
 
@@ -951,4 +989,157 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
             f"  orientation: {orientation}\n"
             f"  written to: {out_dir}\n"
         )
+    return 0
+
+
+def _run_resolve_assets(args: argparse.Namespace) -> int:
+    from video_generator.adapters.asset_providers import ProviderError, build_providers
+    from video_generator.domain.assets import (
+        AssetResolutionError,
+        AssetScoringPolicy,
+    )
+    from video_generator.domain.planning import AssetRequirements, ShotPlan
+    from video_generator.resolve import ResolveError, resolve_assets
+
+    try:
+        shot_plan = ShotPlan.from_dict(
+            json.loads(Path(args.shot_plan).expanduser().read_text(encoding="utf-8"))
+        )
+        requirements = AssetRequirements.from_dict(
+            json.loads(
+                Path(args.asset_requirements).expanduser().read_text(encoding="utf-8")
+            )
+        )
+        requirements.validate_against(shot_plan)
+
+        scoring_policy = AssetScoringPolicy()
+        if args.scoring_policy is not None:
+            scoring_policy = AssetScoringPolicy.from_dict(
+                json.loads(
+                    Path(args.scoring_policy).expanduser().read_text(encoding="utf-8")
+                )
+            )
+
+        provider_names = [p.strip() for p in args.providers.split(",") if p.strip()]
+        providers = build_providers(
+            provider_names, library_root=Path(args.library).expanduser()
+        )
+        if not providers:
+            raise ResolveError("no usable providers (is --library correct?)")
+
+        shot_context = {
+            shot.shot_id: {
+                "visual_query": shot.visual_query,
+                "purpose": shot.purpose,
+                "visual_intent": shot.purpose,
+            }
+            for shot in shot_plan.shots
+        }
+
+        probe = None
+        if not args.no_probe:
+            from video_generator.adapters.asset_providers import _default_probe
+
+            probe = _default_probe()
+
+        out_dir = Path(args.out_dir).expanduser()
+        bindings_out = (
+            Path(args.bindings_out).expanduser()
+            if args.bindings_out
+            else out_dir / "asset-bindings.json"
+        )
+        artifacts = {
+            out_dir / "asset-resolution-plan.json": None,
+            out_dir / "asset-provenance.json": None,
+            out_dir / "revised-asset-requirements.json": None,
+            bindings_out: None,
+        }
+        if not args.force:
+            existing = sorted(str(p) for p in artifacts if p.exists())
+            if existing:
+                raise ResolveError(
+                    "refusing to overwrite existing output (use --force): "
+                    + ", ".join(existing)
+                )
+
+        result = resolve_assets(
+            shot_plan,
+            requirements,
+            providers,
+            out_dir=out_dir,
+            scoring_policy=scoring_policy,
+            shot_context=shot_context,
+            do_review_reuse=not args.no_reuse_review,
+            probe=probe,
+        )
+    except (ResolveError, ProviderError, AssetResolutionError, PlanningError, ContractError) as exc:
+        print(f"Resolve error: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"Resolve error: {exc}", file=sys.stderr)
+        return 2
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        print(f"Resolve error: could not read input: {exc}", file=sys.stderr)
+        return 2
+
+    plan = result.plan
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "asset-resolution-plan.json").write_text(plan.to_json(), encoding="utf-8")
+    provenance_payload = (
+        json.dumps(
+            [r.provenance.to_dict() for r in plan.resolved],
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    (out_dir / "asset-provenance.json").write_text(provenance_payload, encoding="utf-8")
+    (out_dir / "revised-asset-requirements.json").write_text(
+        result.revised_requirements.to_json(), encoding="utf-8"
+    )
+    bindings_payload = (
+        json.dumps(plan.to_bindings(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    )
+    bindings_out.parent.mkdir(parents=True, exist_ok=True)
+    bindings_out.write_text(bindings_payload, encoding="utf-8")
+
+    images = sum(1 for r in plan.resolved if r.requirement.type == "image")
+    videos = sum(1 for r in plan.resolved if r.requirement.type == "video")
+    by_reason: dict[str, int] = {}
+    for item in plan.unresolved:
+        by_reason[item.reason] = by_reason.get(item.reason, 0) + 1
+    summary = {
+        "script_id": plan.script_id,
+        "requirements_original": len(requirements.requirements),
+        "requirements_after_reuse_review": len(result.revised_requirements.requirements),
+        "reuse_splits": result.review.split_count if result.review is not None else 0,
+        "resolved": len(plan.resolved),
+        "unresolved": len(plan.unresolved),
+        "unresolved_by_reason": by_reason,
+        "images": images,
+        "videos": videos,
+        "providers": dict(sorted(result.provider_stats.items())),
+        "with_full_provenance": len(plan.resolved),
+        "out_dir": str(out_dir),
+        "bindings": str(bindings_out),
+    }
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", end="")
+    else:
+        lines = [
+            "resolve-assets",
+            f"  script: {summary['script_id']}",
+            f"  requirements: {summary['requirements_original']} -> "
+            f"{summary['requirements_after_reuse_review']} after reuse review "
+            f"({summary['reuse_splits']} split)",
+            f"  resolved: {summary['resolved']} ({images} image / {videos} video)",
+            f"  unresolved: {summary['unresolved']} {by_reason or ''}".rstrip(),
+            f"  providers: {summary['providers'] or '{}'}",
+            f"  written to: {out_dir}",
+        ]
+        print("\n".join(lines) + "\n")
+
+    if args.require_complete and plan.unresolved:
+        return 3
     return 0

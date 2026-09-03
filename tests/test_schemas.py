@@ -17,6 +17,7 @@ class SchemaTests(unittest.TestCase):
             "scene-plan-v1.schema.json",
             "shot-plan-v1.schema.json",
             "asset-requirements-v1.schema.json",
+            "asset-resolution-plan-v1.schema.json",
         }
         schema_paths = set((REPOSITORY_ROOT / "schemas").glob("*.schema.json"))
 

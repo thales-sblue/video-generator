@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/thales-sblue/video-generator/schemas/asset-resolution-plan-v1.schema.json",
+  "title": "AssetResolutionPlan v1",
+  "description": "The output of the Asset Resolver: for every AssetRequirement (after semantic reuse review) either a ResolvedAsset with a concrete local file and full AssetProvenance, or an UnresolvedRequirement with a reason. Every requirement's asset_id appears exactly once across resolved and unresolved. Realises the AssetProvenance contract candidate from AGENTS.md, which becomes mandatory now that the engine acquires external assets automatically.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "plan_id", "shot_plan_id", "script_id", "resolved", "unresolved"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "plan_id": {"type": "string", "minLength": 1},
+    "shot_plan_id": {"type": "string", "minLength": 1},
+    "script_id": {"type": "string", "minLength": 1},
+    "resolved": {"type": "array", "items": {"$ref": "#/$defs/resolved_asset"}},
+    "unresolved": {"type": "array", "items": {"$ref": "#/$defs/unresolved_requirement"}}
+  },
+  "$defs": {
+    "asset_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "type", "query", "duration_needed_seconds", "orientation", "purpose", "used_by"],
+      "properties": {
+        "asset_id": {"type": "string", "minLength": 1},
+        "type": {"enum": ["image", "video"]},
+        "query": {"type": "string", "minLength": 1},
+        "duration_needed_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "orientation": {"enum": ["landscape", "portrait", "square"]},
+        "purpose": {"type": "string", "minLength": 1},
+        "used_by": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "min_count": {"type": "integer", "minimum": 1},
+        "notes": {"type": ["string", "null"], "minLength": 1}
+      }
+    },
+    "asset_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id", "source_kind", "source_id", "media_type", "local_path",
+        "remote_locator", "title", "description", "tags", "width", "height",
+        "duration_seconds", "license", "license_url", "author", "source_url",
+        "score", "score_breakdown"
+      ],
+      "properties": {
+        "candidate_id": {"type": "string", "minLength": 1},
+        "source_kind": {"type": "string", "minLength": 1},
+        "source_id": {"type": "string", "minLength": 1},
+        "media_type": {"enum": ["image", "video"]},
+        "local_path": {"type": ["string", "null"], "minLength": 1},
+        "remote_locator": {"type": ["string", "null"], "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "description": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "width": {"type": ["integer", "null"], "exclusiveMinimum": 0},
+        "height": {"type": ["integer", "null"], "exclusiveMinimum": 0},
+        "duration_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "license": {"type": "string", "minLength": 1},
+        "license_url": {"type": ["string", "null"], "minLength": 1},
+        "author": {"type": ["string", "null"], "minLength": 1},
+        "source_url": {"type": ["string", "null"], "minLength": 1},
+        "score": {"type": "number"},
+        "score_breakdown": {"type": "object", "additionalProperties": {"type": "number"}}
+      }
+    },
+    "asset_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_id", "candidate_id", "source_kind", "source_url", "author",
+        "license", "license_url", "acquired_at", "original_filename",
+        "local_path", "sha256"
+      ],
+      "properties": {
+        "asset_id": {"type": "string", "minLength": 1},
+        "candidate_id": {"type": "string", "minLength": 1},
+        "source_kind": {"type": "string", "minLength": 1},
+        "source_url": {"type": ["string", "null"], "minLength": 1},
+        "author": {"type": ["string", "null"], "minLength": 1},
+        "license": {"type": "string", "minLength": 1},
+        "license_url": {"type": ["string", "null"], "minLength": 1},
+        "acquired_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"},
+        "original_filename": {"type": "string", "minLength": 1},
+        "local_path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "resolved_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "local_path", "candidate_id", "requirement", "score", "provenance"],
+      "properties": {
+        "asset_id": {"type": "string", "minLength": 1},
+        "local_path": {"type": "string", "minLength": 1},
+        "candidate_id": {"type": "string", "minLength": 1},
+        "requirement": {"$ref": "#/$defs/asset_requirement"},
+        "score": {"type": "number"},
+        "provenance": {"$ref": "#/$defs/asset_provenance"}
+      }
+    },
+    "unresolved_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "requirement", "reason"],
+      "properties": {
+        "asset_id": {"type": "string", "minLength": 1},
+        "requirement": {"$ref": "#/$defs/asset_requirement"},
+        "reason": {
+          "enum": [
+            "no_candidates", "no_compatible_candidate", "needs_editorial_override",
+            "acquisition_failed", "below_quality_floor"
+          ]
+        },
+        "detail": {"type": ["string", "null"], "minLength": 1},
+        "sanitized_query": {"type": ["string", "null"], "minLength": 1}
+      }
+    }
+  }
+}

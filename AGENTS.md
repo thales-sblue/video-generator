@@ -137,9 +137,12 @@ artifacts".
   obras protegidas presentes na mídia.
 - Se a licença ou a origem não puder ser determinada de forma aceitável, o
   agente não utiliza o asset automaticamente.
-- Enquanto o motor não obtiver assets externos automaticamente, esta é uma
-  fronteira de revisão editorial. Quando essa obtenção existir, a proveniência
-  deve ser persistida (ver "Contratos e evolução").
+- O `resolve-assets` já obtém assets automaticamente de uma biblioteca local e
+  de fontes gratuitas opt-in (Pexels/Pixabay por chave). A partir daí a
+  proveniência (`AssetProvenance`: origem, licença, autor, `acquired_at`,
+  SHA-256) é **persistida obrigatoriamente** — nenhum asset resolvido sem ela —
+  e a compatibilidade comercial da licença permanece um gate de revisão
+  editorial humana (ver "Contratos e evolução").
 
 ## Segurança, imutabilidade e artifacts
 
@@ -164,12 +167,13 @@ RenderManifest`. `Script`, `Storyboard` e `AssetPlan` são candidatos futuros,
 não contratos obrigatórios: só devem existir separadamente quando um caso real
 exigir invariantes ou checkpoints que a representação atual não preserve.
 
-`AssetProvenance` — origem, URL ou identificador, tipo de licença, indicação de
-uso comercial (permitido / conhecido / desconhecido), necessidade e texto de
-atribuição, data de aquisição, SHA-256 do arquivo e restrições relevantes — é
-outro candidato futuro: só passa a ser contrato quando o motor obtiver assets
-externos automaticamente. Até lá, o `RenderManifest` já fixa o SHA-256 de cada
-source e a rastreabilidade de direitos permanece um gate de revisão editorial.
+`AssetProvenance` — origem/URL ou identificador, licença e URL da licença,
+autor, `acquired_at`, SHA-256 do arquivo, `candidate_id` e `local_path` — **é
+contrato publicado** (`schemas/asset-resolution-plan-v1.schema.json`,
+`domain/assets.py`) desde que o `resolve-assets` passou a adquirir assets
+automaticamente. Todo `ResolvedAsset` carrega uma `AssetProvenance` completa; o
+`RenderManifest` continua fixando o SHA-256 de cada source e a compatibilidade
+comercial da licença permanece um gate de revisão editorial.
 Contratos publicados devem:
 
 - ter versão explícita e representação JSON determinística;

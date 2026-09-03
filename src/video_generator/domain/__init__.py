@@ -1,5 +1,20 @@
 """Pure domain contracts for audiovisual planning."""
 
+from video_generator.domain.assets import (
+    DEFAULT_SCORING_POLICY,
+    AssetCandidate,
+    AssetProvenance,
+    AssetResolutionError,
+    AssetResolutionPlan,
+    AssetScoringPolicy,
+    ResolvedAsset,
+    ReuseReview,
+    UnresolvedRequirement,
+    rank_candidates,
+    review_reuse,
+    sanitize_query,
+    score_candidate,
+)
 from video_generator.domain.models import (
     SHORTS_PORTRAIT,
     YOUTUBE_LANDSCAPE,
@@ -32,10 +47,23 @@ from video_generator.domain.planning import (
 )
 
 __all__ = [
+    "AssetCandidate",
+    "AssetProvenance",
     "AssetRequirement",
     "AssetRequirements",
+    "AssetResolutionError",
+    "AssetResolutionPlan",
+    "AssetScoringPolicy",
     "ContractError",
     "DEFAULT_RHYTHM_POLICY",
+    "DEFAULT_SCORING_POLICY",
+    "ResolvedAsset",
+    "ReuseReview",
+    "UnresolvedRequirement",
+    "rank_candidates",
+    "review_reuse",
+    "sanitize_query",
+    "score_candidate",
     "EditOperation",
     "EditPlan",
     "FileFingerprint",
