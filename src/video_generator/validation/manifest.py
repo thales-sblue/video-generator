@@ -120,10 +120,13 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
                 return False
             timeline_duration += float(duration)
         else:
+            parameters = dict(segment.parameters)
             if (
                 segment.start_seconds is None
                 or segment.end_seconds is None
-                or segment.parameters
+                or set(parameters) - {"fit"}
+                or parameters.get("fit") not in (None, "contain", "cover")
+                or ("fit" in parameters and plan.target_format is None)
             ):
                 return False
             timeline_duration += segment.end_seconds - segment.start_seconds
@@ -193,19 +196,31 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
         music = operations[index]
         parameters = dict(music.parameters)
         gain = parameters.get("gain_db")
+        duck = parameters.get("duck_db")
         fades = [parameters[key] for key in ("fade_in_seconds", "fade_out_seconds") if key in parameters]
         if (
             music.source is None
             or music.start_seconds is not None
             or music.end_seconds is not None
             or not {"duration_policy", "gain_db"} <= set(parameters)
-            or set(parameters) - {"duration_policy", "gain_db", "fade_in_seconds", "fade_out_seconds"}
+            or set(parameters)
+            - {"duration_policy", "gain_db", "fade_in_seconds", "fade_out_seconds", "duck_db"}
             or parameters.get("duration_policy") != "loop_to_timeline"
             or isinstance(gain, bool)
             or not isinstance(gain, (int, float))
             or not math.isfinite(gain)
             or gain < -60
             or gain > 0
+            or (
+                duck is not None
+                and (
+                    isinstance(duck, bool)
+                    or not isinstance(duck, (int, float))
+                    or not math.isfinite(duck)
+                    or duck < -60
+                    or duck >= 0
+                )
+            )
             or any(
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
@@ -234,7 +249,14 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
                 return False
             used_sources.add(narration.source)
         else:
-            if set(params) - {"duration_policy", "text", "voice", "speed", "lang"}:
+            if set(params) - {
+                "duration_policy",
+                "text",
+                "voice",
+                "speed",
+                "lang",
+                "lead_in_seconds",
+            }:
                 return False
             text = params.get("text")
             if not isinstance(text, str) or not text.strip():

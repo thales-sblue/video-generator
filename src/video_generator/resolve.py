@@ -27,9 +27,11 @@ from video_generator.domain.assets import (
     ReuseReview,
     UnresolvedRequirement,
     _iso_now,
+    has_semantic_support,
     rank_candidates,
     review_reuse,
     sanitize_query,
+    semantic_support,
 )
 from video_generator.domain.planning import AssetRequirements, ShotPlan
 
@@ -209,6 +211,29 @@ def resolve_assets(
                 )
             )
             continue
+
+        # Structural fit (type / orientation / resolution / duration) is not a
+        # match: a candidate only earns a slot when it shares a real visual term
+        # with the shot. Anything below the floor needs an editorial override.
+        eligible = [c for c in ranked if has_semantic_support(c, scoring_policy)]
+        if not eligible:
+            best = semantic_support(ranked[0])
+            unresolved.append(
+                UnresolvedRequirement(
+                    asset_id=req.asset_id,
+                    requirement=req,
+                    reason="no_semantic_match",
+                    detail=(
+                        "best candidate matched only on type / orientation / "
+                        f"resolution (semantic score {best:.2f} <= floor "
+                        f"{scoring_policy.min_semantic_score:.2f}); needs an "
+                        "editorial visual query"
+                    ),
+                    sanitized_query=sq.to_text() or None,
+                )
+            )
+            continue
+        ranked = eligible
 
         chosen_resolved: ResolvedAsset | None = None
         last_failure = ""

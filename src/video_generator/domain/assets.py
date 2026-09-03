@@ -35,10 +35,17 @@ ORIENTATIONS = ("landscape", "portrait", "square")
 UNRESOLVED_REASONS = (
     "no_candidates",
     "no_compatible_candidate",
+    "no_semantic_match",
     "needs_editorial_override",
     "acquisition_failed",
     "below_quality_floor",
 )
+
+# The score components that reflect a *meaning* match between a requirement and a
+# candidate (shared visual terms), as opposed to the purely structural ones
+# (type / orientation / resolution / duration). A candidate that scores only on
+# the structural components has not actually been matched to the shot.
+SEMANTIC_SCORE_COMPONENTS = ("query_match", "purpose_match", "intent_match")
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
@@ -315,6 +322,11 @@ class AssetScoringPolicy:
     min_meaningful_query_terms: int = 2
     reuse_semantic_min_shared_terms: int = 2
     video_duration_headroom_seconds: float = 0.5
+    # A candidate whose summed semantic components (query / purpose / intent
+    # match) do not exceed this floor has been matched on type / orientation /
+    # resolution alone, which is never enough to resolve a shot. 0.0 means "any
+    # shared visual term is enough"; raise it to demand a stronger match.
+    min_semantic_score: float = 0.0
 
     _FLOAT_FIELDS = (
         "weight_query_match",
@@ -327,6 +339,7 @@ class AssetScoringPolicy:
         "reuse_repetition_penalty",
         "adjacent_similarity_penalty",
         "video_duration_headroom_seconds",
+        "min_semantic_score",
     )
     _INT_FIELDS = (
         ("min_long_edge", 1),
@@ -637,7 +650,12 @@ def rank_candidates(
     adjacent_terms: frozenset[str] = frozenset(),
 ) -> list[AssetCandidate]:
     """Score, drop disqualified, and return the survivors ordered by descending
-    total with a ``candidate_id`` tie-break so the ranking is deterministic."""
+    total with a ``candidate_id`` tie-break so the ranking is deterministic.
+
+    ``uses_by_candidate`` counts how many slots each candidate has *already*
+    taken, so scoring it here is one more use than that: a file that has been
+    used once is on its second use, and pays the repetition penalty for it.
+    """
 
     uses_by_candidate = uses_by_candidate or {}
     scored: list[tuple[float, str, AssetCandidate]] = []
@@ -646,7 +664,7 @@ def rank_candidates(
             requirement,
             candidate,
             policy,
-            uses=uses_by_candidate.get(candidate.candidate_id, 1),
+            uses=uses_by_candidate.get(candidate.candidate_id, 0) + 1,
             adjacent_terms=adjacent_terms,
         )
         if breakdown.disqualified:
@@ -655,6 +673,25 @@ def rank_candidates(
         scored.append((ranked_candidate.score, ranked_candidate.candidate_id, ranked_candidate))
     scored.sort(key=lambda row: (-row[0], row[1]))
     return [row[2] for row in scored]
+
+
+def semantic_support(candidate: AssetCandidate) -> float:
+    """The part of a scored candidate's total that comes from a real meaning
+    match (shared query / purpose / intent terms). A candidate that has been
+    through :func:`rank_candidates` carries these components; one that only
+    fits on type / orientation / resolution scores ``0.0`` here."""
+
+    breakdown = candidate.score_breakdown
+    return sum(breakdown.get(name, 0.0) for name in SEMANTIC_SCORE_COMPONENTS)
+
+
+def has_semantic_support(
+    candidate: AssetCandidate, policy: AssetScoringPolicy = DEFAULT_SCORING_POLICY
+) -> bool:
+    """True when the candidate matched the shot on meaning, not merely on
+    type / orientation / resolution. Structural fit alone never resolves a shot."""
+
+    return semantic_support(candidate) > policy.min_semantic_score
 
 
 # --------------------------------------------------------------------------- #

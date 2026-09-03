@@ -105,8 +105,8 @@
         "requirement": {"$ref": "#/$defs/asset_requirement"},
         "reason": {
           "enum": [
-            "no_candidates", "no_compatible_candidate", "needs_editorial_override",
-            "acquisition_failed", "below_quality_floor"
+            "no_candidates", "no_compatible_candidate", "no_semantic_match",
+            "needs_editorial_override", "acquisition_failed", "below_quality_floor"
           ]
         },
         "detail": {"type": ["string", "null"], "minLength": 1},

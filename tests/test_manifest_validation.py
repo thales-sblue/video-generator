@@ -5,7 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from video_generator.domain import EditOperation, EditPlan, RenderManifest, ToolRecord
+from video_generator.domain import (
+    EditOperation,
+    EditPlan,
+    RenderManifest,
+    TargetFormat,
+    ToolRecord,
+)
 from video_generator.cli import main
 from video_generator.manifests import fingerprint_file, fingerprint_plan
 from video_generator.validation import validate_render_manifest
@@ -279,6 +285,118 @@ class ManifestValidationTests(unittest.TestCase):
 
         self.assertTrue(report.technically_ready)
         self.assertEqual(report.issues, ())
+
+    def test_accepts_targeted_sequence_with_fit_duck_and_lead_in(self):
+        # The manifest validator must accept the same parameter surface the
+        # sequence workflow already renders: a per-segment ``fit`` once the plan
+        # pins a ``target_format``, ``duck_db`` on the music bed, and a text
+        # narration ``lead_in_seconds``.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clip = root / "clip.mp4"
+            still = root / "still.jpg"
+            music = root / "bed.wav"
+            output = root / "final.mp4"
+            for path in (clip, still, music, output):
+                path.write_bytes(path.stem.encode("utf-8"))
+            plan = EditPlan(
+                "plan-targeted",
+                "brief-dark",
+                (str(clip), str(still), str(music)),
+                str(output),
+                (
+                    EditOperation(
+                        "clip-1", "sequence_clip", str(clip), 0, 1,
+                        parameters={"fit": "cover"},
+                    ),
+                    EditOperation(
+                        "still-1", "image_clip", str(still),
+                        parameters={"duration_seconds": 2.0, "fit": "contain"},
+                    ),
+                    EditOperation(
+                        "music-1", "music", str(music),
+                        parameters={
+                            "duration_policy": "loop_to_timeline",
+                            "gain_db": -20.0,
+                            "duck_db": -10.0,
+                        },
+                    ),
+                    EditOperation(
+                        "voice-1",
+                        "narration",
+                        parameters={
+                            "duration_policy": "match_timeline",
+                            "text": "Dark script.",
+                            "lead_in_seconds": 0.5,
+                        },
+                    ),
+                ),
+                TargetFormat(1920, 1080),
+            )
+            manifest = RenderManifest(
+                "manifest-plan-targeted",
+                plan.plan_id,
+                plan.brief_id,
+                "video-sequence",
+                fingerprint_plan(plan),
+                tuple(fingerprint_file(source) for source in plan.sources),
+                (fingerprint_file(output),),
+                (
+                    ToolRecord("FFmpeg", "C:/tools/ffmpeg.exe", "ffmpeg 8"),
+                    ToolRecord("ffprobe", "C:/tools/ffprobe.exe", "ffprobe 8"),
+                ),
+                True,
+            )
+
+            report = validate_render_manifest(manifest, plan)
+
+        self.assertTrue(report.technically_ready)
+        self.assertEqual(report.issues, ())
+
+    def test_rejects_sequence_clip_fit_without_a_target_format(self):
+        # A per-segment ``fit`` is only coherent when the plan declares a
+        # ``target_format``; the validator mirrors that workflow rule.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "a.mp4"
+            second = root / "b.mp4"
+            output = root / "final.mp4"
+            for path in (first, second, output):
+                path.write_bytes(path.stem.encode("utf-8"))
+            plan = EditPlan(
+                "plan-untargeted",
+                "brief-dark",
+                (str(first), str(second)),
+                str(output),
+                (
+                    EditOperation(
+                        "clip-1", "sequence_clip", str(first), 0, 1,
+                        parameters={"fit": "cover"},
+                    ),
+                    EditOperation("clip-2", "sequence_clip", str(second), 0, 1),
+                ),
+            )
+            manifest = RenderManifest(
+                "manifest-plan-untargeted",
+                plan.plan_id,
+                plan.brief_id,
+                "video-sequence",
+                fingerprint_plan(plan),
+                tuple(fingerprint_file(source) for source in plan.sources),
+                (fingerprint_file(output),),
+                (
+                    ToolRecord("FFmpeg", "C:/tools/ffmpeg.exe", "ffmpeg 8"),
+                    ToolRecord("ffprobe", "C:/tools/ffprobe.exe", "ffprobe 8"),
+                ),
+                True,
+            )
+
+            report = validate_render_manifest(manifest, plan)
+
+        self.assertFalse(report.technically_ready)
+        self.assertIn(
+            "workflow_plan_mismatch", {issue.code for issue in report.issues}
+        )
 
     def test_accepts_unchanged_plan_sources_and_outputs(self):
         with tempfile.TemporaryDirectory() as directory:

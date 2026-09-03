@@ -164,6 +164,50 @@ class ResolveAssetsTests(unittest.TestCase):
         self.assertEqual(len(result.plan.unresolved), 1)
         self.assertEqual(result.plan.unresolved[0].reason, "needs_editorial_override")
 
+    def test_structural_only_match_does_not_resolve(self):
+        # A candidate that fits on media_type + orientation + resolution but
+        # shares no visual term with the shot must NOT be resolved.
+        req = AssetRequirement(
+            asset_id="asset_scene_95_01", type="image",
+            query="wide establishing, biblioteca antiga com prateleiras de madeira",
+            duration_needed_seconds=3.0, orientation="landscape",
+            purpose="mostrar: biblioteca / livros — beat 1/2",
+            used_by=("scene_95_shot_01",),
+        )
+        reqs = AssetRequirements(
+            plan_id="myside-asset-requirements", shot_plan_id="myside-shot-plan",
+            script_id="myside", orientation="landscape", requirements=(req,),
+        )
+        off_topic = [
+            {"id": "beach", "media_type": "image",
+             "tags": ["oceano", "praia", "areia", "ondas"],
+             "title": "ondas quebrando numa praia",
+             "description": "litoral ensolarado ao amanhecer",
+             "width": 1920, "height": 1080},
+        ]
+        result = resolve_assets(
+            self.shot_plan, reqs, [_FakeProvider("local_library", off_topic)],
+            out_dir=self.out, shot_context={}, do_review_reuse=False,
+            clock=lambda: "2026-09-02T10:00:00Z",
+        )
+        self.assertEqual(result.plan.resolved, ())
+        self.assertEqual(len(result.plan.unresolved), 1)
+        self.assertEqual(result.plan.unresolved[0].reason, "no_semantic_match")
+
+        # add one on-topic candidate and the same requirement now resolves
+        on_topic = off_topic + [
+            {"id": "library", "media_type": "image",
+             "tags": ["biblioteca", "livros", "prateleiras", "madeira"],
+             "width": 1920, "height": 1080},
+        ]
+        ok = resolve_assets(
+            self.shot_plan, reqs, [_FakeProvider("local_library", on_topic)],
+            out_dir=self.out / "ok", shot_context={}, do_review_reuse=False,
+            clock=lambda: "2026-09-02T10:00:00Z",
+        )
+        self.assertEqual(len(ok.plan.resolved), 1)
+        self.assertEqual(ok.plan.resolved[0].candidate_id, "local_library:library")
+
     def test_no_candidate_of_right_type_is_unresolved(self):
         video_only = AssetRequirement(
             asset_id="asset_scene_98_01", type="video",

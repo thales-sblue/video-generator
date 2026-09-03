@@ -20,10 +20,12 @@ from video_generator.domain.assets import (
     AssetScoringPolicy,
     ResolvedAsset,
     UnresolvedRequirement,
+    has_semantic_support,
     rank_candidates,
     review_reuse,
     sanitize_query,
     score_candidate,
+    semantic_support,
 )
 
 HEX64 = "a" * 64
@@ -233,6 +235,40 @@ class ScoreCandidateTests(unittest.TestCase):
         self.assertIn("query_match", breakdown.components)
         self.assertIn("purpose_match", breakdown.components)
         self.assertIn("type_match", breakdown.components)
+
+
+class SemanticSupportTests(unittest.TestCase):
+    def test_structural_only_candidate_has_no_semantic_support(self):
+        req = _requirement(query="wide establishing, escritorio, mesa, corporativo")
+        far = _candidate(
+            candidate_id="local:img_beach",
+            tags=("beach", "ocean", "sand"),
+            title="Waves on an empty beach",
+            description="sunny coastline",
+            width=1920,
+            height=1080,
+        )
+        ranked = rank_candidates(req, [far], DEFAULT_SCORING_POLICY)
+        # it survives ranking (right type, orientation, resolution) ...
+        self.assertEqual(len(ranked), 1)
+        self.assertGreater(ranked[0].score, 0.0)
+        # ... but carries no meaning match, so it must not resolve a shot
+        self.assertEqual(semantic_support(ranked[0]), 0.0)
+        self.assertFalse(has_semantic_support(ranked[0], DEFAULT_SCORING_POLICY))
+
+    def test_shared_term_gives_semantic_support(self):
+        req = _requirement(query="wide establishing, escritorio, mesa, corporativo")
+        near = _candidate(tags=("office", "desk", "escritorio", "mesa"))
+        ranked = rank_candidates(req, [near], DEFAULT_SCORING_POLICY)
+        self.assertGreater(semantic_support(ranked[0]), 0.0)
+        self.assertTrue(has_semantic_support(ranked[0], DEFAULT_SCORING_POLICY))
+
+    def test_floor_is_policy_tunable(self):
+        req = _requirement(query="wide establishing, escritorio, mesa, corporativo")
+        near = _candidate(tags=("office", "desk", "escritorio", "mesa"))
+        ranked = rank_candidates(req, [near], DEFAULT_SCORING_POLICY)
+        strict = AssetScoringPolicy(min_semantic_score=999.0)
+        self.assertFalse(has_semantic_support(ranked[0], strict))
 
 
 class RankCandidatesTests(unittest.TestCase):
@@ -543,6 +579,64 @@ class SchemaShapeTests(unittest.TestCase):
         payload = json.loads(_candidate().to_json())
         self.assertEqual(set(payload), self._required("asset_candidate"))
 
+
+class ReuseRepetitionPenaltyTests(unittest.TestCase):
+    """A file already used once must pay the penalty on its very next slot."""
+
+    def _requirement(self):
+        return AssetRequirement(
+            asset_id="asset_x",
+            type="image",
+            query="quiet library shelves",
+            purpose="mostrar prateleiras",
+            orientation="landscape",
+            duration_needed_seconds=3.0,
+            min_count=1,
+            used_by=("scene_01_shot_01",),
+        )
+
+    def _candidate(self, candidate_id, description):
+        return AssetCandidate(
+            candidate_id=candidate_id,
+            source_kind="local_library",
+            source_id=candidate_id,
+            media_type="image",
+            local_path=f"/tmp/{candidate_id}.jpg",
+            remote_locator=None,
+            title=description,
+            description=description,
+            tags=tuple(description.split()),
+            width=1920,
+            height=1080,
+            duration_seconds=None,
+            license="CC0-1.0",
+            license_url=None,
+            author=None,
+            source_url=None,
+            score=0.0,
+            score_breakdown={},
+        )
+
+    def test_a_candidate_used_once_loses_to_a_weaker_unused_one(self):
+        policy = AssetScoringPolicy(reuse_repetition_penalty=40.0)
+        best = self._candidate("local:best", "quiet library shelves")
+        weaker = self._candidate("local:weaker", "quiet shelves")
+        requirement = self._requirement()
+
+        fresh = rank_candidates(requirement, [best, weaker], policy)
+        self.assertEqual(fresh[0].candidate_id, "local:best")
+
+        # "best" has already taken one slot: the next ranking must skip it
+        reused = rank_candidates(
+            requirement, [best, weaker], policy, uses_by_candidate={"local:best": 1}
+        )
+        self.assertEqual(reused[0].candidate_id, "local:weaker")
+
+    def test_an_unused_candidate_pays_nothing(self):
+        policy = AssetScoringPolicy(reuse_repetition_penalty=40.0)
+        candidate = self._candidate("local:only", "quiet library shelves")
+        breakdown = score_candidate(self._requirement(), candidate, policy, uses=1)
+        self.assertEqual(breakdown.components["repetition_penalty"], 0.0)
 
 if __name__ == "__main__":
     unittest.main()

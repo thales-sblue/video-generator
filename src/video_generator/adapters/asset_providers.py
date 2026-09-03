@@ -299,21 +299,29 @@ def _require_web_url(url: str) -> str:
 
 
 class _UrllibHttp:
+    # Some image-API CDNs reject the bare ``Python-urllib`` User-Agent with 403.
+    _USER_AGENT = "video-generator/1.0 (+https://github.com/; asset-resolver)"
+
     def __init__(self, timeout_seconds: float = 20.0) -> None:
         self._timeout = timeout_seconds
+
+    def _headers(self, headers: Mapping[str, str] | None) -> dict[str, str]:
+        merged = {"User-Agent": self._USER_AGENT}
+        merged.update(dict(headers or {}))
+        return merged
 
     def get_json(self, url: str, headers: Mapping[str, str] | None = None,
                  params: Mapping[str, Any] | None = None) -> Any:
         _require_web_url(url)
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
-        request = urllib.request.Request(url, headers=dict(headers or {}))
+        request = urllib.request.Request(url, headers=self._headers(headers))
         with urllib.request.urlopen(request, timeout=self._timeout) as response:  # noqa: S310
             return json.loads(response.read().decode("utf-8"))
 
     def get_bytes(self, url: str, headers: Mapping[str, str] | None = None) -> bytes:
         _require_web_url(url)
-        request = urllib.request.Request(url, headers=dict(headers or {}))
+        request = urllib.request.Request(url, headers=self._headers(headers))
         with urllib.request.urlopen(request, timeout=self._timeout) as response:  # noqa: S310
             return response.read()
 
