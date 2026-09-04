@@ -81,6 +81,19 @@ ruim seja uma linha de edição e toda decisão fique auditável depois. O módu
 stdlib puro e não importa nenhum irmão do domínio: `planning` depende dele,
 nunca o contrário.
 
+`video_generator.domain.relevance` é a **Semantic Visual Relevance v1**: a
+camada entre o beat editorial e o asset. `editorial` sabe *sobre o que* é o
+corte e `assets` sabe *se o arquivo serve*; entre os dois não havia nada, e era
+por isso que um roteiro sobre um ser humano acabava narrado sobre neurônios de
+CGI. O módulo classifica a **intenção visual** (`VISUAL_INTENTS`) e o **papel
+visual** (`VISUAL_ROLES`) do beat, refina a query inglesa para *tema + intenção*
+e, do outro lado, contribui componentes de adequação e **motivos de recusa**
+(`RelevanceAssessment`) para o ranking do resolver. Também é stdlib puro e não
+importa nenhum irmão do domínio — `editorial`, `planning` e `assets` dependem
+dele, nunca o contrário. É opt-in: `plan-shots(visual_relevance=True)` /
+`plan-scenes --visual-relevance`; sem isso os campos ficam ausentes e todo o
+comportamento anterior é preservado.
+
 Três regras dessa camada valem registro porque não são óbvias:
 
 - **As queries de asset saem em inglês; narração e `visual_intent` ficam no

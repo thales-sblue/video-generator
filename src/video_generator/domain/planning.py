@@ -33,6 +33,7 @@ from video_generator.domain.editorial import (
     read_beats,
 )
 from video_generator.domain.models import EditOperation, EditPlan, TargetFormat
+from video_generator.domain.relevance import VISUAL_INTENTS, VISUAL_ROLES
 
 SCHEMA_VERSION = 1
 
@@ -902,6 +903,13 @@ class Shot:
     editorial_role: str | None = None
     asset_queries: tuple[str, ...] = ()
     beat_concept: str | None = None
+    # --- Semantic Visual Relevance v1 (optional) --------------------------- #
+    # Present when the shot was planned with ``visual_relevance=True``. They
+    # are what makes a pick auditable: the kind of picture the beat asked for,
+    # the job that picture has, and the query that says both.
+    visual_intent_class: str | None = None
+    visual_role: str | None = None
+    refined_query: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "shot_id", _text(self.shot_id, "shot_id"))
@@ -956,6 +964,17 @@ class Shot:
         object.__setattr__(
             self, "beat_concept", _optional_text(self.beat_concept, "beat_concept")
         )
+        if self.visual_intent_class is not None and (
+            self.visual_intent_class not in VISUAL_INTENTS
+        ):
+            raise PlanningError(
+                f"visual_intent_class must be one of {', '.join(VISUAL_INTENTS)}"
+            )
+        if self.visual_role is not None and self.visual_role not in VISUAL_ROLES:
+            raise PlanningError(f"visual_role must be one of {', '.join(VISUAL_ROLES)}")
+        object.__setattr__(
+            self, "refined_query", _optional_text(self.refined_query, "refined_query")
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -977,6 +996,9 @@ class Shot:
             "editorial_role": self.editorial_role,
             "asset_queries": list(self.asset_queries),
             "beat_concept": self.beat_concept,
+            "visual_intent_class": self.visual_intent_class,
+            "visual_role": self.visual_role,
+            "refined_query": self.refined_query,
         }
 
     @classmethod
@@ -988,7 +1010,10 @@ class Shot:
                 "shot_type", "scale", "visual_query", "purpose", "beat",
                 "asset_id", "reuse_of", "framing", "justification", "provenance",
             },
-            optional={"editorial_role", "asset_queries", "beat_concept"},
+            optional={
+                "editorial_role", "asset_queries", "beat_concept",
+                "visual_intent_class", "visual_role", "refined_query",
+            },
         )
         return cls(
             shot_id=data["shot_id"],
@@ -1009,6 +1034,9 @@ class Shot:
             editorial_role=data.get("editorial_role"),
             asset_queries=tuple(data.get("asset_queries", ())),
             beat_concept=data.get("beat_concept"),
+            visual_intent_class=data.get("visual_intent_class"),
+            visual_role=data.get("visual_role"),
+            refined_query=data.get("refined_query"),
         )
 
 
@@ -1194,6 +1222,13 @@ class AssetRequirement:
     # semantically. Empty means "just the one query", which is what every plan
     # written before the editorial layer says.
     queries: tuple[str, ...] = ()
+    # --- Semantic Visual Relevance v1 (optional) --------------------------- #
+    # Carried from the requirement's first shot so the resolver can rank and
+    # reject candidates against the beat's editorial intention, not only
+    # against its vocabulary. Absent means "rank as before".
+    visual_intent_class: str | None = None
+    visual_role: str | None = None
+    emotion: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "asset_id", _text(self.asset_id, "asset_id"))
@@ -1220,6 +1255,15 @@ class AssetRequirement:
         if len(set(queries)) != len(queries):
             raise PlanningError("queries must be unique")
         object.__setattr__(self, "queries", queries)
+        if self.visual_intent_class is not None and (
+            self.visual_intent_class not in VISUAL_INTENTS
+        ):
+            raise PlanningError(
+                f"visual_intent_class must be one of {', '.join(VISUAL_INTENTS)}"
+            )
+        if self.visual_role is not None and self.visual_role not in VISUAL_ROLES:
+            raise PlanningError(f"visual_role must be one of {', '.join(VISUAL_ROLES)}")
+        object.__setattr__(self, "emotion", _optional_text(self.emotion, "emotion"))
 
     def search_queries(self) -> tuple[str, ...]:
         """Every query the resolver may try, best first, always including the
@@ -1240,6 +1284,9 @@ class AssetRequirement:
             "min_count": self.min_count,
             "notes": self.notes,
             "queries": list(self.queries),
+            "visual_intent_class": self.visual_intent_class,
+            "visual_role": self.visual_role,
+            "emotion": self.emotion,
         }
 
     @classmethod
@@ -1250,7 +1297,10 @@ class AssetRequirement:
                 "asset_id", "type", "query", "duration_needed_seconds",
                 "orientation", "purpose", "used_by",
             },
-            optional={"min_count", "notes", "queries"},
+            optional={
+                "min_count", "notes", "queries", "visual_intent_class",
+                "visual_role", "emotion",
+            },
         )
         return cls(
             asset_id=data["asset_id"],
@@ -1263,6 +1313,9 @@ class AssetRequirement:
             min_count=data.get("min_count", 1),
             notes=data.get("notes"),
             queries=tuple(data.get("queries", ())),
+            visual_intent_class=data.get("visual_intent_class"),
+            visual_role=data.get("visual_role"),
+            emotion=data.get("emotion"),
         )
 
 
@@ -1535,6 +1588,7 @@ def plan_shots(
     plan_id: str | None = None,
     asset_plan_id: str | None = None,
     semantic: bool = False,
+    visual_relevance: bool = False,
     editorial_policy: "EditorialPolicy | None" = None,
     hook_policy: "HookPolicy | None" = None,
 ) -> tuple["ShotPlan", "AssetRequirements"]:
@@ -1550,6 +1604,12 @@ def plan_shots(
     shot asks for, which alternatives it may fall back to, and which shot type
     the slice actually calls for (as a bias on the draw, never an override —
     the run limits still guarantee variety).
+
+    ``visual_relevance=True`` (Semantic Visual Relevance v1, needs ``semantic``)
+    adds the editorial layer between beat and asset: every beat is also read
+    for its visual intent class and visual role, its leading query is refined
+    to ask for both, and those two labels travel to the requirement so the
+    resolver can rank and reject candidates on editorial fit.
 
     ``hook_policy`` additionally gives the opening its own ceiling and forbids
     asset reuse there.
@@ -1582,8 +1642,12 @@ def plan_shots(
     # output — is left exactly as it was.
     beats_by_shot: "dict[str, NarrationBeat]" = {}
     layout_cache: "dict[str, tuple[list[float], list[bool], list[str]]]" = {}
+    if visual_relevance and not semantic:
+        raise PlanningError("visual_relevance requires semantic planning")
     if semantic:
         editorial_policy = editorial_policy or DEFAULT_EDITORIAL_POLICY
+        if visual_relevance and not editorial_policy.visual_relevance:
+            editorial_policy = replace(editorial_policy, visual_relevance=True)
         slice_rng = random.Random(seed)
         elapsed = 0.0
         slices: list[tuple[str, str, str]] = []
@@ -1685,11 +1749,15 @@ def plan_shots(
                 asset_queries = narration_beat.asset_queries
                 editorial_role = narration_beat.editorial_role
                 beat_concept = _beat_summary(narration_beat)
+                intent_class = narration_beat.visual_intent_class
+                visual_role = narration_beat.visual_role
+                refined_query = narration_beat.refined_query
             else:
                 visual_query = _visual_query(scale, shot_type, slice_text, policy)
                 asset_queries = ()
                 editorial_role = None
                 beat_concept = None
+                intent_class = visual_role = refined_query = None
             purpose = f"{scene.visual_intent} — beat {local_index}/{scene_shot_count}"
 
             # asset + reuse
@@ -1762,6 +1830,9 @@ def plan_shots(
                 editorial_role=editorial_role,
                 asset_queries=asset_queries,
                 beat_concept=beat_concept,
+                visual_intent_class=intent_class,
+                visual_role=visual_role,
+                refined_query=refined_query,
             )
             scene_shots.append(shot)
             flat_scales.append(scale)
@@ -1784,13 +1855,18 @@ def plan_shots(
         shot_plan,
         orientation=orientation,
         plan_id=asset_plan_id or f"{scene_plan.script_id}-asset-requirements",
+        emotion_by_shot={b.beat_id: b.emotion for b in beats_by_shot.values()},
     )
     asset_requirements.validate_against(shot_plan)
     return shot_plan, asset_requirements
 
 
 def _asset_requirements_from_shots(
-    shot_plan: "ShotPlan", *, orientation: str, plan_id: str
+    shot_plan: "ShotPlan",
+    *,
+    orientation: str,
+    plan_id: str,
+    emotion_by_shot: "Mapping[str, str | None] | None" = None,
 ) -> "AssetRequirements":
     """Group a shot plan's shots by their (immutable) asset_id into requirements.
 
@@ -1824,6 +1900,9 @@ def _asset_requirements_from_shots(
                 purpose=users[0].purpose,
                 used_by=tuple(u.shot_id for u in users),
                 queries=users[0].asset_queries,
+                visual_intent_class=users[0].visual_intent_class,
+                visual_role=users[0].visual_role,
+                emotion=(emotion_by_shot or {}).get(users[0].shot_id),
             )
         )
     return AssetRequirements(

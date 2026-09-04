@@ -27,6 +27,11 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from video_generator.domain.planning import AssetRequirement, AssetRequirements
+from video_generator.domain.relevance import (
+    DEFAULT_RELEVANCE_POLICY,
+    RelevancePolicy,
+    assess_candidate,
+)
 
 SCHEMA_VERSION = 1
 
@@ -39,6 +44,11 @@ UNRESOLVED_REASONS = (
     "needs_editorial_override",
     "acquisition_failed",
     "below_quality_floor",
+    # Candidates existed and shared meaning, but every one of them was refused
+    # by a Semantic Visual Relevance rule (keyword-only match, generic stock,
+    # a mood that contradicts the narration, abstract CGI on a human beat, or
+    # the same visual language three shots running).
+    "editorially_rejected",
 )
 
 # The score components that reflect a *meaning* match between a requirement and a
@@ -327,6 +337,12 @@ class AssetScoringPolicy:
     # resolution alone, which is never enough to resolve a shot. 0.0 means "any
     # shared visual term is enough"; raise it to demand a stronger match.
     min_semantic_score: float = 0.0
+    # Semantic Visual Relevance v1. The policy is consulted only for a
+    # requirement that actually carries a visual intent class and role, so an
+    # older plan ranks exactly as it did before.
+    relevance_policy: "RelevancePolicy" = field(
+        default_factory=lambda: DEFAULT_RELEVANCE_POLICY
+    )
 
     _FLOAT_FIELDS = (
         "weight_query_match",
@@ -358,6 +374,8 @@ class AssetScoringPolicy:
             _bool(getattr(self, name), name)
         if self.min_short_edge > self.min_long_edge:
             raise AssetResolutionError("min_short_edge must not exceed min_long_edge")
+        if not isinstance(self.relevance_policy, RelevancePolicy):
+            raise AssetResolutionError("relevance_policy must be a RelevancePolicy")
 
     def to_dict(self) -> dict[str, Any]:
         payload = {name: getattr(self, name) for name in self._FLOAT_FIELDS}
@@ -535,6 +553,14 @@ class ScoreBreakdown:
     components: Mapping[str, float]
     disqualified: bool
     disqualified_reasons: tuple[str, ...]
+    # Semantic Visual Relevance verdicts. ``disqualified_reasons`` says the
+    # candidate does not *fit* (wrong media type, too short, too small);
+    # ``rejection_reasons`` says it does not *belong* (nothing to do with the
+    # beat, catalogue filler, the wrong mood, the same look again). Both
+    # exclude the candidate; keeping them apart is what makes a resolution
+    # report readable.
+    rejection_reasons: tuple[str, ...] = ()
+    visual_family: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -543,10 +569,15 @@ class ScoreBreakdown:
         object.__setattr__(
             self, "disqualified_reasons", tuple(self.disqualified_reasons)
         )
+        object.__setattr__(self, "rejection_reasons", tuple(self.rejection_reasons))
 
     @property
     def total(self) -> float:
         return sum(self.components.values())
+
+    @property
+    def excluded(self) -> bool:
+        return self.disqualified or bool(self.rejection_reasons)
 
 
 def _overlap_score(query_terms: tuple[str, ...], bag: frozenset[str], weight: float) -> float:
@@ -563,8 +594,16 @@ def score_candidate(
     *,
     uses: int = 1,
     adjacent_terms: frozenset[str] = frozenset(),
+    recent_families: "tuple[str, ...]" = (),
 ) -> ScoreBreakdown:
-    """Score one candidate against one requirement, every term inspectable."""
+    """Score one candidate against one requirement, every term inspectable.
+
+    When the requirement carries a Semantic Visual Relevance reading
+    (``visual_intent_class`` / ``visual_role``), the breakdown also carries the
+    relevance components and any rejection reason: editorial fit is scored
+    alongside lexical overlap, and a candidate that belongs to a different
+    kind of picture than the beat asked for is refused outright.
+    """
 
     reasons: list[str] = []
 
@@ -625,6 +664,24 @@ def score_candidate(
     else:
         components["duration"] = 0.0
 
+    # --- Semantic Visual Relevance v1 ------------------------------------- #
+    # Counted here rather than inside the relevance module so the two layers
+    # can never disagree about what "shared" means for this requirement.
+    shared_query = sum(1 for term in query_terms if term in bag)
+    shared_context = sum(1 for term in set(purpose_terms) | set(intent_terms) if term in bag)
+    assessment = assess_candidate(
+        bag,
+        visual_intent_class=requirement.visual_intent_class,
+        visual_role=requirement.visual_role,
+        emotion=requirement.emotion,
+        query_terms=query_terms,
+        shared_query_terms=shared_query,
+        shared_context_terms=shared_context,
+        recent_families=recent_families,
+        policy=policy.relevance_policy,
+    )
+    components.update(assessment.components)
+
     components["repetition_penalty"] = -policy.reuse_repetition_penalty * max(0, uses - 1)
 
     if adjacent_terms and bag:
@@ -638,6 +695,8 @@ def score_candidate(
         components=components,
         disqualified=bool(reasons),
         disqualified_reasons=tuple(reasons),
+        rejection_reasons=assessment.rejection_reasons,
+        visual_family=assessment.family,
     )
 
 
@@ -648,8 +707,9 @@ def rank_candidates(
     *,
     uses_by_candidate: Mapping[str, int] | None = None,
     adjacent_terms: frozenset[str] = frozenset(),
+    recent_families: "tuple[str, ...]" = (),
 ) -> list[AssetCandidate]:
-    """Score, drop disqualified, and return the survivors ordered by descending
+    """Score, drop excluded, and return the survivors ordered by descending
     total with a ``candidate_id`` tie-break so the ranking is deterministic.
 
     ``uses_by_candidate`` counts how many slots each candidate has *already*
@@ -657,8 +717,62 @@ def rank_candidates(
     used once is on its second use, and pays the repetition penalty for it.
     """
 
+    ranked, _ = rank_candidates_with_report(
+        requirement,
+        candidates,
+        policy,
+        uses_by_candidate=uses_by_candidate,
+        adjacent_terms=adjacent_terms,
+        recent_families=recent_families,
+    )
+    return ranked
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateVerdict:
+    """Why one candidate did or did not survive the ranking — the explainable
+    half of a resolution, kept out of the published plan on purpose."""
+
+    candidate_id: str
+    score: float
+    components: Mapping[str, float]
+    disqualified_reasons: tuple[str, ...]
+    rejection_reasons: tuple[str, ...]
+    visual_family: str | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "components", MappingProxyType(dict(self.components)))
+
+    @property
+    def accepted(self) -> bool:
+        return not (self.disqualified_reasons or self.rejection_reasons)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "score": round(self.score, 4),
+            "components": {k: round(v, 4) for k, v in self.components.items()},
+            "disqualified_reasons": list(self.disqualified_reasons),
+            "rejection_reasons": list(self.rejection_reasons),
+            "visual_family": self.visual_family,
+        }
+
+
+def rank_candidates_with_report(
+    requirement: AssetRequirement,
+    candidates: "list[AssetCandidate] | tuple[AssetCandidate, ...]",
+    policy: AssetScoringPolicy = DEFAULT_SCORING_POLICY,
+    *,
+    uses_by_candidate: Mapping[str, int] | None = None,
+    adjacent_terms: frozenset[str] = frozenset(),
+    recent_families: "tuple[str, ...]" = (),
+) -> "tuple[list[AssetCandidate], tuple[CandidateVerdict, ...]]":
+    """:func:`rank_candidates` plus the verdict on *every* candidate, kept in
+    scored order, so a bad or empty ranking can be explained after the fact."""
+
     uses_by_candidate = uses_by_candidate or {}
     scored: list[tuple[float, str, AssetCandidate]] = []
+    verdicts: list[tuple[float, str, CandidateVerdict]] = []
     for candidate in candidates:
         breakdown = score_candidate(
             requirement,
@@ -666,13 +780,29 @@ def rank_candidates(
             policy,
             uses=uses_by_candidate.get(candidate.candidate_id, 0) + 1,
             adjacent_terms=adjacent_terms,
+            recent_families=recent_families,
         )
-        if breakdown.disqualified:
+        verdicts.append(
+            (
+                breakdown.total,
+                candidate.candidate_id,
+                CandidateVerdict(
+                    candidate_id=candidate.candidate_id,
+                    score=breakdown.total,
+                    components=breakdown.components,
+                    disqualified_reasons=breakdown.disqualified_reasons,
+                    rejection_reasons=breakdown.rejection_reasons,
+                    visual_family=breakdown.visual_family,
+                ),
+            )
+        )
+        if breakdown.excluded:
             continue
         ranked_candidate = candidate.with_score(breakdown)
         scored.append((ranked_candidate.score, ranked_candidate.candidate_id, ranked_candidate))
     scored.sort(key=lambda row: (-row[0], row[1]))
-    return [row[2] for row in scored]
+    verdicts.sort(key=lambda row: (-row[0], row[1]))
+    return [row[2] for row in scored], tuple(row[2] for row in verdicts)
 
 
 def semantic_support(candidate: AssetCandidate) -> float:

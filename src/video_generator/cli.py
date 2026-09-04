@@ -333,6 +333,13 @@ def build_parser() -> argparse.ArgumentParser:
         "the visual query, the fallback queries and the shot type",
     )
     plan_scenes_cmd.add_argument(
+        "--visual-relevance",
+        action="store_true",
+        help="Semantic Visual Relevance v1: also read each beat's visual intent "
+        "class and visual role, refine its English query with both, and carry "
+        "them to the asset requirements (needs --semantic)",
+    )
+    plan_scenes_cmd.add_argument(
         "--hook-seconds",
         type=float,
         help="give the opening its own tighter rhythm and no asset reuse "
@@ -1107,10 +1114,13 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
             )
 
         semantic = bool(getattr(args, "semantic", False))
+        visual_relevance = bool(getattr(args, "visual_relevance", False))
         hook_seconds = getattr(args, "hook_seconds", None)
         text_events_path = getattr(args, "text_events", None)
         if not semantic and (hook_seconds is not None or text_events_path is not None):
             raise PlanningError("--hook-seconds and --text-events require --semantic")
+        if visual_relevance and not semantic:
+            raise PlanningError("--visual-relevance requires --semantic")
         hook_policy = HookPolicy(hook_seconds=hook_seconds) if hook_seconds else None
 
         scene_plan = plan_scenes(script, policy=policy, seed=args.seed)
@@ -1120,6 +1130,7 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
             seed=args.seed,
             orientation=orientation,
             semantic=semantic,
+            visual_relevance=visual_relevance,
             hook_policy=hook_policy,
         )
 
@@ -1362,6 +1373,7 @@ def _run_resolve_assets(args: argparse.Namespace) -> int:
         "images": images,
         "videos": videos,
         "providers": dict(sorted(result.provider_stats.items())),
+        "relevance_rejections": dict(result.rejection_counts),
         "with_full_provenance": len(plan.resolved),
         "out_dir": str(out_dir),
         "bindings": str(bindings_out),
@@ -1378,6 +1390,7 @@ def _run_resolve_assets(args: argparse.Namespace) -> int:
             f"  resolved: {summary['resolved']} ({images} image / {videos} video)",
             f"  unresolved: {summary['unresolved']} {by_reason or ''}".rstrip(),
             f"  providers: {summary['providers'] or '{}'}",
+            f"  relevance rejections: {summary['relevance_rejections'] or '{}'}",
             f"  written to: {out_dir}",
         ]
         print("\n".join(lines) + "\n")

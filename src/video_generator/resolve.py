@@ -29,12 +29,13 @@ from video_generator.domain.assets import (
     UnresolvedRequirement,
     _iso_now,
     has_semantic_support,
-    rank_candidates,
+    rank_candidates_with_report,
     review_reuse,
     sanitize_query,
     semantic_support,
 )
 from video_generator.domain.planning import AssetRequirements, ShotPlan
+from video_generator.domain.relevance import visual_family
 
 _IMAGE_FALLBACK_EXT = ".jpg"
 _VIDEO_FALLBACK_EXT = ".mp4"
@@ -51,6 +52,9 @@ class ResolveResult:
     revised_requirements: AssetRequirements
     review: ReuseReview | None
     provider_stats: Mapping[str, int] = field(default_factory=dict)
+    # How many candidates each Semantic Visual Relevance rule refused across
+    # the whole run. Empty when no requirement carried a relevance reading.
+    rejection_counts: Mapping[str, int] = field(default_factory=dict)
 
 
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -151,18 +155,25 @@ def resolve_assets(
     provider_stats: dict[str, int] = {}
     uses_by_candidate: dict[str, int] = {}
     recent_bags: list[frozenset[str]] = []
+    # The visual families of the last few chosen assets, so Semantic Visual
+    # Relevance can see the same look coming back three shots running — which
+    # no per-candidate score can notice on its own.
+    recent_families: list[str] = []
+    rejection_counts: dict[str, int] = {}
 
     for req in revised.requirements:
         adjacent = frozenset().union(*recent_bags) if recent_bags else frozenset()
+        families = tuple(recent_families[-_ADJACENCY_WINDOW:])
 
         # A requirement may offer several ways of asking for the same idea. Try
         # them best-first and keep the first that finds something the shot
         # actually shares meaning with; a picture of an exam beats a picture of
         # the person the exam happened to, and the fallbacks are what make that
         # reachable without a human rewriting the query.
-        attempts: list[tuple[str, "SanitizedQuery", list]] = []
+        attempts: list[tuple[str, "SanitizedQuery", list, tuple]] = []
         failure: UnresolvedRequirement | None = None
         ranked: list = []
+        verdicts: tuple = ()
         chosen_query: str | None = None
         chosen_sq = None
         for query in req.search_queries():
@@ -174,7 +185,7 @@ def resolve_assets(
             context = "" if req.queries else req.purpose
             sq = sanitize_query(query, context, policy=scoring_policy)
             if not sq.usable:
-                attempts.append((query, sq, []))
+                attempts.append((query, sq, [], ()))
                 continue
             attempt_req = replace(req, query=query)
             raw_candidates = []
@@ -200,14 +211,16 @@ def resolve_assets(
                 seen_ids.add(candidate.candidate_id)
                 candidates.append(candidate)
 
-            scored = rank_candidates(
+            scored, attempt_verdicts = rank_candidates_with_report(
                 attempt_req,
                 candidates,
                 scoring_policy,
                 uses_by_candidate=uses_by_candidate,
                 adjacent_terms=adjacent,
+                recent_families=families,
             )
-            attempts.append((query, sq, candidates))
+            verdicts = attempt_verdicts
+            attempts.append((query, sq, candidates, attempt_verdicts))
             # Structural fit (type / orientation / resolution / duration) is
             # not a match: a candidate only earns a slot when it shares a real
             # visual term with the shot.
@@ -220,7 +233,7 @@ def resolve_assets(
 
         if not ranked:
             # report against the best attempt: the furthest one got
-            usable = [(q, sq, cands) for q, sq, cands in attempts if sq.usable]
+            usable = [row for row in attempts if row[1].usable]
             if not usable:
                 first_sq = attempts[0][1] if attempts else None
                 failure = UnresolvedRequirement(
@@ -231,7 +244,7 @@ def resolve_assets(
                     sanitized_query=(first_sq.to_text() if first_sq else None) or None,
                 )
             else:
-                query, sq, candidates = max(usable, key=lambda row: len(row[2]))
+                query, sq, candidates, verdicts = max(usable, key=lambda row: len(row[2]))
                 if not candidates:
                     failure = UnresolvedRequirement(
                         asset_id=req.asset_id,
@@ -244,19 +257,46 @@ def resolve_assets(
                         sanitized_query=sq.to_text() or None,
                     )
                 else:
-                    failure = UnresolvedRequirement(
-                        asset_id=req.asset_id,
-                        requirement=req,
-                        reason="no_semantic_match",
-                        detail=(
-                            "no candidate query found a candidate sharing a "
-                            "visual term with the shot; needs an editorial "
-                            "visual query"
-                        ),
-                        sanitized_query=sq.to_text() or None,
-                    )
+                    rejected = [v for v in verdicts if v.rejection_reasons]
+                    if rejected and len(rejected) == len(verdicts):
+                        # every candidate was refused on editorial grounds, not
+                        # on vocabulary: say so, because the fix is a different
+                        # picture, not a different query
+                        seen: dict[str, None] = {}
+                        for verdict in rejected:
+                            for reason in verdict.rejection_reasons:
+                                seen.setdefault(reason, None)
+                        failure = UnresolvedRequirement(
+                            asset_id=req.asset_id,
+                            requirement=req,
+                            reason="editorially_rejected",
+                            detail=(
+                                f"all {len(rejected)} candidates were refused by "
+                                "Semantic Visual Relevance: " + ", ".join(seen)
+                            ),
+                            sanitized_query=sq.to_text() or None,
+                        )
+                    else:
+                        failure = UnresolvedRequirement(
+                            asset_id=req.asset_id,
+                            requirement=req,
+                            reason="no_semantic_match",
+                            detail=(
+                                "no candidate query found a candidate sharing a "
+                                "visual term with the shot; needs an editorial "
+                                "visual query"
+                            ),
+                            sanitized_query=sq.to_text() or None,
+                        )
+            for verdict in verdicts:
+                for reason in verdict.rejection_reasons:
+                    rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
             unresolved.append(failure)
             continue
+
+        for verdict in verdicts:
+            for reason in verdict.rejection_reasons:
+                rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
 
         chosen_resolved: ResolvedAsset | None = None
         last_failure = ""
@@ -329,6 +369,8 @@ def resolve_assets(
             )
             recent_bags.append(candidate.metadata_bag())
             del recent_bags[:-_ADJACENCY_WINDOW]
+            recent_families.append(visual_family(candidate.metadata_bag()))
+            del recent_families[:-_ADJACENCY_WINDOW]
             provider_stats[candidate.source_kind] = (
                 provider_stats.get(candidate.source_kind, 0) + 1
             )
@@ -363,4 +405,5 @@ def resolve_assets(
         revised_requirements=revised,
         review=review,
         provider_stats=provider_stats,
+        rejection_counts=dict(sorted(rejection_counts.items())),
     )

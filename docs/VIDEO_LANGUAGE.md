@@ -103,6 +103,34 @@ permanece se o shot compartilhar termos de conteúdo suficientes com o shot
 âncora; uma `visual_query` pobre demais (ex.: "outras / palavras") vira
 `needs_editorial_override` em vez de disparar uma busca por lixo.
 
+### Relevância visual semântica (`RelevancePolicy`)
+
+Um asset pode passar em todos os critérios acima e ainda ser a imagem errada.
+A **Semantic Visual Relevance v1** acrescenta a pergunta que faltava — *por que
+o espectador está olhando isto?* — em duas etiquetas por beat:
+
+- **intenção visual** (`visual_intent_class`): que tipo de imagem o beat pede —
+  `literal`, `metaphorical`, `emotional`, `scientific`, `evidence_or_archive`,
+  `everyday_human`, `tension_or_suspense`;
+- **papel visual** (`visual_role`): o que a imagem tem de fazer pelo argumento —
+  `explain`, `symbolize`, `shock`, `humanize`, `contextualize`, `build_tension`,
+  `support_claim`.
+
+As duas refinam a query (*tema + intenção editorial*), somam componentes ao
+ranking (afinidade de intenção, afinidade de papel, força visual) e **recusam**
+o candidato editorialmente ruim: relação de uma palavra solta só
+(`keyword_only_match`), catálogo genérico (`generic_stock`), humor que
+contradiz a narração (`tone_conflict`), CGI abstrato onde o beat pede gente
+(`abstract_cgi_mismatch`) e a mesma família visual três cortes seguidos
+(`visual_language_repetition`).
+
+Três limites deliberados. **Refinar não pode diluir**: no máximo um modificador
+por eixo, e a query original permanece como fallback. **A leitura é lexical e
+determinística**, não semântica de verdade: ela erra em ironia, negação e
+metáfora original, e os léxicos são dados justamente para que corrigir um erro
+seja uma linha. E **recusa não é aprovação**: nenhuma dessas regras substitui a
+revisão editorial humana; elas só tiram do caminho o que é obviamente errado.
+
 ## Formato de entrega (target format)
 
 - `target_format` no `VideoBrief`/`EditPlan` descreve o canvas final de forma

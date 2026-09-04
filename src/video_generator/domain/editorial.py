@@ -36,6 +36,14 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
+from video_generator.domain.relevance import (
+    DEFAULT_RELEVANCE_POLICY,
+    VISUAL_INTENTS,
+    VISUAL_ROLES,
+    RelevancePolicy,
+    read_relevance,
+)
+
 SCHEMA_VERSION = 1
 
 # What a beat is doing for the viewer. Ordered from "opens" to "closes".
@@ -350,6 +358,14 @@ class EditorialPolicy:
     # it stays a bias: the planner's run limits still forbid two of a type in a
     # row, so a whole script about documents does not become a wall of paper.
     shot_type_hint_bonus: float = 6.0
+    # Semantic Visual Relevance v1, opt-in. When true every beat is also read
+    # for *what kind* of picture it wants and *what that picture has to do*,
+    # and its leading query is refined accordingly. Off by default so an
+    # existing plan keeps producing byte-identical queries.
+    visual_relevance: bool = False
+    relevance_policy: RelevancePolicy = field(
+        default_factory=lambda: DEFAULT_RELEVANCE_POLICY
+    )
 
     def __post_init__(self) -> None:
         concepts = dict(self.concept_lexicon)
@@ -384,6 +400,10 @@ class EditorialPolicy:
         if bonus < 0.0:
             raise EditorialError("shot_type_hint_bonus must not be negative")
         object.__setattr__(self, "shot_type_hint_bonus", float(bonus))
+        if not isinstance(self.visual_relevance, bool):
+            raise EditorialError("visual_relevance must be a boolean")
+        if not isinstance(self.relevance_policy, RelevancePolicy):
+            raise EditorialError("relevance_policy must be a RelevancePolicy")
         object.__setattr__(self, "concept_lexicon", MappingProxyType(concepts))
         object.__setattr__(self, "emotion_lexicon", MappingProxyType(emotions))
         object.__setattr__(self, "entity_aliases", MappingProxyType(aliases))
@@ -414,6 +434,16 @@ class NarrationBeat:
     importance: float
     editorial_role: str
     shot_type_hint: str | None = None
+    # --- Semantic Visual Relevance v1 (optional) --------------------------- #
+    # Present only when the editorial policy enables it. ``visual_intent`` above
+    # stays what it always was: the Portuguese, human-readable "mostrar: …"
+    # line. These three add the machine-readable half — which *kind* of picture
+    # the beat wants, what that picture has to *do*, and the query rewritten to
+    # ask for both. ``relevance_rationale`` names the rules that fired.
+    visual_intent_class: str | None = None
+    visual_role: str | None = None
+    refined_query: str | None = None
+    relevance_rationale: str | None = None
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -446,6 +476,24 @@ class NarrationBeat:
         object.__setattr__(
             self, "shot_type_hint", _optional_text(self.shot_type_hint, "shot_type_hint")
         )
+        if self.visual_intent_class is not None and (
+            self.visual_intent_class not in VISUAL_INTENTS
+        ):
+            raise EditorialError(
+                f"visual_intent_class must be one of {', '.join(VISUAL_INTENTS)}"
+            )
+        if self.visual_role is not None and self.visual_role not in VISUAL_ROLES:
+            raise EditorialError(
+                f"visual_role must be one of {', '.join(VISUAL_ROLES)}"
+            )
+        object.__setattr__(
+            self, "refined_query", _optional_text(self.refined_query, "refined_query")
+        )
+        object.__setattr__(
+            self,
+            "relevance_rationale",
+            _optional_text(self.relevance_rationale, "relevance_rationale"),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -460,6 +508,10 @@ class NarrationBeat:
             "importance": self.importance,
             "editorial_role": self.editorial_role,
             "shot_type_hint": self.shot_type_hint,
+            "visual_intent_class": self.visual_intent_class,
+            "visual_role": self.visual_role,
+            "refined_query": self.refined_query,
+            "relevance_rationale": self.relevance_rationale,
         }
 
     @classmethod
@@ -470,7 +522,10 @@ class NarrationBeat:
                 "beat_id", "narration", "concept", "entities", "emotion",
                 "visual_intent", "asset_queries", "importance", "editorial_role",
             },
-            optional={"schema_version", "shot_type_hint"},
+            optional={
+                "schema_version", "shot_type_hint", "visual_intent_class",
+                "visual_role", "refined_query", "relevance_rationale",
+            },
         )
         return cls(
             beat_id=data["beat_id"],
@@ -483,6 +538,10 @@ class NarrationBeat:
             importance=data["importance"],
             editorial_role=data["editorial_role"],
             shot_type_hint=data.get("shot_type_hint"),
+            visual_intent_class=data.get("visual_intent_class"),
+            visual_role=data.get("visual_role"),
+            refined_query=data.get("refined_query"),
+            relevance_rationale=data.get("relevance_rationale"),
             schema_version=data.get("schema_version", SCHEMA_VERSION),
         )
 
@@ -789,6 +848,30 @@ def read_beats(
             intent_bits.append(entities[0])
         if emotion:
             intent_bits.append(emotion)
+
+        # --- Semantic Visual Relevance v1 (opt-in) ------------------------- #
+        # The queries above already say what the beat is *about*. The reading
+        # below says what kind of picture that has to be and what it has to do,
+        # and puts the refined query at the head of the list the resolver walks.
+        intent_class = visual_role = refined = rationale = None
+        if policy.visual_relevance:
+            reading = read_relevance(
+                text,
+                concept=concept,
+                base_queries=queries,
+                emotion=emotion,
+                editorial_role=role,
+                importance=importance,
+                has_concrete_concept=primary is not None,
+                policy=policy.relevance_policy,
+            )
+            intent_class = reading.visual_intent_class
+            visual_role = reading.visual_role
+            refined = reading.refined_query
+            rationale = reading.rationale
+            queries = list(reading.queries())[: policy.max_queries_per_beat]
+            previous_query = queries[0]
+
         beats.append(
             NarrationBeat(
                 beat_id=beat_id,
@@ -801,6 +884,10 @@ def read_beats(
                 importance=importance,
                 editorial_role=role,
                 shot_type_hint=shot_type_hint,
+                visual_intent_class=intent_class,
+                visual_role=visual_role,
+                refined_query=refined,
+                relevance_rationale=rationale,
             )
         )
     return tuple(beats)

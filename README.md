@@ -217,6 +217,31 @@ lidera uma query**, porque ele é o assunto do vídeo inteiro, não daquele trec
 é isso que impede que todo shot de um vídeo sobre Einstein peça "Einstein". Sem
 `--semantic` o planner é byte-a-byte o de antes, e os campos novos ficam ausentes.
 
+`--visual-relevance` (exige `--semantic`) liga a **Semantic Visual Relevance
+v1** (`domain/relevance.py`), a camada entre o beat editorial e a escolha de
+asset. A camada semântica já dizia *sobre o que* é o corte; esta diz *por que o
+espectador está olhando aquilo*, em três passos determinísticos:
+
+1. **`visual_intent_class`** — que tipo de imagem o beat pede: `literal`,
+   `metaphorical`, `emotional`, `scientific`, `evidence_or_archive`,
+   `everyday_human` ou `tension_or_suspense`.
+2. **`visual_role`** — o que a imagem tem de fazer pelo argumento: `explain`,
+   `symbolize`, `shock`, `humanize`, `contextualize`, `build_tension` ou
+   `support_claim`.
+3. **`refined_query`** — a query em inglês reescrita como *tema + intenção
+   editorial* (`empty classroom` → `moody dark empty classroom`). No máximo um
+   modificador por eixo e só enquanto a query couber em
+   `RelevancePolicy.max_query_words` (7): a busca pontua por sobreposição de
+   termos, então cada palavra que não carrega significado derruba o rank das
+   que carregam. A query original continua como fallback — refinar nunca torna
+   um beat impossível de buscar.
+
+Os dois rótulos viajam no `Shot` e no `AssetRequirement`, e por isso o
+`resolve-assets` passa a ranquear e a **recusar** candidatos por adequação
+editorial, não só por vocabulário (ver abaixo). Sem `--visual-relevance` nada
+disso acontece: os campos ficam `null`, e queries e ritmo continuam byte-a-byte
+os mesmos.
+
 `--hook-seconds N` dá aos primeiros N segundos um teto de duração mais curto e
 proíbe reuso de asset ali (o piso e o jitter continuam: abertura cortada num
 metrônomo de 2 s é monotonia, não ritmo). `--text-events <path>` escreve a camada
@@ -257,6 +282,26 @@ nela só dilui a busca. Nunca sobrescreve um asset existente com bytes diferente
 `--require-complete` sai com código 3 se sobrar requirement não resolvido. Sem
 API paga, sem scraping, sem download arbitrário de vídeo, sem remoção de
 watermark.
+
+Quando o requirement carrega os rótulos da Semantic Visual Relevance, o ranking
+ganha componentes de **adequação editorial** — afinidade com o `visual_intent_class`,
+afinidade com o `visual_role` e força visual — e passa a **recusar** o candidato
+editorialmente ruim, mesmo que ele pontue alto no lexical:
+
+| motivo | o que ele pega |
+| --- | --- |
+| `keyword_only_match` | a relação com o shot é uma palavra solta, e nada do `purpose` |
+| `generic_stock` | catálogo genérico (`business`, `handshake`, `corporate`, `mockup`…) |
+| `tone_conflict` | imagem alegre num beat sombrio, de tensão ou de choque |
+| `abstract_cgi_mismatch` | CGI abstrato de cérebro/neurônio/rede num beat humano ou emocional |
+| `visual_language_repetition` | a mesma *família visual* pela terceira vez seguida |
+
+Recusa é diferente de desqualificação: `disqualified_reasons` diz que o arquivo
+não **serve** (tipo, duração, resolução); `rejection_reasons` diz que ele não
+**pertence** àquele beat. Se todos os candidatos caírem por recusa editorial, o
+requirement fica `editorially_rejected` — a correção é outra imagem, não outra
+query. O resumo do comando traz `relevance_rejections` com a contagem por regra.
+Um requirement sem rótulos ranqueia exatamente como antes.
 
 `execute-sequence-plan` aceita ao menos dois segmentos de timeline ordenados. Um
 `sequence_clip` (source, início e fim) recorta um vídeo local; um `image_clip`

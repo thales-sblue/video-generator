@@ -107,6 +107,48 @@
               "type": "string",
               "minLength": 1
             }
+          },
+          "visual_intent_class": {
+            "description": "Semantic Visual Relevance v1: the visual intent class the resolver must rank and reject candidates against. Null means rank as before.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "literal",
+              "metaphorical",
+              "emotional",
+              "scientific",
+              "evidence_or_archive",
+              "everyday_human",
+              "tension_or_suspense",
+              null
+            ]
+          },
+          "visual_role": {
+            "description": "Semantic Visual Relevance v1: the editorial job the chosen picture has to do.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "explain",
+              "symbolize",
+              "shock",
+              "humanize",
+              "contextualize",
+              "build_tension",
+              "support_claim",
+              null
+            ]
+          },
+          "emotion": {
+            "description": "Semantic Visual Relevance v1: the beat's emotional colour, used to refuse a candidate whose mood contradicts the narration.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
           }
         }
       }

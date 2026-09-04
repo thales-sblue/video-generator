@@ -192,6 +192,48 @@
               "null"
             ],
             "minLength": 1
+          },
+          "visual_intent_class": {
+            "description": "Semantic Visual Relevance v1: what kind of picture this beat calls for. Null on a plan built without --visual-relevance.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "literal",
+              "metaphorical",
+              "emotional",
+              "scientific",
+              "evidence_or_archive",
+              "everyday_human",
+              "tension_or_suspense",
+              null
+            ]
+          },
+          "visual_role": {
+            "description": "Semantic Visual Relevance v1: what that picture has to do for the argument. Null on a plan built without --visual-relevance.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "explain",
+              "symbolize",
+              "shock",
+              "humanize",
+              "contextualize",
+              "build_tension",
+              "support_claim",
+              null
+            ]
+          },
+          "refined_query": {
+            "description": "Semantic Visual Relevance v1: the English query rewritten as topic plus editorial intention. Equal to 'visual_query' when present.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
           }
         }
       }
