@@ -353,6 +353,13 @@ class EditorialPolicy:
     dominant_term_document_ratio: float = 0.25
     # Importance at or above this makes a beat eligible for on-screen emphasis.
     text_event_min_importance: float = 0.6
+    # How far apart two emphases must sit outside the hook. Emphasis that
+    # never stops is wallpaper: on a three-and-a-half minute piece this is what
+    # keeps the layer at roughly a dozen moments rather than one per shot.
+    text_event_min_gap_seconds: float = 12.0
+    # A hard ceiling on the whole layer, applied to the *most important*
+    # candidates rather than the earliest ones.
+    text_event_max_events: int = 15
     # How hard a beat's shot-type hint pulls the planner's weighted draw. Large
     # enough to usually win against the base weights (1-3), small enough that
     # it stays a bias: the planner's run limits still forbid two of a type in a
@@ -394,6 +401,13 @@ class EditorialPolicy:
             self.dominant_term_document_ratio, "dominant_term_document_ratio"
         )
         _unit_interval(self.text_event_min_importance, "text_event_min_importance")
+        gap = self.text_event_min_gap_seconds
+        if isinstance(gap, bool) or not isinstance(gap, (int, float)) or gap <= 0:
+            raise EditorialError("text_event_min_gap_seconds must be greater than zero")
+        object.__setattr__(self, "text_event_min_gap_seconds", float(gap))
+        cap = self.text_event_max_events
+        if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+            raise EditorialError("text_event_max_events must be a positive integer")
         bonus = self.shot_type_hint_bonus
         if isinstance(bonus, bool) or not isinstance(bonus, (int, float)):
             raise EditorialError("shot_type_hint_bonus must be a number")
@@ -917,6 +931,12 @@ class TextEvent:
     position: str
     animation: str
     beat_id: str | None = None
+    # Which shot the words are read over, the accented run inside them, and
+    # why this beat earned emphasis at all. All optional, all audit trail: an
+    # emphasis layer nobody can question is one nobody can improve.
+    shot_id: str | None = None
+    highlight: tuple[int, int] | None = None
+    rationale: str | None = None
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -958,6 +978,26 @@ class TextEvent:
                 f"animation must be one of {', '.join(TEXT_EVENT_ANIMATIONS)}"
             )
         object.__setattr__(self, "beat_id", _optional_text(self.beat_id, "beat_id"))
+        object.__setattr__(self, "shot_id", _optional_text(self.shot_id, "shot_id"))
+        object.__setattr__(
+            self, "rationale", _optional_text(self.rationale, "rationale")
+        )
+        if self.highlight is not None:
+            span = tuple(self.highlight)
+            if len(span) != 2 or any(
+                isinstance(v, bool) or not isinstance(v, int) for v in span
+            ):
+                raise EditorialError("highlight must be a (start, end) index pair")
+            start, end = span
+            if not 0 <= start < end <= len(self.text):
+                raise EditorialError("highlight must be a span inside the text")
+            object.__setattr__(self, "highlight", (start, end))
+
+    @property
+    def highlight_text(self) -> str | None:
+        if self.highlight is None:
+            return None
+        return self.text[self.highlight[0] : self.highlight[1]]
 
     @property
     def duration_seconds(self) -> float:
@@ -975,6 +1015,9 @@ class TextEvent:
             "position": self.position,
             "animation": self.animation,
             "beat_id": self.beat_id,
+            "shot_id": self.shot_id,
+            "highlight": list(self.highlight) if self.highlight else None,
+            "rationale": self.rationale,
         }
 
     @classmethod
@@ -985,8 +1028,11 @@ class TextEvent:
                 "event_id", "text", "start_seconds", "end_seconds",
                 "category", "importance", "position", "animation",
             },
-            optional={"beat_id", "schema_version"},
+            optional={
+                "beat_id", "schema_version", "shot_id", "highlight", "rationale",
+            },
         )
+        highlight = data.get("highlight")
         return cls(
             event_id=data["event_id"],
             text=data["text"],
@@ -997,6 +1043,9 @@ class TextEvent:
             position=data["position"],
             animation=data["animation"],
             beat_id=data.get("beat_id"),
+            shot_id=data.get("shot_id"),
+            highlight=tuple(highlight) if highlight else None,
+            rationale=data.get("rationale"),
             schema_version=data.get("schema_version", SCHEMA_VERSION),
         )
 
@@ -1016,7 +1065,11 @@ class HookPolicy:
     hook_seconds: float = 40.0
     max_shot_seconds: float = 4.5
     text_event_min_importance: float = 0.45
-    min_gap_seconds: float = 2.5
+    # How far apart two emphases may sit in the opening. Lower than the body's
+    # gap, because the opening is where a word on screen earns most — but not
+    # so low that the first half-minute becomes a slideshow of captions on top
+    # of the captions.
+    min_gap_seconds: float = 6.0
     forbid_asset_reuse: bool = True
 
     def __post_init__(self) -> None:
@@ -1121,11 +1174,38 @@ def _emphasis_span(
     return " ".join(out)
 
 
+# A figure on its own is a complete statement — "1974", "26", "40" land the
+# moment they are read. Every other single word is a fragment of one:
+# "PRIMEIRO" and "NISSO" say nothing the voice has not already said better,
+# and they cost the viewer a glance to find that out.
+_SINGLE_WORD_CATEGORIES = ("date",)
+
+
+def _is_readable(span: str, category: str) -> bool:
+    """Whether this span can stand on screen as a statement of its own."""
+
+    words = span.split()
+    if not words:
+        return False
+    if len(words) == 1:
+        standalone = category in _SINGLE_WORD_CATEGORIES or any(
+            character.isdigit() for character in words[0]
+        )
+        if not standalone:
+            return False
+    # A span that opens on a connector reads as the middle of a sentence.
+    if _fold(words[0].strip(_STRIP)) in _STOPWORDS:
+        return False
+    return True
+
+
 def _emphasis_text(beat: NarrationBeat) -> tuple[str, str] | None:
     """The words to put on screen for this beat, and their category.
 
     Always a span taken verbatim from the narration — never invented copy, so
-    the emphasis can never contradict what is being said.
+    the emphasis can never contradict what is being said. A span that cannot
+    stand on its own is refused outright: no emphasis is better than a
+    fragment, and the layer is meant to be sparse anyway.
     """
 
     words = beat.narration.replace("\n", " ").split()
@@ -1168,6 +1248,42 @@ def _emphasis_text(beat: NarrationBeat) -> tuple[str, str] | None:
     return None
 
 
+def _emphasis_line(beat: NarrationBeat) -> "tuple[str, str] | None":
+    """``_emphasis_text`` with the readability guard applied."""
+
+    picked = _emphasis_text(beat)
+    if picked is None or not _is_readable(picked[0], picked[1]):
+        return None
+    return picked
+
+
+def _highlight_span(text: str, category: str) -> "tuple[int, int] | None":
+    """Which run inside an emphasis line carries the accent.
+
+    One run, never two: the accent exists to say *this is the word*, and a line
+    with three accented words has said nothing. A figure or a year accents
+    itself; anything else accents its longest content word.
+    """
+
+    words = [w for w in text.split() if w]
+    if len(words) < 2:
+        return None
+    if category in ("number", "date"):
+        target = next(
+            (w for w in words if any(ch.isdigit() for ch in w)),
+            None,
+        ) or max(words, key=len)
+    else:
+        content = [w for w in words if _fold(w.strip(_STRIP)) not in _STOPWORDS]
+        target = max(content or words, key=len)
+        if len(target.strip(_STRIP)) < 4:
+            return None
+    start = text.find(target)
+    if start < 0:
+        return None
+    return start, start + len(target)
+
+
 _CATEGORY_ANIMATION = MappingProxyType(
     {
         "number": "pop",
@@ -1202,14 +1318,18 @@ def plan_text_events(
     the timeline: this function computes no timing of its own, so the shot plan
     stays the single source of truth for when anything happens.
 
-    Most beats get nothing. An event is emitted only when the beat is important
-    enough *and* enough time has passed since the last one — emphasis that
-    never stops is wallpaper.
+    Most beats get nothing. Selection happens in two passes for a reason. The
+    **opening** is taken in time order, because the viewer has not decided to
+    stay yet and a strong line at 0:08 is worth more than a stronger one at
+    0:35. The **body** is taken by importance, so the dozen moments that reach
+    the screen are the twelve best in the script rather than the twelve that
+    happened to clear a gap first.
     """
 
-    events: list[TextEvent] = []
-    last_end = float("-inf")
-    body_gap = max(4.0, policy.text_event_min_importance * 8.0)
+    body_gap = policy.text_event_min_gap_seconds
+    cap = max_events if max_events is not None else policy.text_event_max_events
+
+    candidates: list[tuple[NarrationBeat, float, float, str, str]] = []
     for beat in beats:
         window = timings.get(beat.beat_id)
         if window is None:
@@ -1223,36 +1343,71 @@ def plan_text_events(
             if in_hook and hook_policy is not None
             else policy.text_event_min_importance
         )
-        gap = hook_policy.min_gap_seconds if in_hook and hook_policy is not None else body_gap
         if beat.importance < threshold:
             continue
-        if start - last_end < gap:
-            continue
-        picked = _emphasis_text(beat)
+        picked = _emphasis_line(beat)
         if picked is None:
             continue
-        text, category = picked
         # hold it for the shot, capped so a long shot does not park a word on
         # screen, and never past the shot's own end
         event_end = min(end, start + min(2.6, max(0.6, (end - start) * 0.9)))
         if event_end - start < 0.4:
             continue
+        candidates.append((beat, start, event_end, picked[0], picked[1]))
+
+    accepted: list[tuple[NarrationBeat, float, float, str, str]] = []
+
+    def _fits(start: float, end: float, gap: float) -> bool:
+        for _b, other_start, other_end, _t, _c in accepted:
+            if start < other_end + gap and other_start < end + gap:
+                return False
+        return True
+
+    if hook_policy is not None:
+        for row in candidates:
+            if not hook_policy.covers(row[1]):
+                continue
+            if len(accepted) >= cap:
+                break
+            if _fits(row[1], row[2], hook_policy.min_gap_seconds):
+                accepted.append(row)
+
+    body = [
+        row
+        for row in candidates
+        if hook_policy is None or not hook_policy.covers(row[1])
+    ]
+    # importance first, then time, so the ranking is total and deterministic
+    for row in sorted(body, key=lambda r: (-r[0].importance, r[1])):
+        if len(accepted) >= cap:
+            break
+        if _fits(row[1], row[2], body_gap):
+            accepted.append(row)
+
+    events: list[TextEvent] = []
+    for index, (beat, start, end, text, category) in enumerate(
+        sorted(accepted, key=lambda r: r[1]), start=1
+    ):
+        where = "hook" if hook_policy is not None and hook_policy.covers(start) else "body"
         events.append(
             TextEvent(
-                event_id=f"text_{len(events) + 1:03d}",
+                event_id=f"text_{index:03d}",
                 text=text,
                 start_seconds=round(start, 3),
-                end_seconds=round(event_end, 3),
+                end_seconds=round(end, 3),
                 category=category,
                 importance=beat.importance,
                 position=_CATEGORY_POSITION[category],
                 animation=_CATEGORY_ANIMATION[category],
                 beat_id=beat.beat_id,
+                shot_id=beat.beat_id,
+                highlight=_highlight_span(text, category),
+                rationale=(
+                    f"{where} · {category} · role:{beat.editorial_role} · "
+                    f"importance {beat.importance:.2f}"
+                ),
             )
         )
-        last_end = event_end
-        if max_events is not None and len(events) >= max_events:
-            break
     return tuple(events)
 
 

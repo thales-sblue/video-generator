@@ -93,11 +93,22 @@ def _validate_acquired(
     duration_needed: float,
     policy: AssetScoringPolicy,
     probe: Callable[[Path], "tuple[int | None, int | None, float | None]"] | None,
+    luma: "Callable[[Path], float | None] | None" = None,
 ) -> str | None:
     """Return None when the file is acceptable, else a short failure reason."""
 
     if not path.is_file() or path.stat().st_size == 0:
         return "acquired file is missing or empty"
+    if luma is not None and policy.max_mean_luma is not None:
+        # The one property no provider publishes and no lexicon can infer.
+        # Measured here rather than at ranking time because it needs the file,
+        # and here is the first moment the file exists.
+        measured = luma(path)
+        if measured is not None and measured > policy.max_mean_luma:
+            return (
+                f"mean brightness {measured:.2f} is above the channel ceiling "
+                f"{policy.max_mean_luma:.2f}"
+            )
     if probe is None:
         return None
     width, height, duration = probe(path)
@@ -127,8 +138,12 @@ def resolve_assets(
     do_review_reuse: bool = True,
     clock: Callable[[], str] = _iso_now,
     max_candidates_per_requirement: int = 24,
-    max_acquire_attempts: int = 3,
+    # Six rather than three: with a brightness ceiling in play, the top of the
+    # ranking can be several bright frames deep before a usable one appears,
+    # and a download only happens when the candidates above it were refused.
+    max_acquire_attempts: int = 6,
     probe: Callable[[Path], "tuple[int | None, int | None, float | None]"] | None = None,
+    luma: "Callable[[Path], float | None] | None" = None,
 ) -> ResolveResult:
     if not isinstance(asset_requirements, AssetRequirements):
         raise ResolveError("asset_requirements must be an AssetRequirements")
@@ -298,6 +313,15 @@ def resolve_assets(
             for reason in verdict.rejection_reasons:
                 rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
 
+        # What the winner beat, kept so a pick can be explained later without
+        # re-running the search: how many candidates were on the table and on
+        # what editorial grounds the others were refused.
+        refused = [v for v in verdicts if v.rejection_reasons]
+        context: dict[str, None] = {}
+        for verdict in refused:
+            for reason in verdict.rejection_reasons:
+                context.setdefault(reason, None)
+
         chosen_resolved: ResolvedAsset | None = None
         last_failure = ""
         for candidate in ranked[:max_acquire_attempts]:
@@ -323,6 +347,7 @@ def resolve_assets(
                 duration_needed=req.duration_needed_seconds,
                 policy=scoring_policy,
                 probe=probe,
+                luma=luma,
             )
             if failure:
                 last_failure = failure
@@ -363,6 +388,11 @@ def resolve_assets(
                 provenance=provenance,
                 matched_query=chosen_query,
                 sanitized_query=(chosen_sq.to_text() if chosen_sq else None) or None,
+                score_breakdown=dict(candidate.score_breakdown),
+                visual_family=visual_family(candidate.metadata_bag()),
+                candidates_considered=len(verdicts),
+                rejected_candidates=len(refused),
+                rejection_context=tuple(context),
             )
             uses_by_candidate[candidate.candidate_id] = (
                 uses_by_candidate.get(candidate.candidate_id, 0) + 1

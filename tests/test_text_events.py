@@ -211,8 +211,9 @@ class TextEventPlanIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             plan = _minimal_plan(Path(d), extra=())
             parsed = _operations_from_plan(plan)
-            self.assertEqual(parsed[-2], ())
-            self.assertIsNone(parsed[-1])
+            self.assertEqual(parsed.text_events, ())
+            self.assertIsNone(parsed.text_style)
+            self.assertIsNone(parsed.direction)
 
     def test_a_plan_with_the_layer_yields_cues_and_a_style(self):
         with tempfile.TemporaryDirectory() as d:
@@ -221,7 +222,7 @@ class TextEventPlanIntegrationTests(unittest.TestCase):
             )
             plan = _minimal_plan(Path(d), extra=(operation,))
             parsed = _operations_from_plan(plan)
-            cues, style = parsed[-2], parsed[-1]
+            cues, style = parsed.text_events, parsed.text_style
             self.assertEqual(len(cues), 1)
             self.assertEqual(cues[0].text, "1895")
             self.assertTrue(cues[0].emphasis)

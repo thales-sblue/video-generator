@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -81,6 +82,216 @@ def _check_fingerprint(
 
 _SUBTITLE_SUFFIXES = {".srt", ".vtt"}
 
+# The trailing operations a video-sequence plan may carry, in the only order
+# the workflow accepts them. Each is optional; the walk below takes them
+# strictly in this sequence, so a plan whose tail is out of order is still
+# refused for what it is rather than passing by accident.
+_SEGMENT_KINDS = ("sequence_clip", "image_clip")
+_KEN_BURNS_MOTIONS = (
+    "zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down",
+)
+_DIRECTION_MOTIONS = (
+    "static_hold", "slow_push_in", "slow_pull_out", "lateral_drift", "detail_push",
+)
+_COMPOSITIONS = (
+    "fullscreen", "extreme_crop", "inset", "layered", "split", "text_focus",
+)
+_STILL_ONLY_COMPOSITIONS = ("inset", "layered", "split")
+_CROP_BIASES = ("center", "top", "bottom", "left", "right")
+_TEXT_ZONES = ("top", "middle", "lower")
+_GRADE_INTENSITIES = ("none", "subtle", "standard", "strong")
+_SEGMENT_DIRECTION_KEYS = {"composition", "crop_bias", "text_zone", "grade"}
+_TEXT_EVENT_POSITIONS = ("top", "middle", "lower")
+_TEXT_EVENT_ANIMATIONS = ("fade", "pop", "slide", "highlight")
+_TEXT_EVENT_STYLE_KEYS = {
+    "font_name", "foreground", "accent", "emphasis_scale", "safe_margin_fraction",
+}
+_ASS_COLOUR = re.compile(r"^&H[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$")
+_VISUAL_DIRECTION_GRADE_KEYS = {
+    "saturation", "shadow_density", "highlight_gain", "highlight_ceiling",
+    "cool_shift", "grain", "vignette_angle", "luminance_pull",
+}
+_VISUAL_DIRECTION_GEOMETRY_KEYS = {
+    "background_blur_sigma", "background_darkening", "inset_scale",
+    "extreme_crop_zoom", "split_gap_fraction", "scrim_opacity",
+    "scrim_height_fraction", "push_travel", "detail_push_travel", "drift_travel",
+}
+
+
+def _finite(value: object, *, allow_negative: bool = False) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+        and (allow_negative or value >= 0)
+    )
+
+
+def _segment_direction_ok(parameters: Mapping[str, object], *, is_image: bool) -> bool:
+    """Whether a segment's optional Visual Direction keys are well-formed.
+
+    The same four names the workflow and the adapter check, checked here too:
+    a manifest that vouches for a plan has to understand every key that plan
+    can change the picture with.
+    """
+
+    composition = parameters.get("composition")
+    if composition is not None:
+        if composition not in _COMPOSITIONS:
+            return False
+        if not is_image and composition in _STILL_ONLY_COMPOSITIONS:
+            return False
+        if composition == "text_focus" and parameters.get("text_zone") is None:
+            return False
+    if parameters.get("crop_bias", "center") not in _CROP_BIASES:
+        return False
+    zone = parameters.get("text_zone")
+    if zone is not None and zone not in _TEXT_ZONES:
+        return False
+    grade = parameters.get("grade")
+    if grade is not None and grade not in _GRADE_INTENSITIES:
+        return False
+    return True
+
+
+def _visual_direction_matches(operation) -> bool:
+    parameters = dict(operation.parameters)
+    if (
+        operation.source is not None
+        or operation.start_seconds is not None
+        or operation.end_seconds is not None
+    ):
+        return False
+    allowed = {"style_id", "grade", "intensities"} | _VISUAL_DIRECTION_GEOMETRY_KEYS
+    if set(parameters) - allowed:
+        return False
+    style_id = parameters.get("style_id", "visual-direction-v1")
+    if not isinstance(style_id, str) or not style_id.strip():
+        return False
+    grade = parameters.get("grade", {})
+    if not isinstance(grade, Mapping) or set(grade) - _VISUAL_DIRECTION_GRADE_KEYS:
+        return False
+    if any(not _finite(value) for value in grade.values()):
+        return False
+    if any(
+        not _finite(parameters[key])
+        for key in _VISUAL_DIRECTION_GEOMETRY_KEYS
+        if key in parameters
+    ):
+        return False
+    intensities = parameters.get("intensities")
+    if intensities is not None:
+        if (
+            not isinstance(intensities, Mapping)
+            or set(intensities) != set(_GRADE_INTENSITIES)
+            or any(not _finite(value) for value in intensities.values())
+            or intensities["none"] != 0
+        ):
+            return False
+    return True
+
+
+def _text_events_match(operation, timeline_duration: float) -> bool:
+    """Whether a ``text_events`` operation is the shape the workflow accepts.
+
+    This is the operation the semantic planner emits for the emphasis layer.
+    Before it was understood here, every plan that carried one failed manifest
+    validation on form alone, however sound the render was.
+    """
+
+    parameters = dict(operation.parameters)
+    if (
+        operation.source is not None
+        or operation.start_seconds is not None
+        or operation.end_seconds is not None
+        or set(parameters) - {"items", "style"}
+    ):
+        return False
+    items = parameters.get("items")
+    if (
+        isinstance(items, (str, bytes))
+        or not isinstance(items, (list, tuple))
+        or not items
+        or len(items) > 200
+    ):
+        return False
+    previous_end = 0.0
+    for item in items:
+        if not isinstance(item, Mapping):
+            return False
+        if {"text", "start_seconds", "end_seconds"} - set(item):
+            return False
+        if set(item) - {
+            "text", "start_seconds", "end_seconds", "position", "animation",
+            "emphasis", "highlight",
+        }:
+            return False
+        highlight = item.get("highlight")
+        if highlight is not None and (
+            isinstance(highlight, (str, bytes))
+            or not isinstance(highlight, (list, tuple))
+            or len(highlight) != 2
+            or any(isinstance(v, bool) or not isinstance(v, int) for v in highlight)
+            or not 0 <= highlight[0] < highlight[1] <= len(str(item["text"]).strip())
+        ):
+            return False
+        text = item["text"]
+        start = item["start_seconds"]
+        end = item["end_seconds"]
+        if (
+            not isinstance(text, str)
+            or not text.strip()
+            or len(text.strip()) > 48
+            or any(ord(character) < 32 or character in "<>{}" for character in text)
+            or not _finite(start)
+            or not _finite(end)
+            or start < previous_end
+            or end <= start
+            or round(end * 1000) <= round(start * 1000)
+            or end > timeline_duration
+            or item.get("position", "top") not in _TEXT_EVENT_POSITIONS
+            or item.get("animation", "fade") not in _TEXT_EVENT_ANIMATIONS
+            or not isinstance(item.get("emphasis", False), bool)
+        ):
+            return False
+        previous_end = float(end)
+    style = parameters.get("style")
+    if style is None:
+        return True
+    if not isinstance(style, Mapping) or set(style) - _TEXT_EVENT_STYLE_KEYS:
+        return False
+    for name in ("font_name",):
+        value = style.get(name, "Sans")
+        if not isinstance(value, str) or not value.strip():
+            return False
+    for name in ("foreground", "accent"):
+        value = style.get(name, "&H00FFFFFF")
+        if not isinstance(value, str) or not _ASS_COLOUR.match(value):
+            return False
+    scale = style.get("emphasis_scale", 1.6)
+    if not _finite(scale) or not 1.0 <= scale <= 3.0:
+        return False
+    margin = style.get("safe_margin_fraction", 0.06)
+    if not _finite(margin) or margin > 0.2:
+        return False
+    return True
+
+
+def _fade_matches(operation, timeline_duration: float) -> bool:
+    parameters = dict(operation.parameters)
+    if (
+        operation.source is not None
+        or operation.start_seconds is not None
+        or operation.end_seconds is not None
+        or not set(parameters) <= {"from_black_seconds", "to_black_seconds"}
+    ):
+        return False
+    values = [parameters.get(key, 0.0) for key in ("from_black_seconds", "to_black_seconds")]
+    if any(not _finite(value) for value in values):
+        return False
+    return sum(float(value) for value in values) <= timeline_duration
+
+
 
 def _sequence_plan_matches(plan: EditPlan) -> bool:
     operations = plan.operations
@@ -100,17 +311,12 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
                 segment.start_seconds is not None
                 or segment.end_seconds is not None
                 or "duration_seconds" not in parameters
-                or set(parameters) - {"duration_seconds", "fit", "motion"}
+                or set(parameters)
+                - ({"duration_seconds", "fit", "motion"} | _SEGMENT_DIRECTION_KEYS)
                 or parameters.get("fit") not in (None, "contain", "cover")
-                or parameters.get("motion") not in (
-                    None,
-                    "zoom_in",
-                    "zoom_out",
-                    "pan_left",
-                    "pan_right",
-                    "pan_up",
-                    "pan_down",
-                )
+                or parameters.get("motion")
+                not in (None,) + _KEN_BURNS_MOTIONS + _DIRECTION_MOTIONS
+                or not _segment_direction_ok(parameters, is_image=True)
                 or isinstance(duration, bool)
                 or not isinstance(duration, (int, float))
                 or not math.isfinite(duration)
@@ -124,9 +330,10 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
             if (
                 segment.start_seconds is None
                 or segment.end_seconds is None
-                or set(parameters) - {"fit"}
+                or set(parameters) - ({"fit"} | _SEGMENT_DIRECTION_KEYS)
                 or parameters.get("fit") not in (None, "contain", "cover")
                 or ("fit" in parameters and plan.target_format is None)
+                or not _segment_direction_ok(parameters, is_image=False)
             ):
                 return False
             timeline_duration += segment.end_seconds - segment.start_seconds
@@ -137,6 +344,10 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
         # An all-image timeline is only coherent when the plan pins an explicit
         # delivery canvas via target_format.
         return False
+    if index < len(operations) and operations[index].kind == "visual_direction":
+        if not _visual_direction_matches(operations[index]):
+            return False
+        index += 1
     if index < len(operations) and operations[index].kind == "captions":
         captions = operations[index]
         parameters = dict(captions.parameters)
@@ -191,6 +402,14 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
             ):
                 return False
             previous_end = float(end)
+        index += 1
+    if index < len(operations) and operations[index].kind == "text_events":
+        if not _text_events_match(operations[index], timeline_duration):
+            return False
+        index += 1
+    if index < len(operations) and operations[index].kind == "fade":
+        if not _fade_matches(operations[index], timeline_duration):
+            return False
         index += 1
     if index < len(operations) and operations[index].kind == "music":
         music = operations[index]
@@ -311,8 +530,9 @@ def validate_render_manifest(
         issues.append(
             ManifestValidationIssue(
                 "workflow_plan_mismatch",
-                "video-sequence manifest requires at least two sequence_clip operations "
-                "followed by optional captions, looped music and matched narration",
+                "video-sequence manifest requires at least two timeline segments followed "
+                "by optional visual_direction, captions, text_events, fade, "
+                "looped music and matched narration, in that order",
             )
         )
 

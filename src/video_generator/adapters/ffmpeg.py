@@ -8,9 +8,9 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from video_generator.tooling import ToolResolutionError, resolve_media_tool
 
@@ -38,12 +38,40 @@ class AudioArtifact:
     file_size_bytes: int
 
 
+# Visual Direction v1. A segment may state *how* it appears, not only which
+# file it is: the framing grammar, the editorial move and how hard the channel
+# grade is applied. All optional and all appended last, so an older caller that
+# builds these positionally is untouched.
+COMPOSITIONS = (
+    "fullscreen",
+    "extreme_crop",
+    "inset",
+    "layered",
+    "split",
+    "text_focus",
+)
+DIRECTION_MOTIONS = (
+    "static_hold",
+    "slow_push_in",
+    "slow_pull_out",
+    "lateral_drift",
+    "detail_push",
+)
+GRADE_INTENSITIES = ("none", "subtle", "standard", "strong")
+CROP_BIASES = ("center", "top", "bottom", "left", "right")
+TEXT_ZONES = ("top", "middle", "lower")
+
+
 @dataclass(frozen=True, slots=True)
 class SequenceClip:
     source_path: str
     start_seconds: float
     end_seconds: float
     fit: str | None = None
+    composition: str | None = None
+    crop_bias: str = "center"
+    text_zone: str | None = None
+    grade: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +80,10 @@ class SequenceImage:
     duration_seconds: float
     fit: str | None = None
     motion: str | None = None
+    composition: str | None = None
+    crop_bias: str = "center"
+    text_zone: str | None = None
+    grade: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +111,11 @@ class TextEventCue:
     position: str = "top"
     animation: str = "fade"
     emphasis: bool = False
+    # The one run inside the line that carries the channel accent, as a
+    # ``(start, end)`` character span. Only meaningful on a quiet keyword cue:
+    # an emphasis cue is already accented end to end, and two accents in one
+    # line is no accent at all.
+    highlight: "tuple[int, int] | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +131,61 @@ class TextStyleSpec:
     accent: str = "&H003CA3E5"
     emphasis_scale: float = 1.6
     safe_margin_fraction: float = 0.06
+
+
+@dataclass(frozen=True, slots=True)
+class DirectionSpec:
+    """The numbers a Visual Direction plan hands to the filter graph.
+
+    Plain values, not a domain object: this is a boundary, and the policy that
+    produced them lives in ``video_generator.domain.direction``. The defaults
+    describe a restrained documentary treatment, so a caller that supplies only
+    a composition still gets a coherent picture.
+    """
+
+    # --- grade, at intensity "standard" ------------------------------------ #
+    saturation: float = 0.80
+    shadow_density: float = 0.060
+    highlight_gain: float = 0.030
+    highlight_ceiling: float = 0.045
+    cool_shift: float = 0.035
+    grain: float = 4.0
+    vignette_angle: float = 0.42
+    # A multiplicative pull on the whole curve, not only on the highlights.
+    # Trimming the top of the range cannot bring a photograph of a white desk
+    # into a dark piece; pulling the whole range can. Zero by default so an
+    # existing caller's grade is unchanged.
+    luminance_pull: float = 0.0
+    intensities: "Mapping[str, float]" = field(
+        default_factory=lambda: {
+            "none": 0.0,
+            "subtle": 0.55,
+            "standard": 1.0,
+            "strong": 1.35,
+        }
+    )
+    # --- composition geometry ---------------------------------------------- #
+    extreme_crop_zoom: float = 1.55
+    inset_scale: float = 0.70
+    background_blur_sigma: float = 26.0
+    background_darkening: float = 0.45
+    split_gap_fraction: float = 0.008
+    scrim_opacity: float = 0.55
+    scrim_height_fraction: float = 0.34
+    # --- motion travel over the whole clip --------------------------------- #
+    push_travel: float = 0.075
+    detail_push_travel: float = 0.115
+    drift_travel: float = 0.090
+
+    def scale_for(self, intensity: str | None) -> float:
+        if intensity is None:
+            return 0.0
+        if intensity not in self.intensities:
+            raise FFmpegError(f"unknown grade intensity: {intensity}")
+        return float(self.intensities[intensity])
+
+
+DEFAULT_DIRECTION_SPEC = DirectionSpec()
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,9 +209,17 @@ class SequenceArtifact:
     # Appended, never inserted: this dataclass is built positionally in places,
     # so a new field goes on the end or it silently shifts every argument.
     text_event_count: int = 0
+    directed_segment_count: int = 0
 
 
 IMAGE_TIMELINE_FPS = 30
+# Above this many characters the filter graph is handed to FFmpeg as a file.
+# Well under the ~32k Windows command-line ceiling, and low enough that the
+# file path is exercised by ordinary directed timelines rather than only by
+# pathological ones.
+_FILTER_GRAPH_INLINE_LIMIT = 4000
+# How many boxes make up a text scrim. See _scrim_chain for why it is not five.
+_SCRIM_STEPS = 18
 # How long the music bed takes to reach the ducked level and to come back. The
 # attack lands exactly on the first word (it ramps over the silence before it)
 # and the release starts when the voice track ends.
@@ -256,11 +356,36 @@ def _event_override(
             f"\\move({centre_x - travel},{y},{centre_x},{y},0,220)\\fad(120,180)"
         )
     elif cue.animation == "highlight":
-        # the accent moves to the outline, so the word is ringed, not repainted
-        parts.append(f"\\fad(110,160)\\3c{_inline_colour(style.accent)}")
+        # No accent on the outline. A thick accented outline around every
+        # letter is read as an accented *line*, which is the opposite of what
+        # a highlight is for — the accent belongs to the one run inside the
+        # text that `_event_text` paints, and to nothing else.
+        parts.append("\\fad(110,160)")
     else:  # fade
         parts.append("\\fad(200,220)")
     return "{" + "".join(parts) + "}"
+
+
+def _event_text(cue: "TextEventCue", style: "TextStyleSpec") -> str:
+    """The Dialogue body for one emphasis cue, with its accented run.
+
+    The accent marks *one word*, not the line: a keyword cue is set in the
+    foreground colour and only the highlighted span flips to the channel
+    accent, which is what keeps the colour a highlight rather than a look.
+    """
+
+    text = cue.text.strip()
+    if cue.highlight is None or cue.emphasis:
+        return text
+    start, end = cue.highlight
+    if not 0 <= start < end <= len(text):
+        raise FFmpegError("text event highlight must be a span inside the text")
+    accent = _inline_colour(style.accent)
+    base = _inline_colour(style.foreground)
+    return (
+        f"{text[:start]}{{\\c{accent}}}{text[start:end]}"
+        f"{{\\c{base}}}{text[end:]}"
+    )
 
 
 def _caption_ass_header(width: int, height: int) -> str:
@@ -352,6 +477,287 @@ def _ken_burns_filter(motion: str, width: int, height: int, frames: int) -> str:
         f"zoompan=z={zoom}:x={pan_x}:y={pan_y}:d=1:s={width}x{height}:"
         f"fps={IMAGE_TIMELINE_FPS}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Visual Direction v1 - composition, editorial motion and the channel grade
+# --------------------------------------------------------------------------- #
+def _even(value: float) -> int:
+    """Nearest even integer >= 2: every codec here wants even dimensions."""
+
+    return max(2, int(round(value / 2.0)) * 2)
+
+
+def _fmt(value: float) -> str:
+    return format(float(value), ".15g")
+
+
+def _crop_offsets(bias: str, width: int, height: int) -> tuple[str, str]:
+    """Where a cover crop takes its window from, in ``crop`` expressions."""
+
+    if bias not in CROP_BIASES:
+        raise FFmpegError("crop_bias must be one of " + ", ".join(CROP_BIASES))
+    x = f"(iw-{width})/2"
+    y = f"(ih-{height})/2"
+    if bias == "top":
+        y = "0"
+    elif bias == "bottom":
+        y = f"ih-{height}"
+    elif bias == "left":
+        x = "0"
+    elif bias == "right":
+        x = f"iw-{width}"
+    return x, y
+
+
+def _cover_chain(width: int, height: int, bias: str = "center", zoom: float = 1.0) -> str:
+    """Fill a ``width`` x ``height`` window from a source of any shape.
+
+    ``zoom`` above 1 scales past the window first, so the crop lands *inside*
+    the picture - which is what makes ``extreme_crop`` a closer framing rather
+    than the same framing at a different size.
+    """
+
+    target_w = _even(width * zoom)
+    target_h = _even(height * zoom)
+    x, y = _crop_offsets(bias, width, height)
+    return (
+        f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase:"
+        f"force_divisible_by=2,crop={width}:{height}:{x}:{y},setsar=1"
+    )
+
+
+def _treated_background(width: int, height: int, spec: "DirectionSpec") -> str:
+    """The blurred, darkened, desaturated copy an inset or a band sits on.
+
+    Built from the shot's own asset on purpose: a derived background belongs to
+    the picture, while an arbitrary colour behind it is a slide.
+    """
+
+    level = _fmt(max(0.05, 1.0 - spec.background_darkening))
+    parts = [_cover_chain(width, height)]
+    if spec.background_blur_sigma > 0:
+        parts.append(f"gblur=sigma={_fmt(spec.background_blur_sigma)}")
+    parts.append("curves=all='0/0 1/" + level + "'")
+    parts.append("hue=s=0.25")
+    return ",".join(parts)
+
+
+def _scrim_chain(width: int, height: int, zone: str, spec: "DirectionSpec") -> str:
+    """A stepped darkening under the band where on-screen type will sit.
+
+    Many thin decreasing boxes rather than one thick bar. The step count is
+    high on purpose: five steps are individually visible as grey bars on a
+    flat bright surface (measured on a render), while at this count each step
+    changes the picture by about one part in 256, which is under the banding
+    threshold of the encoder that follows.
+    """
+
+    if zone not in TEXT_ZONES:
+        raise FFmpegError("text_zone must be one of " + ", ".join(TEXT_ZONES))
+    band = _even(height * spec.scrim_height_fraction)
+    if zone == "top":
+        top = 0
+        descending = True
+    elif zone == "lower":
+        top = height - band
+        descending = False
+    else:
+        top = (height - band) // 2
+        descending = True
+    steps = _SCRIM_STEPS
+    step_h = max(2, band // steps)
+    boxes = []
+    for index in range(steps):
+        linear = (steps - index) / steps if descending else (index + 1) / steps
+        # squared, so the far end of the scrim reaches the picture at nearly
+        # zero instead of ending on a visible edge
+        opacity = spec.scrim_opacity * linear * linear
+        if opacity <= 0.01:
+            continue
+        y = top + index * step_h
+        boxes.append(
+            f"drawbox=x=0:y={y}:w={width}:h={step_h}:"
+            f"color=black@{_fmt(round(opacity, 3))}:t=fill"
+        )
+    return ",".join(boxes)
+
+
+def _grade_chain(intensity: "str | None", spec: "DirectionSpec") -> str:
+    """The channel's colour treatment, scaled by one intensity factor.
+
+    ``eq`` is absent from some FFmpeg builds, so contrast and level live in
+    ``curves`` and saturation in ``hue`` - both are in the LGPL core. The curve
+    is a gentle S: shadows pushed down, highlights lifted a little and then
+    capped, which is the whole of "documentary, not crushed".
+    """
+
+    scale = spec.scale_for(intensity)
+    if scale <= 0.0:
+        return ""
+    parts: list[str] = []
+    saturation = 1.0 + (spec.saturation - 1.0) * scale
+    if abs(saturation - 1.0) > 1e-6:
+        parts.append(f"hue=s={_fmt(round(max(0.0, saturation), 4))}")
+    shadow = min(0.22, spec.shadow_density * scale)
+    highlight = min(0.22, spec.highlight_gain * scale)
+    ceiling = min(0.35, spec.highlight_ceiling * scale)
+    pull = max(0.0, min(0.6, spec.luminance_pull * scale))
+    if shadow > 1e-6 or highlight > 1e-6 or ceiling > 1e-6 or pull > 1e-6:
+        keep = 1.0 - pull
+        p1 = round(max(0.01, (0.25 - shadow) * keep), 4)
+        p2 = round(min(0.97, (0.75 + highlight) * keep), 4)
+        p3 = round(max(0.20, (1.0 - ceiling) * keep), 4)
+        parts.append(
+            "curves=all='0/0 0.25/" + _fmt(p1) + " 0.75/" + _fmt(p2)
+            + " 1/" + _fmt(p3) + "'"
+        )
+    cool = min(0.4, spec.cool_shift * scale)
+    if cool > 1e-6:
+        parts.append(
+            f"colorbalance=rs=-{_fmt(round(cool, 4))}:bs={_fmt(round(cool, 4))}:"
+            f"rm=-{_fmt(round(cool / 2, 4))}:bm={_fmt(round(cool / 2, 4))}"
+        )
+    grain = int(round(spec.grain * scale))
+    if grain >= 1:
+        parts.append(f"noise=alls={min(grain, 40)}:allf=t+u")
+    angle = spec.vignette_angle * scale
+    if angle > 0.01:
+        parts.append(f"vignette=a={_fmt(round(angle, 4))}")
+    return ",".join(parts)
+
+
+def _direction_motion_filter(
+    motion: str,
+    crop_bias: str,
+    width: int,
+    height: int,
+    frames: int,
+    spec: "DirectionSpec",
+) -> str:
+    """An editorial move as a deterministic ``zoompan`` pass.
+
+    The travel is small on purpose - a push you can *see* moving is a zoom, and
+    a zoom is not direction. ``static_hold`` returns nothing at all, because
+    the absence of a move is a decision this vocabulary can express.
+    """
+
+    if motion not in DIRECTION_MOTIONS:
+        raise FFmpegError("motion must be one of " + ", ".join(DIRECTION_MOTIONS))
+    if motion == "static_hold":
+        return ""
+    if crop_bias not in CROP_BIASES:
+        raise FFmpegError("crop_bias must be one of " + ", ".join(CROP_BIASES))
+    progress = f"on/{max(frames - 1, 1)}"
+    centre_x = "iw/2-(iw/zoom/2)"
+    centre_y = "ih/2-(ih/zoom/2)"
+    if motion == "slow_push_in":
+        travel = spec.push_travel
+        zoom = f"1+{_fmt(travel)}*{progress}"
+        pan_x, pan_y = centre_x, centre_y
+    elif motion == "slow_pull_out":
+        travel = spec.push_travel
+        zoom = f"{_fmt(1.0 + travel)}-{_fmt(travel)}*{progress}"
+        pan_x, pan_y = centre_x, centre_y
+    elif motion == "detail_push":
+        travel = spec.detail_push_travel
+        zoom = f"1+{_fmt(travel)}*{progress}"
+        pan_x, pan_y = centre_x, centre_y
+    else:  # lateral_drift - the bias decides which way the frame travels
+        travel = spec.drift_travel
+        zoom = _fmt(1.0 + travel)
+        if crop_bias in ("top", "bottom"):
+            pan_x = "(iw-iw/zoom)/2"
+            forward = crop_bias == "bottom"
+            pan_y = (
+                f"(ih-ih/zoom)*({progress})"
+                if forward
+                else f"(ih-ih/zoom)*(1-{progress})"
+            )
+        else:
+            forward = crop_bias != "left"
+            pan_x = (
+                f"(iw-iw/zoom)*({progress})"
+                if forward
+                else f"(iw-iw/zoom)*(1-{progress})"
+            )
+            pan_y = "(ih-ih/zoom)/2"
+    if travel <= 0.0:
+        return ""
+    return (
+        f"scale=iw*{_KEN_BURNS_UPSCALE}:ih*{_KEN_BURNS_UPSCALE},"
+        f"zoompan=z={zoom}:x={pan_x}:y={pan_y}:d=1:s={width}x{height}:"
+        f"fps={IMAGE_TIMELINE_FPS}"
+    )
+
+
+def _composition_graph(
+    source_label: str,
+    output_label: str,
+    *,
+    composition: str,
+    fit: str,
+    crop_bias: str,
+    text_zone: "str | None",
+    width: int,
+    height: int,
+    spec: "DirectionSpec",
+    node: str,
+) -> "list[str]":
+    """The filter statements that turn one decoded source into a framed canvas.
+
+    Returns a list because half the grammar needs more than a linear chain: an
+    inset, a band and a split each hold two treatments of the same picture at
+    once, which in FFmpeg means ``split`` plus ``overlay``.
+    """
+
+    if composition not in COMPOSITIONS:
+        raise FFmpegError("composition must be one of " + ", ".join(COMPOSITIONS))
+    if composition == "fullscreen":
+        return [f"[{source_label}]{_fit_filter(fit, width, height)}[{output_label}]"]
+    if composition == "extreme_crop":
+        chain = _cover_chain(width, height, crop_bias, spec.extreme_crop_zoom)
+        return [f"[{source_label}]{chain}[{output_label}]"]
+    if composition == "text_focus":
+        chain = _cover_chain(width, height, crop_bias)
+        scrim = _scrim_chain(width, height, text_zone or "top", spec)
+        if scrim:
+            chain = f"{chain},{scrim}"
+        return [f"[{source_label}]{chain}[{output_label}]"]
+    if composition == "inset":
+        inner_w = _even(width * spec.inset_scale)
+        inner_h = _even(height * spec.inset_scale)
+        border = max(2, _even(height * 0.004))
+        return [
+            f"[{source_label}]split=2[{node}bg][{node}fg]",
+            f"[{node}bg]{_treated_background(width, height, spec)}[{node}bgo]",
+            f"[{node}fg]scale={inner_w}:{inner_h}:"
+            f"force_original_aspect_ratio=decrease:force_divisible_by=2,"
+            f"pad=iw+{border}:ih+{border}:{border // 2}:{border // 2}:color=black,"
+            f"setsar=1[{node}fgo]",
+            f"[{node}bgo][{node}fgo]overlay=(W-w)/2:(H-h)/2:format=auto"
+            f"[{output_label}]",
+        ]
+    if composition == "layered":
+        # a 2.39:1 band of the asset held inside a treated full-frame copy: the
+        # answer to material whose own shape fullscreen would butcher
+        band = _even(min(height - 4, width / 2.39))
+        return [
+            f"[{source_label}]split=2[{node}bg][{node}fg]",
+            f"[{node}bg]{_treated_background(width, height, spec)}[{node}bgo]",
+            f"[{node}fg]{_cover_chain(width, band, crop_bias)}[{node}fgo]",
+            f"[{node}bgo][{node}fgo]overlay=0:(H-h)/2:format=auto[{output_label}]",
+        ]
+    # split - two regions of the same frame held against each other
+    gap = _even(width * spec.split_gap_fraction)
+    half = _even((width - gap) / 2)
+    return [
+        f"[{source_label}]split=2[{node}l][{node}r]",
+        f"[{node}l]{_cover_chain(half, height, 'left')},"
+        f"pad={width}:{height}:0:0:color=black[{node}base]",
+        f"[{node}r]{_cover_chain(half, height, 'right')}[{node}ro]",
+        f"[{node}base][{node}ro]overlay={width - half}:0:format=auto[{output_label}]",
+    ]
 
 
 def _escape_filter_path(path: Path) -> str:
@@ -859,6 +1265,60 @@ def detect_silences(
     return tuple(spans)
 
 
+def measure_luma(
+    source_path: "str | Path",
+    *,
+    frames: int = 5,
+    timeout_seconds: float = 30,
+) -> "float | None":
+    """The mean brightness of a local image or video, in ``0.0..1.0``.
+
+    Scaling to a single pixel with the ``area`` scaler *is* the average, so the
+    measurement is one cheap decode and one byte per frame rather than a
+    statistics filter. Visual Direction uses it to decide how hard the channel
+    grade may push an asset: a photograph that is already black must not be
+    crushed, and one that arrived bright has to be pulled into the same world.
+
+    Returns ``None`` when FFmpeg is unavailable or the file cannot be read, so
+    a missing measurement degrades the grade to its default instead of failing
+    a plan.
+    """
+
+    source = Path(source_path).expanduser()
+    if not source.is_file():
+        return None
+    if isinstance(frames, bool) or not isinstance(frames, int) or frames < 1:
+        raise FFmpegError("frames must be a positive integer")
+    timeout = _time(timeout_seconds, "timeout_seconds")
+    if timeout == 0:
+        raise FFmpegError("timeout_seconds must be greater than zero")
+    try:
+        executable = resolve_media_tool("ffmpeg", path_lookup=shutil.which)
+    except ToolResolutionError:
+        return None
+    if executable is None:
+        return None
+    command = [
+        executable, "-v", "error", "-nostdin",
+        "-i", str(source.resolve()),
+        "-frames:v", str(frames),
+        "-vf", "scale=1:1:flags=area",
+        "-pix_fmt", "gray",
+        "-f", "rawvideo",
+        "-",
+    ]
+    try:
+        completed = subprocess.run(
+            command, check=False, capture_output=True, timeout=timeout, shell=False
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if completed.returncode != 0 or not completed.stdout:
+        return None
+    samples = completed.stdout
+    return round(sum(samples) / (len(samples) * 255.0), 4)
+
+
 def compose_video_sequence(
     clips: Sequence[SequenceClip],
     output_path: str | Path,
@@ -868,6 +1328,7 @@ def compose_video_sequence(
     captions: Sequence[CaptionCue] = (),
     text_events: Sequence[TextEventCue] = (),
     text_style: "TextStyleSpec | None" = None,
+    direction: "DirectionSpec | None" = None,
     music_path: str | Path | None = None,
     music_gain_db: float | None = None,
     music_fade_in_seconds: float = 0.0,
@@ -897,6 +1358,13 @@ def compose_video_sequence(
     letterboxes, ``cover`` centre-crops) then pinned to ``IMAGE_TIMELINE_FPS``,
     ``setsar=1`` and ``yuv420p``. With no ``fit`` on any segment the legacy
     filter graph is emitted unchanged.
+
+    A segment may additionally carry a Visual Direction: a ``composition``
+    (how much of the frame the asset occupies and what surrounds it), a
+    ``crop_bias``, a ``text_zone`` for the scrim under on-screen type, and a
+    ``grade`` intensity naming how hard the channel's colour treatment is
+    applied to this asset. ``direction`` supplies the numbers behind those
+    names; a segment that states none of them is composed exactly as before.
 
     ``narration_lead_in_seconds`` delays the voice so the timeline can open on
     picture and music alone; it requires ``narration_path`` and must be shorter
@@ -939,9 +1407,16 @@ def compose_video_sequence(
     if output.suffix.lower() != ".mp4":
         raise FFmpegError("video sequence requires an .mp4 output_path")
 
+    direction_spec = direction if direction is not None else DEFAULT_DIRECTION_SPEC
+    if direction is not None and not isinstance(direction, DirectionSpec):
+        raise FFmpegError("direction must be a DirectionSpec")
     resolved_clips: list[tuple[str, Path, float, float]] = []
     resolved_fits: list[str | None] = []
     resolved_motions: list[str | None] = []
+    resolved_compositions: list[str | None] = []
+    resolved_biases: list[str] = []
+    resolved_zones: list[str | None] = []
+    resolved_grades: list[str | None] = []
     for clip in normalized_clips:
         source = Path(clip.source_path).expanduser().resolve()
         motion: str | None = None
@@ -951,8 +1426,11 @@ def compose_video_sequence(
                 raise FFmpegError("image duration_seconds must be greater than zero")
             kind, start, end = "image", 0.0, span
             motion = clip.motion
-            if motion is not None and motion not in KEN_BURNS_MOTIONS:
-                raise FFmpegError("motion must be one of " + ", ".join(KEN_BURNS_MOTIONS))
+            if motion is not None and motion not in KEN_BURNS_MOTIONS + DIRECTION_MOTIONS:
+                raise FFmpegError(
+                    "motion must be one of "
+                    + ", ".join(KEN_BURNS_MOTIONS + DIRECTION_MOTIONS)
+                )
         else:
             start = _time(clip.start_seconds, "start_seconds")
             end = _time(clip.end_seconds, "end_seconds")
@@ -962,6 +1440,24 @@ def compose_video_sequence(
         fit = clip.fit
         if fit is not None and fit not in ("contain", "cover"):
             raise FFmpegError('fit must be "contain" or "cover"')
+        composition = getattr(clip, "composition", None)
+        if composition is not None and composition not in COMPOSITIONS:
+            raise FFmpegError("composition must be one of " + ", ".join(COMPOSITIONS))
+        bias = getattr(clip, "crop_bias", "center") or "center"
+        if bias not in CROP_BIASES:
+            raise FFmpegError("crop_bias must be one of " + ", ".join(CROP_BIASES))
+        zone = getattr(clip, "text_zone", None)
+        if zone is not None and zone not in TEXT_ZONES:
+            raise FFmpegError("text_zone must be one of " + ", ".join(TEXT_ZONES))
+        if composition == "text_focus" and zone is None:
+            raise FFmpegError("a text_focus composition requires a text_zone")
+        grade = getattr(clip, "grade", None)
+        if grade is not None and grade not in direction_spec.intensities:
+            raise FFmpegError("grade must be one of " + ", ".join(GRADE_INTENSITIES))
+        if kind == "clip" and composition in ("inset", "layered", "split"):
+            raise FFmpegError(
+                f"composition {composition} is only available for a still image"
+            )
         if not source.exists() or not source.is_file():
             raise FFmpegError(f"source does not exist or is not a file: {source}")
         if os.path.normcase(str(source)) == os.path.normcase(str(output)):
@@ -969,6 +1465,10 @@ def compose_video_sequence(
         resolved_clips.append((kind, source, start, end))
         resolved_fits.append(fit)
         resolved_motions.append(motion)
+        resolved_compositions.append(composition)
+        resolved_biases.append(bias)
+        resolved_zones.append(zone)
+        resolved_grades.append(grade)
     duration = sum(end - start for _, _, start, end in resolved_clips)
     has_images = any(kind == "image" for kind, _, _, _ in resolved_clips)
     # An explicit target format: every segment is deterministically scaled to
@@ -990,6 +1490,19 @@ def compose_video_sequence(
         raise FFmpegError("a timeline with images requires a positive (width, height) canvas")
     if normalize_to_canvas and canvas_size is None:
         raise FFmpegError("a segment fit requires a positive (width, height) canvas")
+    # A direction is expressed in real pixels (a crop window, a scrim band, an
+    # inset), so it can only be composed against a known delivery canvas.
+    directed_indices = [
+        index
+        for index in range(len(resolved_clips))
+        if resolved_compositions[index] is not None
+        or resolved_grades[index] is not None
+        or resolved_motions[index] in DIRECTION_MOTIONS
+    ]
+    if directed_indices and canvas_size is None:
+        raise FFmpegError(
+            "a segment visual direction requires a positive (width, height) canvas"
+        )
     resolved_captions: list[tuple[str, float, float]] = []
     previous_end = 0.0
     for cue in normalized_captions:
@@ -1042,6 +1555,14 @@ def compose_video_sequence(
             raise FFmpegError("text event end_seconds must be at least 1 ms after start_seconds")
         if end > duration:
             raise FFmpegError("text event end_seconds must not exceed the sequence duration")
+        if cue.highlight is not None:
+            span = tuple(cue.highlight)
+            if (
+                len(span) != 2
+                or any(isinstance(v, bool) or not isinstance(v, int) for v in span)
+                or not 0 <= span[0] < span[1] <= len(text)
+            ):
+                raise FFmpegError("text event highlight must be a span inside the text")
         resolved_events.append((cue, start, end))
     # Text events may overlap each other and the captions by design, but two
     # emphases on screen at once is noise, so they are ordered and disjoint.
@@ -1135,6 +1656,7 @@ def compose_video_sequence(
 
     temporary: Path | None = None
     caption_file: Path | None = None
+    filter_file: Path | None = None
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
@@ -1178,7 +1700,7 @@ def compose_video_sequence(
                     # layer 1: emphasis draws over a caption when they coincide
                     caption_stream.write(
                         f"Dialogue: 1,{_ass_timestamp(start)},{_ass_timestamp(end)},"
-                        f"{name},,0,0,0,,{override}{cue.text.strip()}\n"
+                        f"{name},,0,0,0,,{override}{_event_text(cue, style)}\n"
                     )
     except OSError as exc:
         if temporary is not None:
@@ -1212,7 +1734,65 @@ def compose_video_sequence(
             frames = round(_span * IMAGE_TIMELINE_FPS)
             return "," + _ken_burns_filter(_motion, width, height, frames)
 
-        if normalize_to_canvas:
+        if index in directed_indices:
+            width, height = canvas_size  # type: ignore[misc]
+            composition = resolved_compositions[index] or "fullscreen"
+            grade_name = resolved_grades[index]
+            fit = resolved_fits[index] or "contain"
+            node = f"d{index}"
+            span = end - start
+            statements: list[str] = []
+            if kind == "image":
+                entry = f"{index}:v:0"
+            else:
+                entry = f"{node}t"
+                statements.append(
+                    f"[{index}:v:0]trim=start={format(start, '.15g')}:"
+                    f"end={format(end, '.15g')},setpts=PTS-STARTPTS[{entry}]"
+                )
+            statements.extend(
+                _composition_graph(
+                    entry,
+                    f"{node}c",
+                    composition=composition,
+                    fit=fit,
+                    crop_bias=resolved_biases[index],
+                    text_zone=resolved_zones[index],
+                    width=width,
+                    height=height,
+                    spec=direction_spec,
+                    node=node,
+                )
+            )
+            tail = [f"fps={IMAGE_TIMELINE_FPS}"]
+            motion_value = resolved_motions[index]
+            if motion_value in DIRECTION_MOTIONS:
+                move = _direction_motion_filter(
+                    motion_value,
+                    resolved_biases[index],
+                    width,
+                    height,
+                    round(span * IMAGE_TIMELINE_FPS),
+                    direction_spec,
+                )
+                if move:
+                    tail.append(move)
+            elif motion_value in KEN_BURNS_MOTIONS:
+                tail.append(
+                    _ken_burns_filter(
+                        motion_value, width, height, round(span * IMAGE_TIMELINE_FPS)
+                    )
+                )
+            treatment = _grade_chain(grade_name, direction_spec)
+            if treatment:
+                tail.append(treatment)
+            tail.append("format=yuv420p")
+            if kind == "image":
+                tail.append(f"trim=duration={format(span, '.15g')}")
+                tail.append("setpts=PTS-STARTPTS")
+            statements.append(f"[{node}c]{','.join(tail)}[{label}]")
+            filters.extend(statements)
+        elif normalize_to_canvas:
             width, height = canvas_size  # type: ignore[misc]
             # An explicit target format falls back to contain for any segment
             # that did not state a fit, so a mixed timeline still normalises.
@@ -1333,7 +1913,34 @@ def compose_video_sequence(
         filters.append(f"[voice]{master}[outa]")
     elif music_index is not None:
         filters.append(f"[bed]alimiter=limit=0.95:latency=1,{master}[outa]")
-    command.extend(["-filter_complex", ";".join(filters), "-map", "[outv]"])
+    filter_graph = ";".join(filters)
+    # A directed timeline builds several filter nodes per segment, and sixty of
+    # those overflow the operating system's command-line limit (which surfaces
+    # as a bare FileNotFoundError from CreateProcess, not as an FFmpeg error).
+    # Past a conservative threshold the graph travels in a file instead.
+    if len(filter_graph) > _FILTER_GRAPH_INLINE_LIMIT:
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix=f".{output.stem}-filter-",
+                suffix=".txt",
+                dir=output.parent,
+                delete=False,
+            ) as handle:
+                filter_file = Path(handle.name)
+                handle.write(filter_graph)
+        except OSError as exc:
+            _cleanup(temporary)
+            if caption_file is not None:
+                _cleanup(caption_file)
+            raise FFmpegError(
+                f"could not write the filter graph beside: {output}"
+            ) from exc
+        command.extend(["-filter_complex_script", str(filter_file)])
+    else:
+        command.extend(["-filter_complex", filter_graph])
+    command.extend(["-map", "[outv]"])
     if narration is None and music is None:
         command.append("-an")
     else:
@@ -1373,6 +1980,8 @@ def compose_video_sequence(
     finally:
         if caption_file is not None:
             _cleanup(caption_file)
+        if filter_file is not None:
+            _cleanup(filter_file)
 
     if completed.returncode != 0:
         _cleanup(temporary)
@@ -1409,4 +2018,5 @@ def compose_video_sequence(
         video_fade_out_seconds=video_fade_out,
         narration_lead_in_seconds=narration_lead_in,
         music_duck_db=duck,
+        directed_segment_count=len(directed_indices),
     )

@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "style_id": "desumanizando-dark-documentary-v1",
+  "accent": "#E5A33C",
+
+  "grade": {
+    "saturation": 0.78,
+    "shadow_density": 0.065,
+    "highlight_gain": 0.028,
+    "highlight_ceiling": 0.05,
+    "cool_shift": 0.04,
+    "grain": 5.0,
+    "vignette_angle": 0.4,
+    "luminance_pull": 0.08
+  },
+  "grade_intensities": {
+    "none": 0.0,
+    "subtle": 0.5,
+    "standard": 1.0,
+    "strong": 1.4
+  },
+  "default_grade": "standard",
+  "dark_luma": 0.22,
+  "bright_luma": 0.55,
+
+  "composition_weights": {
+    "build_tension": {
+      "fullscreen": 1.8,
+      "extreme_crop": 5.0,
+      "inset": 0.8,
+      "layered": 2.2,
+      "split": 0.6,
+      "text_focus": 3.0
+    },
+    "shock": {
+      "fullscreen": 3.5,
+      "extreme_crop": 4.5,
+      "inset": 0.4,
+      "layered": 1.2,
+      "split": 1.6,
+      "text_focus": 3.0
+    },
+    "humanize": {
+      "fullscreen": 2.4,
+      "extreme_crop": 4.0,
+      "inset": 0.8,
+      "layered": 2.4,
+      "split": 0.3,
+      "text_focus": 1.4
+    },
+    "symbolize": {
+      "fullscreen": 2.2,
+      "extreme_crop": 2.2,
+      "inset": 2.6,
+      "layered": 2.8,
+      "split": 0.8,
+      "text_focus": 1.8
+    },
+    "explain": {
+      "fullscreen": 2.6,
+      "extreme_crop": 1.6,
+      "inset": 1.8,
+      "layered": 2.6,
+      "split": 1.2,
+      "text_focus": 1.8
+    },
+    "contextualize": {
+      "fullscreen": 3.6,
+      "extreme_crop": 1.2,
+      "inset": 1.2,
+      "layered": 2.2,
+      "split": 0.5,
+      "text_focus": 1.2
+    },
+    "support_claim": {
+      "fullscreen": 2.2,
+      "extreme_crop": 2.0,
+      "inset": 2.4,
+      "layered": 2.2,
+      "split": 1.4,
+      "text_focus": 2.8
+    }
+  },
+
+  "motion_weights": {
+    "build_tension": {
+      "static_hold": 3.2,
+      "slow_push_in": 4.0,
+      "slow_pull_out": 0.8,
+      "lateral_drift": 0.8,
+      "detail_push": 3.0
+    },
+    "shock": {
+      "static_hold": 4.5,
+      "slow_push_in": 2.0,
+      "slow_pull_out": 0.8,
+      "lateral_drift": 0.4,
+      "detail_push": 2.0
+    },
+    "humanize": {
+      "static_hold": 2.6,
+      "slow_push_in": 3.0,
+      "slow_pull_out": 1.4,
+      "lateral_drift": 1.8,
+      "detail_push": 2.2
+    },
+    "symbolize": {
+      "static_hold": 3.2,
+      "slow_push_in": 1.4,
+      "slow_pull_out": 2.6,
+      "lateral_drift": 2.4,
+      "detail_push": 1.0
+    },
+    "explain": {
+      "static_hold": 2.2,
+      "slow_push_in": 2.0,
+      "slow_pull_out": 1.6,
+      "lateral_drift": 2.8,
+      "detail_push": 1.4
+    },
+    "contextualize": {
+      "static_hold": 2.2,
+      "slow_push_in": 1.4,
+      "slow_pull_out": 3.0,
+      "lateral_drift": 2.8,
+      "detail_push": 0.8
+    },
+    "support_claim": {
+      "static_hold": 3.0,
+      "slow_push_in": 2.0,
+      "slow_pull_out": 1.4,
+      "lateral_drift": 1.4,
+      "detail_push": 2.0
+    }
+  },
+
+  "max_consecutive_same_composition": 2,
+  "max_consecutive_same_motion": 2,
+  "min_motion_seconds": 1.7,
+  "min_split_seconds": 2.2,
+
+  "extreme_crop_zoom": 1.6,
+  "inset_scale": 0.68,
+  "background_blur_sigma": 30.0,
+  "background_darkening": 0.52,
+  "split_gap_fraction": 0.006,
+  "scrim_opacity": 0.6,
+  "scrim_height_fraction": 0.36,
+
+  "push_travel": 0.07,
+  "detail_push_travel": 0.11,
+  "drift_travel": 0.085
+}

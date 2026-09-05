@@ -1116,7 +1116,7 @@ class SequenceWorkflowTests(unittest.TestCase):
     def test_rejects_unsupported_plans_before_preflight(self):
         for plan, message in (
             (sequence_plan(second_kind="extract_segment"), "does not support"),
-            (sequence_plan(second_parameters={"transition": "fade"}), "only an optional fit parameter"),
+            (sequence_plan(second_parameters={"transition": "fade"}), "only an optional fit"),
         ):
             with self.subTest(message=message):
                 with self.assertRaisesRegex(SequenceWorkflowError, message):

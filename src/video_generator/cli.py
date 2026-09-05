@@ -37,7 +37,10 @@ from video_generator.subtitles import (
 from video_generator.doctor import format_report, run_doctor
 from video_generator.domain import (
     DARK_DOCUMENTARY_V1,
+    DEFAULT_HOOK_POLICY,
     ContractError,
+    DirectionError,
+    EditOperation,
     EditPlan,
     HookPolicy,
     NarrativeScript,
@@ -48,12 +51,15 @@ from video_generator.domain import (
     TargetFormat,
     VideoBrief,
     VideoRequest,
+    VisualDirectionPolicy,
     apply_overrides,
     plan_scenes,
     plan_shot_text_events,
+    plan_shot_visual_direction,
     plan_shots,
     shot_plan_to_edit_plan,
     text_events_operation,
+    visual_direction_operation,
 )
 from video_generator.manifests import (
     ManifestError,
@@ -349,6 +355,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--text-events",
         help="also write the editorial emphasis layer as JSON at this path "
         "(needs --semantic)",
+    )
+    plan_scenes_cmd.add_argument(
+        "--visual-direction",
+        help="Visual Direction v1: a VisualDirectionPolicy JSON path. Decides "
+        "how each chosen asset appears — composition, editorial motion, grade "
+        "intensity and motif — writes visual-direction.json, and carries the "
+        "decisions into the EditPlan (needs --semantic)",
+    )
+    plan_scenes_cmd.add_argument(
+        "--no-luma",
+        action="store_true",
+        help="do not measure asset brightness with FFmpeg; every shot then "
+        "gets the policy's default grade intensity",
     )
     plan_scenes_cmd.add_argument(
         "--force", action="store_true", help="overwrite existing output files"
@@ -1117,11 +1136,21 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
         visual_relevance = bool(getattr(args, "visual_relevance", False))
         hook_seconds = getattr(args, "hook_seconds", None)
         text_events_path = getattr(args, "text_events", None)
+        direction_path = getattr(args, "visual_direction", None)
         if not semantic and (hook_seconds is not None or text_events_path is not None):
             raise PlanningError("--hook-seconds and --text-events require --semantic")
         if visual_relevance and not semantic:
             raise PlanningError("--visual-relevance requires --semantic")
+        if direction_path is not None and not semantic:
+            raise PlanningError("--visual-direction requires --semantic")
         hook_policy = HookPolicy(hook_seconds=hook_seconds) if hook_seconds else None
+        direction_policy = None
+        if direction_path is not None:
+            direction_policy = VisualDirectionPolicy.from_dict(
+                json.loads(
+                    Path(direction_path).expanduser().read_text(encoding="utf-8")
+                )
+            )
 
         scene_plan = plan_scenes(script, policy=policy, seed=args.seed)
         shot_plan, assets = plan_shots(
@@ -1138,6 +1167,15 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
             overrides = json.loads(
                 Path(args.overrides).expanduser().read_text(encoding="utf-8")
             )
+            if isinstance(overrides, dict):
+                # An overrides file is an editorial document a person keeps by
+                # hand, so a leading "_" key is a note to the next reader
+                # rather than an instruction; the contract itself stays strict.
+                overrides = {
+                    key: value
+                    for key, value in overrides.items()
+                    if not key.startswith("_")
+                }
             scene_plan, shot_plan, assets = apply_overrides(
                 scene_plan, shot_plan, assets, overrides, script=script
             )
@@ -1154,8 +1192,12 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
         }
         events = ()
         if semantic:
+            # The opening always biases the *emphasis* layer, whether or not
+            # --hook-seconds also tightened the cut: a viewer who has not
+            # decided to stay is the one case where a word on screen earns its
+            # place at a lower bar.
             events = plan_shot_text_events(
-                scene_plan, shot_plan, hook_policy=hook_policy
+                scene_plan, shot_plan, hook_policy=hook_policy or DEFAULT_HOOK_POLICY
             )
             if text_events_path is not None:
                 targets[Path(text_events_path).expanduser()] = (
@@ -1173,18 +1215,45 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
                     + "\n"
                 )
 
-        edit_plan = None
-        if args.emit_edit_plan is not None or args.assets is not None:
-            if args.emit_edit_plan is None or args.assets is None:
-                raise PlanningError("--emit-edit-plan and --assets must be given together")
+        bindings: dict[str, str] | None = None
+        if args.assets is not None:
             bindings = json.loads(
                 Path(args.assets).expanduser().read_text(encoding="utf-8")
             )
             if not isinstance(bindings, dict):
                 raise PlanningError("--assets must be a JSON object of asset_id -> path")
-            extra = ()
+
+        direction_plan = None
+        if direction_policy is not None:
+            # Grade intensity is chosen per asset from how bright the file
+            # already is, so the treatment neither crushes a black photograph
+            # nor leaves a bright one outside the piece. Without bindings — or
+            # with --no-luma — every shot falls back to the policy default.
+            luma_by_asset: dict[str, float] = {}
+            if bindings and not getattr(args, "no_luma", False):
+                from video_generator.adapters.ffmpeg import measure_luma
+
+                for asset_id, path in sorted(bindings.items()):
+                    value = measure_luma(path)
+                    if value is not None:
+                        luma_by_asset[asset_id] = value
+            direction_plan = plan_shot_visual_direction(
+                shot_plan,
+                policy=direction_policy,
+                events=events,
+                luma_by_asset=luma_by_asset,
+            )
+            targets[out_dir / "visual-direction.json"] = direction_plan.to_json()
+
+        edit_plan = None
+        if args.emit_edit_plan is not None or args.assets is not None:
+            if args.emit_edit_plan is None or args.assets is None:
+                raise PlanningError("--emit-edit-plan and --assets must be given together")
+            extra: tuple[EditOperation, ...] = ()
+            if direction_policy is not None:
+                extra += (visual_direction_operation(direction_policy),)
             if events:
-                extra = (
+                extra += (
                     text_events_operation(events, visual_style=DARK_DOCUMENTARY_V1),
                 )
             edit_plan = shot_plan_to_edit_plan(
@@ -1195,6 +1264,7 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
                 output_path=str((out_dir / "video.mp4").resolve()),
                 target_format=target,
                 extra_operations=extra,
+                directions=direction_plan.by_shot() if direction_plan else None,
             )
             targets[Path(args.emit_edit_plan).expanduser()] = edit_plan.to_json()
 
@@ -1210,7 +1280,7 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
         for path, payload in targets.items():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(payload, encoding="utf-8")
-    except (PlanningError, ContractError) as exc:
+    except (PlanningError, ContractError, DirectionError) as exc:
         print(f"Planning error: {exc}", file=sys.stderr)
         return 2
     except OSError as exc:
@@ -1230,6 +1300,26 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
         "out_dir": str(out_dir),
         "edit_plan": str(Path(args.emit_edit_plan)) if edit_plan is not None else None,
     }
+    if events:
+        summary["text_events"] = len(events)
+    if direction_plan is not None:
+        compositions: dict[str, int] = {}
+        motions: dict[str, int] = {}
+        grades: dict[str, int] = {}
+        motifs: dict[str, int] = {}
+        for item in direction_plan.directions:
+            compositions[item.composition] = compositions.get(item.composition, 0) + 1
+            motions[item.motion] = motions.get(item.motion, 0) + 1
+            grades[item.grade] = grades.get(item.grade, 0) + 1
+            if item.visual_motif:
+                motifs[item.visual_motif] = motifs.get(item.visual_motif, 0) + 1
+        summary["visual_direction"] = {
+            "style_id": direction_policy.style_id,
+            "compositions": dict(sorted(compositions.items())),
+            "motions": dict(sorted(motions.items())),
+            "grades": dict(sorted(grades.items())),
+            "motifs": dict(sorted(motifs.items())),
+        }
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", end="")
     else:
@@ -1240,7 +1330,13 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
             f"  shots: {summary['shots']}\n"
             f"  distinct assets: {summary['distinct_assets']} ({summary['reuses']} reuses)\n"
             f"  orientation: {orientation}\n"
-            f"  written to: {out_dir}\n"
+            + (
+                f"  visual direction: {summary['visual_direction']['compositions']}\n"
+                f"                    {summary['visual_direction']['motions']}\n"
+                if direction_plan is not None
+                else ""
+            )
+            + f"  written to: {out_dir}\n"
         )
     return 0
 
@@ -1290,10 +1386,15 @@ def _run_resolve_assets(args: argparse.Namespace) -> int:
         }
 
         probe = None
+        luma = None
         if not args.no_probe:
             from video_generator.adapters.asset_providers import _default_probe
+            from video_generator.adapters.ffmpeg import measure_luma
 
             probe = _default_probe()
+            # Only consulted when the scoring policy states a ceiling, so a
+            # project that has not opted in pays nothing for it.
+            luma = measure_luma
 
         out_dir = Path(args.out_dir).expanduser()
         bindings_out = (
@@ -1324,6 +1425,7 @@ def _run_resolve_assets(args: argparse.Namespace) -> int:
             shot_context=shot_context,
             do_review_reuse=not args.no_reuse_review,
             probe=probe,
+            luma=luma,
         )
     except (ResolveError, ProviderError, AssetResolutionError, PlanningError, ContractError) as exc:
         print(f"Resolve error: {exc}", file=sys.stderr)

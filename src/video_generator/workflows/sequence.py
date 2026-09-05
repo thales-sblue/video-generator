@@ -11,12 +11,18 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from video_generator.adapters import (
     CaptionCue,
+    COMPOSITIONS,
+    CROP_BIASES,
+    DIRECTION_MOTIONS,
+    DirectionSpec,
+    GRADE_INTENSITIES,
     TEXT_EVENT_ANIMATIONS,
     TEXT_EVENT_POSITIONS,
+    TEXT_ZONES,
     TextEventCue,
     TextStyleSpec,
     FFmpegError,
@@ -71,9 +77,22 @@ CAPTION_SUBTITLE_FORMATS = {".srt": "srt", ".vtt": "vtt"}
 _ASS_COLOUR = re.compile(r"^&H[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$")
 TEXT_EVENTS_KIND = "text_events"
 TEXT_EVENT_ITEM_KEYS = {"text", "start_seconds", "end_seconds"}
-TEXT_EVENT_ITEM_OPTIONAL = {"position", "animation", "emphasis"}
+TEXT_EVENT_ITEM_OPTIONAL = {"position", "animation", "emphasis", "highlight"}
 TEXT_EVENT_STYLE_KEYS = {
     "font_name", "foreground", "accent", "emphasis_scale", "safe_margin_fraction",
+}
+VISUAL_DIRECTION_KIND = "visual_direction"
+# The framing / movement / grade keys a timeline segment may carry. All
+# optional: a segment that states none of them is composed exactly as before.
+SEGMENT_DIRECTION_KEYS = {"composition", "crop_bias", "text_zone", "grade"}
+VISUAL_DIRECTION_GRADE_KEYS = {
+    "saturation", "shadow_density", "highlight_gain", "highlight_ceiling",
+    "cool_shift", "grain", "vignette_angle", "luminance_pull",
+}
+VISUAL_DIRECTION_GEOMETRY_KEYS = {
+    "background_blur_sigma", "background_darkening", "inset_scale",
+    "extreme_crop_zoom", "split_gap_fraction", "scrim_opacity",
+    "scrim_height_fraction", "push_travel", "detail_push_travel", "drift_travel",
 }
 MUSIC_KIND = "music"
 MUSIC_DURATION_POLICY = "loop_to_timeline"
@@ -321,8 +340,23 @@ def _text_event_cues(
             )
         if not isinstance(emphasis, bool):
             raise SequenceWorkflowError(f"text event {index} emphasis must be a boolean")
+        highlight = item.get("highlight")
+        if highlight is not None:
+            if (
+                isinstance(highlight, (str, bytes))
+                or not isinstance(highlight, (list, tuple))
+                or len(highlight) != 2
+                or any(
+                    isinstance(v, bool) or not isinstance(v, int) for v in highlight
+                )
+                or not 0 <= highlight[0] < highlight[1] <= len(stripped)
+            ):
+                raise SequenceWorkflowError(
+                    f"text event {index} highlight must be a span inside the text"
+                )
+            highlight = (int(highlight[0]), int(highlight[1]))
         cues.append(
-            TextEventCue(stripped, start, end, position, animation, emphasis)
+            TextEventCue(stripped, start, end, position, animation, emphasis, highlight)
         )
         previous_end = end
 
@@ -447,11 +481,108 @@ def _segment_fit(operation, target_format) -> str | None:
     return target_format.fit if target_format is not None else None
 
 
+def _segment_direction(
+    parameters: Mapping[str, object]
+) -> "tuple[str | None, str, str | None, str | None]":
+    """The Visual Direction a timeline segment carries, if any.
+
+    Four independent strings rather than a nested object: the same four names
+    have to survive the EditPlan, the manifest validator and the adapter, and a
+    flat vocabulary is one that all three can check identically.
+    """
+
+    composition = parameters.get("composition")
+    if composition is not None and (
+        not isinstance(composition, str) or composition not in COMPOSITIONS
+    ):
+        raise SequenceWorkflowError(
+            "composition must be one of " + ", ".join(COMPOSITIONS)
+        )
+    bias = parameters.get("crop_bias", "center")
+    if not isinstance(bias, str) or bias not in CROP_BIASES:
+        raise SequenceWorkflowError("crop_bias must be one of " + ", ".join(CROP_BIASES))
+    zone = parameters.get("text_zone")
+    if zone is not None and (not isinstance(zone, str) or zone not in TEXT_ZONES):
+        raise SequenceWorkflowError("text_zone must be one of " + ", ".join(TEXT_ZONES))
+    if composition == "text_focus" and zone is None:
+        raise SequenceWorkflowError("a text_focus composition requires a text_zone")
+    grade = parameters.get("grade")
+    if grade is not None and (
+        not isinstance(grade, str) or grade not in GRADE_INTENSITIES
+    ):
+        raise SequenceWorkflowError(
+            "grade must be one of " + ", ".join(GRADE_INTENSITIES)
+        )
+    return composition, bias, zone, grade
+
+
+def _direction_spec(parameters: Mapping[str, object]) -> DirectionSpec:
+    """Parse the plan-level ``visual_direction`` operation into adapter numbers.
+
+    The grade lives once on the plan rather than on all sixty segments: a
+    segment names an *intensity*, this says what that intensity means.
+    """
+
+    values = dict(parameters)
+    allowed = (
+        {"style_id", "grade", "intensities"} | VISUAL_DIRECTION_GEOMETRY_KEYS
+    )
+    unknown = set(values) - allowed
+    if unknown:
+        raise SequenceWorkflowError(
+            f"visual_direction does not accept: {', '.join(sorted(unknown))}"
+        )
+    style_id = values.get("style_id", "visual-direction-v1")
+    if not isinstance(style_id, str) or not style_id.strip():
+        raise SequenceWorkflowError("visual_direction style_id must be a non-empty string")
+    kwargs: dict[str, object] = {}
+    grade = values.get("grade", {})
+    if not isinstance(grade, Mapping):
+        raise SequenceWorkflowError("visual_direction grade must be an object")
+    unknown_grade = set(grade) - VISUAL_DIRECTION_GRADE_KEYS
+    if unknown_grade:
+        raise SequenceWorkflowError(
+            f"visual_direction grade does not accept: {', '.join(sorted(unknown_grade))}"
+        )
+    for key, value in grade.items():
+        kwargs[key] = _runtime_number(value, f"visual_direction grade {key}", allow_zero=True)
+    for key in VISUAL_DIRECTION_GEOMETRY_KEYS:
+        if key in values:
+            kwargs[key] = _runtime_number(
+                values[key], f"visual_direction {key}", allow_zero=True
+            )
+    intensities = values.get("intensities")
+    if intensities is not None:
+        if not isinstance(intensities, Mapping):
+            raise SequenceWorkflowError("visual_direction intensities must be an object")
+        if set(intensities) != set(GRADE_INTENSITIES):
+            raise SequenceWorkflowError(
+                "visual_direction intensities must define "
+                + ", ".join(GRADE_INTENSITIES)
+            )
+        parsed = {
+            name: _runtime_number(
+                value, f"visual_direction intensity {name}", allow_zero=True
+            )
+            for name, value in intensities.items()
+        }
+        if parsed["none"] != 0.0:
+            raise SequenceWorkflowError('visual_direction intensity "none" must be 0')
+        kwargs["intensities"] = parsed
+    try:
+        return DirectionSpec(**kwargs)  # type: ignore[arg-type]
+    except FFmpegError as exc:
+        raise SequenceWorkflowError(str(exc)) from exc
+
+
 def _image_duration(parameters: Mapping[str, object]) -> float:
     values = dict(parameters)
-    if "duration_seconds" not in values or set(values) - {"duration_seconds", "fit", "motion"}:
+    if "duration_seconds" not in values or set(values) - (
+        {"duration_seconds", "fit", "motion"} | SEGMENT_DIRECTION_KEYS
+    ):
         raise SequenceWorkflowError(
-            "image_clip requires a duration_seconds parameter and an optional fit and motion"
+            "image_clip requires a duration_seconds parameter and an optional fit, "
+            "motion and visual direction"
         )
     duration = _runtime_number(
         values["duration_seconds"], "image_clip duration_seconds", allow_zero=False
@@ -473,9 +604,10 @@ def _image_motion(parameters: Mapping[str, object]) -> str | None:
     raw = parameters.get("motion")
     if raw is None:
         return None
-    if raw not in IMAGE_MOTIONS:
+    if raw not in IMAGE_MOTIONS + DIRECTION_MOTIONS:
         raise SequenceWorkflowError(
-            "image_clip motion must be one of " + ", ".join(IMAGE_MOTIONS)
+            "image_clip motion must be one of "
+            + ", ".join(IMAGE_MOTIONS + DIRECTION_MOTIONS)
         )
     return raw
 
@@ -486,21 +618,29 @@ def _segment_duration(segment: SequenceClip | SequenceImage) -> float:
     return segment.end_seconds - segment.start_seconds
 
 
-def _operations_from_plan(
-    plan: EditPlan,
-) -> tuple[
-    tuple[SequenceClip | SequenceImage, ...],
-    str | None,
-    NarrationTextSpec | None,
-    tuple[CaptionCue, ...],
-    str | None,
-    bool,
-    str | None,
-    MusicSpec | None,
-    FadeSpec | None,
-    tuple[TextEventCue, ...],
-    TextStyleSpec | None,
-]:
+class PlanOperations(NamedTuple):
+    """Everything a video-sequence plan declares, read once and named.
+
+    A named tuple rather than a bare one: this has grown past the point where
+    a reader can count positions, and the layers keep arriving (captions, then
+    emphasis, now visual direction).
+    """
+
+    segments: tuple[SequenceClip | SequenceImage, ...]
+    narration_path: str | None
+    narration_text: NarrationTextSpec | None
+    captions: tuple[CaptionCue, ...]
+    caption_source: str | None
+    captions_from_narration: bool
+    music_path: str | None
+    music: MusicSpec | None
+    fade: FadeSpec | None
+    text_events: tuple[TextEventCue, ...]
+    text_style: TextStyleSpec | None
+    direction: DirectionSpec | None
+
+
+def _operations_from_plan(plan: EditPlan) -> PlanOperations:
     if len(plan.operations) < 2:
         raise SequenceWorkflowError("video-sequence requires at least two operations")
     if Path(plan.output_path).suffix.lower() != ".mp4":
@@ -516,6 +656,7 @@ def _operations_from_plan(
     text_events: tuple[TextEventCue, ...] = ()
     text_style: TextStyleSpec | None = None
     text_events_seen = False
+    direction: DirectionSpec | None = None
     music_path: str | None = None
     music: MusicSpec | None = None
     fade: FadeSpec | None = None
@@ -607,6 +748,21 @@ def _operations_from_plan(
             text_events, text_style = _text_event_cues(operation.parameters)
             text_events_seen = True
             continue
+        if operation.kind == VISUAL_DIRECTION_KIND:
+            if direction is not None:
+                raise SequenceWorkflowError(
+                    "video-sequence accepts at most one visual_direction operation"
+                )
+            if len(segments) < 2:
+                raise SequenceWorkflowError(
+                    "visual_direction must follow all timeline segments"
+                )
+            if operation.source is not None:
+                raise SequenceWorkflowError("visual_direction does not take a source")
+            if operation.start_seconds is not None or operation.end_seconds is not None:
+                raise SequenceWorkflowError("visual_direction has no timeline range")
+            direction = _direction_spec(operation.parameters)
+            continue
         if operation.kind == MUSIC_KIND:
             if music_path is not None:
                 raise SequenceWorkflowError("video-sequence accepts at most one music operation")
@@ -637,6 +793,7 @@ def _operations_from_plan(
                 or text_events_seen
                 or music_path is not None
                 or fade is not None
+                or direction is not None
             ):
                 raise SequenceWorkflowError(
                     "all timeline segments must precede captions, music and fades"
@@ -647,12 +804,17 @@ def _operations_from_plan(
                 raise SequenceWorkflowError(
                     "image_clip has no timeline range; use a duration_seconds parameter"
                 )
+            composition, bias, zone, grade = _segment_direction(operation.parameters)
             segments.append(
                 SequenceImage(
                     operation.source,
                     _image_duration(operation.parameters),
                     _segment_fit(operation, plan.target_format),
                     _image_motion(operation.parameters),
+                    composition,
+                    bias,
+                    zone,
+                    grade,
                 )
             )
             used_sources.add(operation.source)
@@ -666,6 +828,7 @@ def _operations_from_plan(
             or text_events_seen
             or music_path is not None
             or fade is not None
+            or direction is not None
         ):
             raise SequenceWorkflowError(
                 "all timeline segments must precede captions, music and fades"
@@ -674,9 +837,14 @@ def _operations_from_plan(
             raise SequenceWorkflowError("sequence_clip must declare a source")
         if operation.start_seconds is None or operation.end_seconds is None:
             raise SequenceWorkflowError("sequence_clip requires start_seconds and end_seconds")
-        if set(operation.parameters) - {"fit"}:
+        if set(operation.parameters) - ({"fit"} | SEGMENT_DIRECTION_KEYS):
             raise SequenceWorkflowError(
-                "sequence_clip accepts only an optional fit parameter"
+                "sequence_clip accepts only an optional fit and visual direction"
+            )
+        composition, bias, zone, grade = _segment_direction(operation.parameters)
+        if composition in ("inset", "layered", "split"):
+            raise SequenceWorkflowError(
+                f"composition {composition} is only available for an image_clip"
             )
         segments.append(
             SequenceClip(
@@ -684,6 +852,10 @@ def _operations_from_plan(
                 operation.start_seconds,
                 operation.end_seconds,
                 _segment_fit(operation, plan.target_format),
+                composition,
+                bias,
+                zone,
+                grade,
             )
         )
         used_sources.add(operation.source)
@@ -709,7 +881,7 @@ def _operations_from_plan(
         and _normalized(narration_path) == _normalized(music_path)
     ):
         raise SequenceWorkflowError("narration and music must use distinct sources")
-    return (
+    return PlanOperations(
         tuple(segments),
         narration_path,
         narration_text,
@@ -721,6 +893,7 @@ def _operations_from_plan(
         fade,
         text_events,
         text_style,
+        direction,
     )
 
 
@@ -893,6 +1066,7 @@ def run_sequence_workflow(
         fade,
         text_events,
         text_style,
+        direction,
     ) = _operations_from_plan(plan)
     if caption_source is not None:
         captions = _caption_cues_from_file(caption_source)
@@ -1021,6 +1195,8 @@ def run_sequence_workflow(
             if fade is not None:
                 compose_kwargs["video_fade_in_seconds"] = fade.from_black_seconds
                 compose_kwargs["video_fade_out_seconds"] = fade.to_black_seconds
+            if direction is not None:
+                compose_kwargs["direction"] = direction
             # the clip canvas is always forwarded: images letter-box onto it and
             # captions use it as the pixel-accurate layout frame.
             compose_kwargs["canvas"] = canvas

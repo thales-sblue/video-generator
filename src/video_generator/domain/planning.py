@@ -22,6 +22,15 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
+from video_generator.domain.direction import (
+    DEFAULT_DIRECTION_POLICY,
+    DirectionInput,
+    VisualDirection,
+    VisualDirectionPlan,
+    VisualDirectionPolicy,
+    grade_parameters,
+    plan_visual_direction,
+)
 from video_generator.domain.editorial import (
     DEFAULT_EDITORIAL_POLICY,
     EditorialPolicy,
@@ -1994,8 +2003,17 @@ def apply_overrides(
     script: "NarrativeScript | None" = None,
 ) -> tuple["ScenePlan", "ShotPlan", "AssetRequirements"]:
     """Apply editorial overrides to all three planning documents and return them
-    rebuilt and re-validated. Only editorial fields are writable; ids, timing,
-    structure and the reuse graph are immutable."""
+    rebuilt and re-validated.
+
+    An override is a **local patch**: it changes the named field of the named
+    shot and nothing else. Every other shot comes back byte-identical, and the
+    patched shot keeps its editorial role, its visual intent class, its visual
+    role, its refined query and its beat concept — an authored ``visual_query``
+    simply moves to the head of that shot's own fallback list.
+
+    Only editorial fields are writable; ids, timing, structure and the reuse
+    graph are immutable.
+    """
 
     for obj, name in (
         (scene_plan, "scene_plan"),
@@ -2088,9 +2106,16 @@ def apply_overrides(
                 f"{patched_intent[shot.scene_id]} — beat {shot.index}/{counts[shot.scene_id]}"
             )
 
+        asset_queries = shot.asset_queries
         if "visual_query" in patch:
             visual_query = _text(patch["visual_query"], "visual_query")
             provenance["visual_query"] = "authored"
+            # The authored query leads; every query the semantic reading found
+            # stays behind it as a fallback. An override is a patch on one
+            # field of one shot, not a reset of the shot's reading.
+            asset_queries = (visual_query,) + tuple(
+                q for q in shot.asset_queries if q != visual_query
+            )
         if "purpose" in patch:
             purpose = _text(patch["purpose"], "purpose")
             provenance["purpose"] = "authored"
@@ -2124,6 +2149,16 @@ def apply_overrides(
                 framing=framing,
                 justification=shot.justification,
                 provenance=provenance,
+                # Everything the semantic and relevance readings produced is
+                # carried through untouched. Dropping these here is what used
+                # to switch Semantic Visual Relevance off for the whole plan
+                # the moment a single shot was overridden.
+                editorial_role=shot.editorial_role,
+                asset_queries=asset_queries,
+                beat_concept=shot.beat_concept,
+                visual_intent_class=shot.visual_intent_class,
+                visual_role=shot.visual_role,
+                refined_query=shot.refined_query,
             )
         )
 
@@ -2142,8 +2177,19 @@ def apply_overrides(
     )
     new_shot_plan.validate_against(new_scene_plan)
 
+    # The beats are not re-read here, so the emotion each requirement carried
+    # is taken from the requirements that came in: it belongs to the beat, and
+    # an override changes a query, not what the narration feels like.
+    emotion_by_shot = {
+        requirement.used_by[0]: requirement.emotion
+        for requirement in assets.requirements
+        if requirement.emotion is not None and requirement.used_by
+    }
     new_assets = _asset_requirements_from_shots(
-        new_shot_plan, orientation=assets.orientation, plan_id=assets.plan_id
+        new_shot_plan,
+        orientation=assets.orientation,
+        plan_id=assets.plan_id,
+        emotion_by_shot=emotion_by_shot,
     )
     new_assets.validate_against(new_shot_plan)
     return new_scene_plan, new_shot_plan, new_assets
@@ -2240,16 +2286,17 @@ def text_events_operation(
     for event in events:
         if not isinstance(event, TextEvent):
             raise PlanningError("events must be TextEvent values")
-        items.append(
-            {
-                "text": event.text,
-                "start_seconds": event.start_seconds,
-                "end_seconds": event.end_seconds,
-                "position": event.position,
-                "animation": event.animation,
-                "emphasis": event.category in _EMPHASISED_CATEGORIES,
-            }
-        )
+        item: dict[str, Any] = {
+            "text": event.text,
+            "start_seconds": event.start_seconds,
+            "end_seconds": event.end_seconds,
+            "position": event.position,
+            "animation": event.animation,
+            "emphasis": event.category in _EMPHASISED_CATEGORIES,
+        }
+        if event.highlight is not None and not item["emphasis"]:
+            item["highlight"] = list(event.highlight)
+        items.append(item)
     if not items:
         raise PlanningError("text_events_operation needs at least one event")
     parameters: dict[str, Any] = {"items": items}
@@ -2268,8 +2315,135 @@ def text_events_operation(
     )
 
 
+# --------------------------------------------------------------------------- #
+# 6b. Visual Direction — how each chosen asset is allowed to appear
+# --------------------------------------------------------------------------- #
+def _event_shots(
+    shot_plan: "ShotPlan", events: "Sequence[TextEvent]"
+) -> "dict[str, str]":
+    """``shot_id -> text zone`` for every shot an emphasis event lands on.
+
+    An event belongs to the shot whose window its *start* falls in: that is the
+    picture the words will be read over, and therefore the picture that has to
+    be built to hold them.
+    """
+
+    timeline = shot_timeline(shot_plan)
+    out: dict[str, str] = {}
+    for event in events:
+        for shot_id, (start, end) in timeline.items():
+            if start - 1e-9 <= event.start_seconds < end:
+                out[shot_id] = event.position
+                break
+    return out
+
+
+def direction_inputs(
+    shot_plan: "ShotPlan",
+    *,
+    events: "Sequence[TextEvent]" = (),
+    luma_by_asset: "Mapping[str, float] | None" = None,
+) -> "tuple[DirectionInput, ...]":
+    """Reduce a shot plan to exactly what the direction planner may read.
+
+    The seam is deliberate: :mod:`video_generator.domain.direction` never
+    imports this module, so its decisions can be replayed from a table in a
+    test rather than from a whole plan.
+    """
+
+    if not isinstance(shot_plan, ShotPlan):
+        raise PlanningError("direction_inputs needs a ShotPlan")
+    zones = _event_shots(shot_plan, events)
+    luma_by_asset = luma_by_asset or {}
+    out: list[DirectionInput] = []
+    for shot in shot_plan.shots:
+        # The motif lexicon is English, so it reads the query the resolver
+        # actually searched with rather than the Portuguese narration.
+        text = " ".join(
+            part
+            for part in (shot.refined_query, shot.visual_query, shot.beat_concept)
+            if part
+        )
+        out.append(
+            DirectionInput(
+                shot_id=shot.shot_id,
+                duration_seconds=shot.duration_seconds,
+                asset_type=shot.asset_type,
+                scale=shot.scale,
+                visual_role=shot.visual_role,
+                visual_intent_class=shot.visual_intent_class,
+                editorial_role=shot.editorial_role,
+                crop_bias=str(shot.framing.get("crop_bias", "center") or "center"),
+                emphasis=shot.shot_id in zones,
+                text_zone=zones.get(shot.shot_id),
+                asset_luma=luma_by_asset.get(shot.asset_id),
+                text=text,
+                preserve_frame=_fit_for(shot) == "contain",
+            )
+        )
+    return tuple(out)
+
+
+def plan_shot_visual_direction(
+    shot_plan: "ShotPlan",
+    *,
+    policy: "VisualDirectionPolicy | None" = None,
+    seed: int | None = None,
+    events: "Sequence[TextEvent]" = (),
+    luma_by_asset: "Mapping[str, float] | None" = None,
+) -> "VisualDirectionPlan":
+    """The whole visual direction for a planned video, in one call."""
+
+    return plan_visual_direction(
+        direction_inputs(shot_plan, events=events, luma_by_asset=luma_by_asset),
+        policy=policy or DEFAULT_DIRECTION_POLICY,
+        seed=shot_plan.seed if seed is None else seed,
+        plan_id=f"{shot_plan.script_id}-visual-direction",
+        shot_plan_id=shot_plan.plan_id,
+        script_id=shot_plan.script_id,
+    )
+
+
+def visual_direction_operation(
+    policy: "VisualDirectionPolicy",
+    *,
+    operation_id: str = "visual_direction",
+) -> EditOperation:
+    """The plan-level operation carrying the grade and the composition geometry.
+
+    One operation for the whole timeline rather than the same twenty numbers on
+    sixty segments: a segment names an *intensity*, this says what the
+    intensity means.
+    """
+
+    if not isinstance(policy, VisualDirectionPolicy):
+        raise PlanningError("visual_direction_operation needs a VisualDirectionPolicy")
+    return EditOperation(
+        operation_id=operation_id,
+        kind="visual_direction",
+        parameters=grade_parameters(policy),
+    )
+
+
 _COVER_SCALES = ("close", "detail")
 _CONTAIN_SHOT_TYPES = ("on_screen_text", "document", "simple_graphic")
+
+
+def _direction_parameters(
+    direction: "VisualDirection | None",
+) -> "dict[str, Any]":
+    """The segment-level half of a Visual Direction, as EditPlan parameters."""
+
+    if direction is None:
+        return {}
+    params: dict[str, Any] = {
+        "composition": direction.composition,
+        "crop_bias": direction.crop_bias,
+        "grade": direction.grade,
+    }
+    if direction.text_zone is not None:
+        params["text_zone"] = direction.text_zone
+    return params
 
 
 def _fit_for(shot: "Shot") -> str | None:
@@ -2289,6 +2463,7 @@ def shot_plan_to_edit_plan(
     output_path: str,
     target_format: TargetFormat,
     extra_operations: tuple[EditOperation, ...] = (),
+    directions: "Mapping[str, VisualDirection] | None" = None,
 ) -> EditPlan:
     """Translate a resolved shot plan into a valid ``EditPlan`` for the
     ``video-sequence`` renderer.
@@ -2297,6 +2472,10 @@ def shot_plan_to_edit_plan(
     The converter does no I/O: it assumes each bound video asset is long enough
     for the cumulative windows placed on it. Validating real asset lengths is
     the later asset-acquisition stage's job.
+
+    ``directions`` attaches a Visual Direction to each segment — the framing,
+    the editorial move and the grade intensity. Without it the operations are
+    byte-identical to what this produced before the layer existed.
     """
 
     if not isinstance(shot_plan, ShotPlan):
@@ -2308,6 +2487,7 @@ def shot_plan_to_edit_plan(
     if missing:
         raise PlanningError(f"asset_bindings is missing: {', '.join(sorted(missing))}")
 
+    directions = dict(directions or {})
     cursor: dict[str, float] = {}
     sources: list[str] = []
     operations: list[EditOperation] = []
@@ -2316,19 +2496,24 @@ def shot_plan_to_edit_plan(
         if path not in sources:
             sources.append(path)
         fit = _fit_for(shot)
+        direction = directions.get(shot.shot_id)
+        if direction is not None and not isinstance(direction, VisualDirection):
+            raise PlanningError("directions must contain VisualDirection values")
         if shot.asset_type == "image":
             params: dict[str, Any] = {"duration_seconds": shot.duration_seconds}
             if fit is not None:
                 params["fit"] = fit
             motion = shot.framing.get("motion")
-            if motion in IMAGE_MOTIONS:
+            if direction is not None:
+                params["motion"] = direction.motion
+            elif motion in IMAGE_MOTIONS:
                 params["motion"] = motion
             operations.append(
                 EditOperation(
                     operation_id=shot.shot_id,
                     kind="image_clip",
                     source=path,
-                    parameters=params,
+                    parameters={**params, **_direction_parameters(direction)},
                 )
             )
         else:
@@ -2345,7 +2530,7 @@ def shot_plan_to_edit_plan(
                     source=path,
                     start_seconds=start,
                     end_seconds=end,
-                    parameters=params,
+                    parameters={**params, **_direction_parameters(direction)},
                 )
             )
 

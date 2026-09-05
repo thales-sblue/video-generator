@@ -255,6 +255,56 @@ entra no plano como uma operação `text_events` carregando o `VisualStyle`
 tipografia e margens de segurança). A identidade veste o asset escolhido — ela
 nunca escolhe o asset: a ordem é relevância semântica primeiro, estética depois.
 
+`--visual-direction <policy.json>` (exige `--semantic`) liga a **Visual
+Direction v1** (`domain/direction.py`): a camada que decide **como** o asset
+escolhido aparece. A relevância semântica escolhe o material; esta escreve a
+apresentação dele, quatro decisões por shot, cada uma um vocabulário fechado e
+serializado em `visual-direction.json`:
+
+- **`composition`** — `fullscreen`, `extreme_crop`, `inset`, `layered`, `split`
+  ou `text_focus` (ver [docs/VIDEO_LANGUAGE.md](docs/VIDEO_LANGUAGE.md));
+- **`motion`** — `static_hold`, `slow_push_in`, `slow_pull_out`,
+  `lateral_drift` ou `detail_push`, com deslocamento pequeno e determinístico;
+- **`grade`** — a intensidade (`none`/`subtle`/`standard`/`strong`) do
+  tratamento do canal aplicada **àquele arquivo**, escolhida a partir da
+  luminância medida dele com um decode de um pixel (`--no-luma` desliga a
+  medição e usa o default da policy);
+- **`emphasis`** + **`visual_motif`** + uma `rationale` que nomeia o papel
+  visual, o portão e a trava de repetição que produziram cada valor.
+
+Mesma entrada, mesma policy e mesma seed dão o mesmo plano. Com
+`--emit-edit-plan` cada segmento do `EditPlan` passa a carregar
+`composition`/`crop_bias`/`text_zone`/`grade`/`motion`, e o plano ganha uma
+operação `visual_direction` com os números do tratamento — uma vez para a
+timeline inteira, em vez dos mesmos vinte números em sessenta segmentos. O
+adapter FFmpeg traduz isso em filtros reais (`crop` deslocado, `split`+`gblur`+
+`overlay` para inset/layered/split, `drawbox` escalonado para o scrim de texto,
+`hue`+`curves`+`colorbalance`+`noise`+`vignette` para a grade, `zoompan` para o
+movimento). Sem a flag nada muda: o plano sai byte-a-byte como antes.
+
+A policy é do projeto, não do domínio —
+`projects/desumanizando_01/visual-direction-v1.json` traz a paleta de
+tratamento, os pesos de composição e movimento por `visual_role`, a geometria
+das composições e os motifs. Um segundo canal é um segundo arquivo.
+
+```powershell
+python -m video_generator plan-scenes --from-text projects\desumanizando_01\roteiro-v2.txt `
+  --total-duration 209.261 --policy projects\desumanizando_01\rhythm-policy-v2.json `
+  --seed 0 --target 1920x1080:cover --semantic --visual-relevance `
+  --visual-direction projects\desumanizando_01\visual-direction-v1.json `
+  --overrides projects\desumanizando_01\shot-overrides-visual-direction-v1.json `
+  --text-events output\visual-direction-v1\text-events.json `
+  --assets output\visual-direction-v1\resolved\asset-bindings.json `
+  --emit-edit-plan output\visual-direction-v1\edit-plan-base.json `
+  --out-dir output\visual-direction-v1\plan --force
+```
+
+Um `--overrides` é um **patch local**: ele muda o campo nomeado do shot nomeado
+e nada mais. O shot corrigido mantém `visual_intent_class`, `visual_role`,
+`refined_query`, `editorial_role` e `beat_concept`, e a `visual_query` autorada
+apenas passa a liderar a lista de fallbacks daquele shot. (Até este ciclo,
+qualquer override apagava a leitura semântica do plano **inteiro**.)
+
 `resolve-assets` consome `--shot-plan` + `--asset-requirements` e resolve cada
 requirement num arquivo local concreto com procedência. Passos separados:
 revisão semântica de reuse (um reuse estruturalmente válido só sobrevive se o

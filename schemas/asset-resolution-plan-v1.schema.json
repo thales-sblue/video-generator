@@ -361,6 +361,39 @@
             "null"
           ],
           "minLength": 1
+        },
+        "score_breakdown": {
+          "description": "The additive components that produced the winner's score, so a pick can be explained without re-running the search.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "visual_family": {
+          "description": "The coarse visual family the winning candidate was filed under.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "candidates_considered": {
+          "description": "How many candidates were scored for this requirement.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "rejected_candidates": {
+          "description": "How many of those candidates Semantic Visual Relevance refused.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "rejection_context": {
+          "description": "The distinct rejection reasons the losing candidates collected.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },

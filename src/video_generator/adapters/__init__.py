@@ -13,7 +13,13 @@ from video_generator.adapters.kokoro import (
 from video_generator.adapters.ffmpeg import (
     AudioArtifact,
     CaptionCue,
+    COMPOSITIONS,
+    CROP_BIASES,
+    DIRECTION_MOTIONS,
+    DirectionSpec,
     FFmpegError,
+    GRADE_INTENSITIES,
+    TEXT_ZONES,
     SegmentArtifact,
     SequenceArtifact,
     SequenceClip,
@@ -27,13 +33,20 @@ from video_generator.adapters.ffmpeg import (
     extract_audio,
     extract_segment,
     join_audio_segments,
+    measure_luma,
 )
 from video_generator.adapters.ffprobe import MediaProbe, ProbeError, StreamProbe, probe_media
 
 __all__ = [
     "AlignerError",
     "AudioArtifact",
+    "COMPOSITIONS",
+    "CROP_BIASES",
     "CaptionCue",
+    "DIRECTION_MOTIONS",
+    "DirectionSpec",
+    "GRADE_INTENSITIES",
+    "TEXT_ZONES",
     "FFmpegError",
     "KokoroError",
     "MediaProbe",
@@ -54,6 +67,7 @@ __all__ = [
     "compose_video_sequence",
     "detect_silences",
     "join_audio_segments",
+    "measure_luma",
     "transcribe_words",
     "probe_media",
     "synthesize_narration",

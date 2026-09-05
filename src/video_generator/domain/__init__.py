@@ -33,6 +33,16 @@ from video_generator.domain.prosody import (
     ProsodyError,
     plan_narration_units,
 )
+from video_generator.domain.direction import (
+    DEFAULT_DIRECTION_POLICY,
+    DirectionError,
+    DirectionInput,
+    GradePolicy,
+    VisualDirection,
+    VisualDirectionPlan,
+    VisualDirectionPolicy,
+    plan_visual_direction,
+)
 from video_generator.domain.editorial import (
     DARK_DOCUMENTARY_V1,
     DEFAULT_EDITORIAL_POLICY,
@@ -61,14 +71,28 @@ from video_generator.domain.planning import (
     apply_overrides,
     plan_scenes,
     plan_shots,
+    direction_inputs,
     narration_slices,
     plan_shot_text_events,
+    plan_shot_visual_direction,
     shot_plan_to_edit_plan,
     shot_timeline,
     text_events_operation,
+    visual_direction_operation,
 )
 
 __all__ = [
+    "DEFAULT_DIRECTION_POLICY",
+    "DirectionError",
+    "DirectionInput",
+    "GradePolicy",
+    "VisualDirection",
+    "VisualDirectionPlan",
+    "VisualDirectionPolicy",
+    "direction_inputs",
+    "plan_shot_visual_direction",
+    "plan_visual_direction",
+    "visual_direction_operation",
     "AssetCandidate",
     "AssetProvenance",
     "AssetRequirement",

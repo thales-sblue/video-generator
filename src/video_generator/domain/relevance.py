@@ -65,13 +65,31 @@ VISUAL_ROLES = (
 )
 
 # Every rejection this module can emit, so a caller can enumerate them.
+#
+# The first five *rank* a candidate out: they say this picture is a poor fit
+# for this beat. The ``hard_veto_*`` family says something stronger — this
+# picture would damage the piece wherever it landed. A dark documentary essay
+# does not survive one glowing CGI brain, one cartoon or one confetti shot,
+# however well the rest of the ranking scored it, so those are refused on
+# sight rather than penalised and hoped away.
 REJECTION_REASONS = (
     "keyword_only_match",
     "generic_stock",
     "tone_conflict",
     "abstract_cgi_mismatch",
     "visual_language_repetition",
+    "hard_veto_cgi",
+    "hard_veto_cartoon",
+    "hard_veto_cheerful",
+    "hard_veto_children",
+    "hard_veto_neon_scifi",
+    "hard_veto_fantasy",
+    "hard_veto_commercial",
+    "hard_veto_unasked_animal",
 )
+
+# The rules whose name starts here are absolute rather than comparative.
+HARD_VETO_REASONS = tuple(r for r in REJECTION_REASONS if r.startswith("hard_veto_"))
 
 
 class RelevanceError(ValueError):
@@ -321,6 +339,88 @@ _CHEERFUL = _frozen(
     """
 )
 
+# --------------------------------------------------------------------------- #
+# hard veto lexicons — pictures a dark documentary cannot carry at all
+# --------------------------------------------------------------------------- #
+# Deliberately narrower than _ABSTRACT_CGI: this is the *look*, not the topic.
+# "brain" alone is a subject a scientific beat may legitimately want; "glowing
+# neural network render" is the stock reel that ruins the shot.
+# Single-hit terms: one of these in a candidate's own metadata *is* the look.
+# ``abstract`` and ``render`` are here after measurement, not on principle —
+# every stock plate that survived the first pass of this veto ("abstract 3d
+# geometric waveform", "abstract blue maze", "3d ai imaging") was named by
+# exactly one of them. Note that a two-character token like "3d" never reaches
+# a candidate's metadata bag, which is why it cannot carry a rule.
+_VETO_CGI = _frozen(
+    """
+    cgi hologram holographic wireframe plexus metaverse cyberspace
+    neuron neurons synapse synapses neural
+    render rendering abstract generative imaging futuristic
+    """
+)
+# Softer terms: one is a coincidence, two together are a render.
+_VETO_CGI_QUALIFIER = _frozen(
+    """
+    digital glowing glow particles particle generated virtual artificial
+    geometric minimalist gradient shapes background
+    """
+)
+_VETO_CARTOON = _frozen(
+    """
+    cartoon cartoons comic anime manga clipart vector doodle caricature
+    illustration illustrated drawing drawn sketch animated animation cute
+    mascot emoji
+    """
+)
+_VETO_CHEERFUL = _frozen(
+    """
+    confetti balloons balloon celebration celebrating party festive cheers
+    toast fireworks birthday wedding congratulations thumbsup winner winning
+    applause smiling laughing joyful cheerful playful
+    """
+)
+_VETO_CHILDREN = _frozen(
+    """
+    kid kids child children toddler toddlers kindergarten preschool nursery
+    playground playroom crayon crayons toy toys cartoonish schoolkids
+    """
+)
+# The beat may legitimately be about school; then the picture is not a veto.
+_CHILD_CONTEXT = _frozen(
+    """
+    child children kid kids school classroom student students pupil teacher
+    education exam lesson escola crianca criancas aluno alunos infancia
+    """
+)
+_VETO_NEON_SCIFI = _frozen(
+    """
+    neon cyberpunk scifi sciencefiction spaceship spacecraft robot android
+    alien galaxy starship laser matrix hud dystopian
+    """
+)
+_VETO_FANTASY = _frozen(
+    """
+    fantasy dragon dragons wizard magic magical unicorn mythical fairy
+    superhero mermaid castle knight potion witch
+    """
+)
+_VETO_COMMERCIAL = _frozen(
+    """
+    advertisement advertising promo promotional influencer luxury glamour
+    fashionable model modeling posing posed showroom shopping ecommerce
+    packshot billboard branded sponsored
+    """
+)
+# An animal that nobody asked for is how a serious essay acquires a lizard on a
+# chessboard: cheap to spot, and it is never what the beat meant.
+_VETO_ANIMALS = _frozen(
+    """
+    lizard iguana gecko snake frog turtle parrot monkey hamster puppy kitten
+    dog dogs cat cats horse cow pig sheep goat duck chicken rabbit squirrel
+    dinosaur shark dolphin panda elephant giraffe tiger lion bear
+    """
+)
+
 # Coarse visual families, checked in order. Two shots in a row from the same
 # family read as the same shot, whatever the file names say.
 _FAMILY_ORDER: tuple[tuple[str, frozenset[str]], ...] = (
@@ -434,6 +534,9 @@ class RelevancePolicy:
     # actually mattered. This is the single knob that keeps refinement from
     # turning into dilution.
     max_query_words: int = 7
+    # How many words a base query needs before refinement is allowed to add to
+    # it. Below this there is no phrase to sharpen, only a noun to bury.
+    min_refinable_words: int = 2
 
     # --- candidate side ----------------------------------------------------- #
     weight_intent_affinity: float = 2.5
@@ -453,6 +556,30 @@ class RelevancePolicy:
     # How many times in the recent window a visual family may repeat before the
     # next candidate of that family is refused outright.
     max_same_family_run: int = 2
+    # --- hard veto ---------------------------------------------------------- #
+    # Absolute refusals, on by default: coverage is not quality, and a
+    # ``needs_editorial_override`` is a better outcome than a cartoon in a
+    # serious beat. Turn it off to reproduce a pre-veto run exactly.
+    hard_veto: bool = True
+    veto_cgi_lexicon: frozenset[str] = field(default_factory=lambda: _VETO_CGI)
+    veto_cgi_qualifier_lexicon: frozenset[str] = field(
+        default_factory=lambda: _VETO_CGI_QUALIFIER
+    )
+    veto_cartoon_lexicon: frozenset[str] = field(default_factory=lambda: _VETO_CARTOON)
+    veto_cheerful_lexicon: frozenset[str] = field(default_factory=lambda: _VETO_CHEERFUL)
+    veto_children_lexicon: frozenset[str] = field(default_factory=lambda: _VETO_CHILDREN)
+    child_context_lexicon: frozenset[str] = field(default_factory=lambda: _CHILD_CONTEXT)
+    veto_neon_scifi_lexicon: frozenset[str] = field(
+        default_factory=lambda: _VETO_NEON_SCIFI
+    )
+    veto_fantasy_lexicon: frozenset[str] = field(default_factory=lambda: _VETO_FANTASY)
+    veto_commercial_lexicon: frozenset[str] = field(
+        default_factory=lambda: _VETO_COMMERCIAL
+    )
+    veto_animal_lexicon: frozenset[str] = field(default_factory=lambda: _VETO_ANIMALS)
+    # A scientific beat is the one place a diagram-like render can be the
+    # honest picture, so the CGI veto stands down there — and only there.
+    cgi_veto_exempt_intents: tuple[str, ...] = ("scientific",)
     # Master switch. False makes every candidate-side component zero and every
     # rejection empty, which is what a plan without relevance labels gets.
     enabled: bool = True
@@ -463,6 +590,16 @@ class RelevancePolicy:
         "tension_lexicon",
         "everyday_lexicon",
         "abstract_lexicon",
+        "veto_cgi_lexicon",
+        "veto_cgi_qualifier_lexicon",
+        "veto_cartoon_lexicon",
+        "veto_cheerful_lexicon",
+        "veto_children_lexicon",
+        "child_context_lexicon",
+        "veto_neon_scifi_lexicon",
+        "veto_fantasy_lexicon",
+        "veto_commercial_lexicon",
+        "veto_animal_lexicon",
     )
     _FLOAT_FIELDS = (
         "weight_intent_affinity",
@@ -474,6 +611,7 @@ class RelevancePolicy:
     )
     _INT_FIELDS = (
         "max_query_words",
+        "min_refinable_words",
         "generic_stock_reject_hits",
         "abstract_cgi_reject_hits",
         "keyword_only_min_query_terms",
@@ -489,6 +627,15 @@ class RelevancePolicy:
             _positive_int(getattr(self, name), name)
         if not isinstance(self.enabled, bool):
             raise RelevanceError("enabled must be a boolean")
+        if not isinstance(self.hard_veto, bool):
+            raise RelevanceError("hard_veto must be a boolean")
+        exempt = tuple(self.cgi_veto_exempt_intents)
+        unknown = [name for name in exempt if name not in VISUAL_INTENTS]
+        if unknown:
+            raise RelevanceError(
+                f"cgi_veto_exempt_intents has unknown intents: {', '.join(unknown)}"
+            )
+        object.__setattr__(self, "cgi_veto_exempt_intents", exempt)
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -496,7 +643,31 @@ class RelevancePolicy:
         }
         payload.update({name: getattr(self, name) for name in self._INT_FIELDS})
         payload["enabled"] = self.enabled
+        payload["hard_veto"] = self.hard_veto
+        payload["cgi_veto_exempt_intents"] = list(self.cgi_veto_exempt_intents)
         return payload
+
+    @classmethod
+    def from_dict(cls, data: "Mapping[str, Any]") -> "RelevancePolicy":
+        """Merge a partial policy over the defaults; lexicons stay as they are.
+
+        Weights, thresholds and the veto switch are what a project retunes; the
+        lexicons are large enough that overriding one wholesale from JSON is a
+        way to lose rules by accident rather than a way to configure.
+        """
+
+        if not isinstance(data, Mapping):
+            raise RelevanceError("policy payload must be an object")
+        allowed = set(cls().to_dict())
+        unknown = set(data) - allowed
+        if unknown:
+            raise RelevanceError(
+                f"unknown relevance policy fields: {', '.join(sorted(unknown))}"
+            )
+        merged = cls().to_dict()
+        merged.update(data)
+        merged["cgi_veto_exempt_intents"] = tuple(merged["cgi_veto_exempt_intents"])
+        return cls(**merged)
 
 
 DEFAULT_RELEVANCE_POLICY = RelevancePolicy()
@@ -649,6 +820,15 @@ def refine_query(
     words = (base_query or "").split()
     if not words:
         words = _INTENT_FALLBACK[visual_intent_class].split()
+    elif len(words) < policy.min_refinable_words:
+        # Refinement sharpens a visual phrase; it cannot manufacture one. A
+        # base query of a single bare noun — which is what a beat with no
+        # filmable concept produces, and in this project's script that noun is
+        # usually Portuguese — is returned untouched, so the resolver's
+        # sanitisation still sees it for what it is and asks for an editorial
+        # override. Prefixing two English modifiers would only have unblocked
+        # the search and handed the provider one word it does not understand.
+        return " ".join(words)
     present = {_fold(w) for w in words}
     for modifier in (
         _INTENT_MODIFIER[visual_intent_class],
@@ -756,6 +936,57 @@ class RelevanceAssessment:
         }
 
 
+def hard_veto_reasons(
+    tokens: "frozenset[str]",
+    *,
+    visual_intent_class: str | None,
+    query_terms: Sequence[str] = (),
+    policy: RelevancePolicy = DEFAULT_RELEVANCE_POLICY,
+) -> tuple[str, ...]:
+    """Absolute refusals: pictures this channel cannot use anywhere.
+
+    Every rule reads the candidate's own metadata and, where the beat could
+    legitimately have asked for the thing, the beat's own query. A metaphorical
+    beat still gets metaphors — what it stops getting is the nearest abstract
+    render the catalogue had lying around.
+    """
+
+    if not policy.hard_veto:
+        return ()
+    asked = {_fold(term) for term in query_terms}
+    reasons: list[str] = []
+
+    cgi_hits = (tokens & policy.veto_cgi_lexicon) - asked
+    qualifier_hits = tokens & policy.veto_cgi_qualifier_lexicon
+    exempt = visual_intent_class in policy.cgi_veto_exempt_intents
+    if not exempt and (
+        cgi_hits or (len(qualifier_hits) >= 2 and not (asked & qualifier_hits))
+    ):
+        # either an unmistakable CGI subject, or two independent "abstract 3D
+        # render" words the beat never asked for
+        reasons.append("hard_veto_cgi")
+    if tokens & policy.veto_cartoon_lexicon and not (
+        asked & policy.veto_cartoon_lexicon
+    ):
+        reasons.append("hard_veto_cartoon")
+    if tokens & policy.veto_cheerful_lexicon:
+        reasons.append("hard_veto_cheerful")
+    if (tokens & policy.veto_children_lexicon) and not (
+        asked & policy.child_context_lexicon
+    ):
+        reasons.append("hard_veto_children")
+    if tokens & policy.veto_neon_scifi_lexicon:
+        reasons.append("hard_veto_neon_scifi")
+    if tokens & policy.veto_fantasy_lexicon:
+        reasons.append("hard_veto_fantasy")
+    if len(tokens & policy.veto_commercial_lexicon) >= 2:
+        reasons.append("hard_veto_commercial")
+    animals = tokens & policy.veto_animal_lexicon
+    if animals and not (asked & policy.veto_animal_lexicon):
+        reasons.append("hard_veto_unasked_animal")
+    return tuple(reasons)
+
+
 def assess_candidate(
     bag: "frozenset[str] | set[str]",
     *,
@@ -858,5 +1089,13 @@ def assess_candidate(
         reasons.append("abstract_cgi_mismatch")
     if repeats >= policy.max_same_family_run:
         reasons.append("visual_language_repetition")
+    reasons.extend(
+        hard_veto_reasons(
+            tokens,
+            visual_intent_class=visual_intent_class,
+            query_terms=terms,
+            policy=policy,
+        )
+    )
 
     return RelevanceAssessment(components, tuple(reasons), family)

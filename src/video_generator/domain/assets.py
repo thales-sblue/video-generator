@@ -337,6 +337,12 @@ class AssetScoringPolicy:
     # resolution alone, which is never enough to resolve a shot. 0.0 means "any
     # shared visual term is enough"; raise it to demand a stronger match.
     min_semantic_score: float = 0.0
+    # The mean brightness (0..1) above which an acquired file is too bright for
+    # this channel to use. Measured on the real file after acquisition, because
+    # no provider publishes it: a photograph of a white desk passes every
+    # lexical check ever written and still cannot appear in a dark documentary.
+    # ``None`` disables the check, which is what every earlier plan gets.
+    max_mean_luma: "float | None" = None
     # Semantic Visual Relevance v1. The policy is consulted only for a
     # requirement that actually carries a visual intent class and role, so an
     # older plan ranks exactly as it did before.
@@ -376,11 +382,19 @@ class AssetScoringPolicy:
             raise AssetResolutionError("min_short_edge must not exceed min_long_edge")
         if not isinstance(self.relevance_policy, RelevancePolicy):
             raise AssetResolutionError("relevance_policy must be a RelevancePolicy")
+        if self.max_mean_luma is not None:
+            value = self.max_mean_luma
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise AssetResolutionError("max_mean_luma must be a number or null")
+            if not 0.0 < float(value) <= 1.0:
+                raise AssetResolutionError("max_mean_luma must lie in (0, 1]")
+            object.__setattr__(self, "max_mean_luma", float(value))
 
     def to_dict(self) -> dict[str, Any]:
         payload = {name: getattr(self, name) for name in self._FLOAT_FIELDS}
         payload.update({name: getattr(self, name) for name, _ in self._INT_FIELDS})
         payload.update({name: getattr(self, name) for name in self._BOOL_FIELDS})
+        payload["max_mean_luma"] = self.max_mean_luma
         return payload
 
     def to_json(self) -> str:
@@ -1007,6 +1021,17 @@ class ResolvedAsset:
     # trail: they turn "why is this picture here?" into a one-line answer.
     matched_query: str | None = None
     sanitized_query: str | None = None
+    # The rest of that answer. ``score`` alone is not comparable between
+    # requirements, so the winning candidate carries the components that
+    # produced it, the visual family it was filed under, and what happened to
+    # the candidates it beat. Without these a pick can only be re-derived by
+    # guessing, which is how the last evaluation had to recompute families
+    # from URL slugs.
+    score_breakdown: Mapping[str, float] = field(default_factory=dict)
+    visual_family: str | None = None
+    candidates_considered: int = 0
+    rejected_candidates: int = 0
+    rejection_context: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "asset_id", _text(self.asset_id, "asset_id"))
@@ -1031,6 +1056,21 @@ class ResolvedAsset:
             "sanitized_query",
             _optional_text(self.sanitized_query, "sanitized_query"),
         )
+        object.__setattr__(
+            self,
+            "score_breakdown",
+            MappingProxyType(
+                _json_safe_number_map(self.score_breakdown, "score_breakdown")
+            ),
+        )
+        object.__setattr__(
+            self, "visual_family", _optional_text(self.visual_family, "visual_family")
+        )
+        for name in ("candidates_considered", "rejected_candidates"):
+            _int(getattr(self, name), name, minimum=0)
+        object.__setattr__(
+            self, "rejection_context", _string_tuple(self.rejection_context, "rejection_context")
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1042,6 +1082,13 @@ class ResolvedAsset:
             "provenance": self.provenance.to_dict(),
             "matched_query": self.matched_query,
             "sanitized_query": self.sanitized_query,
+            "score_breakdown": {
+                name: round(value, 4) for name, value in self.score_breakdown.items()
+            },
+            "visual_family": self.visual_family,
+            "candidates_considered": self.candidates_considered,
+            "rejected_candidates": self.rejected_candidates,
+            "rejection_context": list(self.rejection_context),
         }
 
     def to_json(self) -> str:
@@ -1055,7 +1102,11 @@ class ResolvedAsset:
                 "asset_id", "local_path", "candidate_id", "requirement",
                 "score", "provenance",
             },
-            optional={"matched_query", "sanitized_query"},
+            optional={
+                "matched_query", "sanitized_query", "score_breakdown",
+                "visual_family", "candidates_considered", "rejected_candidates",
+                "rejection_context",
+            },
         )
         return cls(
             asset_id=data["asset_id"],
@@ -1066,6 +1117,11 @@ class ResolvedAsset:
             provenance=AssetProvenance.from_dict(data["provenance"]),
             matched_query=data.get("matched_query"),
             sanitized_query=data.get("sanitized_query"),
+            score_breakdown=data.get("score_breakdown", {}),
+            visual_family=data.get("visual_family"),
+            candidates_considered=data.get("candidates_considered", 0),
+            rejected_candidates=data.get("rejected_candidates", 0),
+            rejection_context=tuple(data.get("rejection_context", ())),
         )
 
 

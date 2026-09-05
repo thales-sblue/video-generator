@@ -131,6 +131,82 @@ metáfora original, e os léxicos são dados justamente para que corrigir um err
 seja uma linha. E **recusa não é aprovação**: nenhuma dessas regras substitui a
 revisão editorial humana; elas só tiram do caminho o que é obviamente errado.
 
+### Direção de arte (`VisualDirectionPolicy`)
+
+A relevância semântica decide **qual** material entra. A **Visual Direction v1**
+decide **como** ele aparece — a diferença entre sessenta boas fotografias e um
+vídeo. São quatro decisões por shot, cada uma um vocabulário fechado:
+
+- **composição** — `fullscreen` (o quadro inteiro, a afirmação neutra),
+  `extreme_crop` (aproximação dura: tensão, detalhe, desconforto), `inset` (o
+  asset menor dentro de uma derivação tratada dele mesmo), `layered` (uma faixa
+  2.39:1 do asset sobre uma cópia desfocada e escurecida — a resposta para
+  material cuja proporção o `fullscreen` estragaria), `split` (duas regiões do
+  mesmo quadro lado a lado, **somente** num beat que é uma comparação) e
+  `text_focus` (uma composição construída para receber texto na tela).
+- **movimento** — `static_hold`, `slow_push_in`, `slow_pull_out`,
+  `lateral_drift` e `detail_push` (só existe dentro de um `extreme_crop`). O
+  deslocamento é pequeno de propósito: um movimento que se *vê* mexendo é um
+  zoom, e zoom não é direção. **A ausência de movimento é uma decisão**, não
+  uma falta.
+- **grade** — a intensidade (`none` / `subtle` / `standard` / `strong`) com que
+  o tratamento do canal é aplicado *a este asset*. A escolha vem da luminância
+  medida do arquivo: uma fotografia já escura recebe `subtle` para não ser
+  esmagada, uma clara demais recebe `strong` para ser trazida para dentro da
+  peça.
+- **ênfase** — se este shot carrega um `text_event`, e portanto se a composição
+  precisa ser construída para segurá-lo.
+
+Três garantias. **Determinismo**: mesma entrada + mesma policy + mesma seed →
+mesmo resultado. **Controle de repetição**: nem composição nem movimento podem
+formar uma sequência mais longa que a policy permite, e o que uma trava proíbe
+entra na `rationale` do shot. **Portões antes de sorteio**: `text_focus` só
+existe onde há ênfase, `split` só onde o beat é comparação, `extreme_crop`
+nunca num quadro que não pode ser cortado (documento, gráfico, tela), e
+material em movimento fica com a metade barata da gramática porque já é uma
+composição.
+
+A identidade do canal é **dados do projeto**, não código: um arquivo
+`visual-direction-v1.json` com a paleta de tratamento (dessaturação, densidade
+de sombras, teto de highlights, desvio frio, grain, vignette), os pesos de
+composição e de movimento por `visual_role`, a geometria das composições e os
+motifs. Um segundo canal é um segundo arquivo.
+
+**Motifs** são recorrência de assunto (corredores, espaços vazios, sombras,
+reflexos, mãos, escrita, documentos, telas, multidões, arquitetura, detalhes
+humanos), não repetição de asset. São sinal secundário: um motif que volta
+recebe um enquadramento diferente, para que a coesão temática não vire a mesma
+imagem outra vez.
+
+### Ênfase na tela (`TextEvent`)
+
+Legendas transcrevem a voz; a ênfase **argumenta** com ela. As duas camadas são
+planejadas e estilizadas em separado, e a ênfase nunca repete a legenda.
+
+- poucas, e escolhidas por importância: a abertura é tomada em ordem de tempo
+  (quem ainda não decidiu ficar merece a frase forte cedo), o corpo é tomado
+  pelas **melhores** frases do roteiro, não pelas primeiras que couberam;
+- uma frase que não se sustenta sozinha não vai para a tela: uma palavra solta
+  só passa quando é um número ou uma data;
+- o acento (`#E5A33C`) marca **uma** palavra dentro da linha, não a linha
+  inteira — destaque, nunca cor dominante;
+- safe areas e tipografia vêm do `VisualStyle`, como as legendas.
+
+## Veto editorial duro
+
+Um candidato pode passar em todos os critérios de ranking e ainda destruir a
+peça. Além das recusas *comparativas* (`keyword_only_match`, `generic_stock`,
+`tone_conflict`, `abstract_cgi_mismatch`, `visual_language_repetition`), existe
+uma família `hard_veto_*` de recusas **absolutas**: CGI genérico e render 3D
+abstrato, cartoon/ilustração, imagem alegre demais, criança/sala de aula sem
+necessidade semântica, neon/sci-fi, fantasia, stock comercial polido, e um
+animal que o beat nunca pediu. Um beat metafórico continua recebendo metáfora;
+o que ele deixa de receber é o render abstrato mais próximo que o catálogo
+tinha.
+
+Cobertura não é qualidade: um `needs_editorial_override` honesto é melhor do
+que um `abstract 3D geometric waveform` num beat humano sério.
+
 ## Formato de entrega (target format)
 
 - `target_format` no `VideoBrief`/`EditPlan` descreve o canvas final de forma
