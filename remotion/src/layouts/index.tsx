@@ -253,8 +253,13 @@ const SplitContrast: React.FC<LayoutProps> = ({event, theme, width, height}) => 
     const indent = Math.round(width * 0.08);
     const left = mx + indent;
     const avail = width - left - mx;
+    // the X ≠ Y card is a three-tier stack that also has to fit vertically, so
+    // it takes only a gentle share of the intensity boost and always wraps a
+    // long payoff word rather than letting it bleed off the column
+    const pairBoost = Math.min(boost, 1.14);
+    const bText = breakDominant(b.text, b.text.length > 9);
     const sizeA = fitSize(a.text, 'secondary', height, avail);
-    const sizeB = fitSize(breakDominant(b.text, boost > 1.15), 'dominant', height, avail, boost);
+    const sizeB = fitSize(bText, 'dominant', height, avail, pairBoost);
     return (
       <AbsoluteFill>
         <Surface surface={event.surface} anchor="center" />
@@ -283,7 +288,7 @@ const SplitContrast: React.FC<LayoutProps> = ({event, theme, width, height}) => 
           >
             ≠
           </div>
-          <Block block={{...b, importance: 'dominant', text: breakDominant(b.text)}} size={sizeB} index={2} blockCount={3} motion={event.motion} theme={theme} />
+          <Block block={{...b, importance: 'dominant', text: bText}} size={sizeB} index={2} blockCount={3} motion={event.motion} theme={theme} />
         </div>
       </AbsoluteFill>
     );

@@ -162,8 +162,8 @@ _ROLE_LAYOUTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "contrast": ("contrast_pair", "split_statement"),
         "statement": ("stacked_hierarchy", "edge_aligned", "small_plus_massive"),
         "question": ("centered_poster", "split_statement"),
-        "definition": ("centered_poster", "stacked_hierarchy"),
-        "number": ("dominant_word", "small_plus_massive"),
+        "definition": ("dominant_word", "centered_poster", "stacked_hierarchy"),
+        "number": ("dominant_word", "small_plus_massive", "stacked_hierarchy"),
         # a margin note is quiet by construction: one line, flush to an edge
         "annotation": ("edge_aligned", "dominant_word"),
         # a built run alternates a display line with a stepped stack
@@ -1835,16 +1835,22 @@ def plan_motion_typography(
     for index, (candidate, start, end) in enumerate(trimmed, start=1):
         block_count = len(candidate.texts)
         if candidate.intent == "annotation":
-            # a margin label stays recessive and consistent; alternate the two
-            # single-block compositions so it still never repeats back to back
-            layout = "edge_aligned" if (recent_layouts[-1:] != ["edge_aligned"]) else "dominant_word"
+            # a margin label is always edge-aligned — it is the one composition
+            # that renders a support weight at a support size — and stays that
+            # way even two in a row, because a recessive label is not what the
+            # "no layout twice" rule is protecting against
+            layout = "edge_aligned"
         elif candidate.intent == "chapter_transition":
             layout = "centered_poster" if block_count == 2 else "dominant_word"
         else:
             layout = _choose_layout(candidate.role, block_count, used, recent_layouts)
         # a hard guarantee the cut never repeats a composition back to back,
-        # whichever branch chose it
-        if recent_layouts and layout == recent_layouts[-1]:
+        # whichever branch chose it — margin labels excepted
+        if (
+            candidate.intent != "annotation"
+            and recent_layouts
+            and layout == recent_layouts[-1]
+        ):
             alt = next(
                 (
                     other

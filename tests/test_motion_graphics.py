@@ -337,6 +337,33 @@ class PlanGuardTests(unittest.TestCase):
         plan = _plan(_image("a.mp4"), _image("b.mp4"))
         self.assertIsNone(motion_graphics_scene_from_plan(plan))
 
+    def test_manifest_validator_accepts_the_editorial_density_fields(self) -> None:
+        from video_generator.validation.manifest import _motion_graphics_match
+
+        scene = build_motion_graphics_scene(
+            [
+                _event(event_id="type_001", intensity="peak", intent="statement_build"),
+                _event(
+                    event_id="type_002",
+                    start_seconds=6.0,
+                    end_seconds=8.0,
+                    intensity="low",
+                    intent="annotation",
+                    surface="scrim",
+                ),
+            ],
+            width=1920,
+            height=1080,
+            fps=30,
+            duration_seconds=60.0,
+        )
+        op = EditOperation(operation_id="motion_graphics", kind="motion_graphics", parameters=scene)
+        self.assertTrue(_motion_graphics_match(op, 60.0))
+        # a value outside the closed vocabulary is still refused
+        scene["events"][0]["intent"] = "vibes"
+        bad = EditOperation(operation_id="motion_graphics", kind="motion_graphics", parameters=scene)
+        self.assertFalse(_motion_graphics_match(bad, 60.0))
+
     def test_mutually_exclusive_with_motion_typography(self) -> None:
         typo = EditOperation(
             operation_id="typo",

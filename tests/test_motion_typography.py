@@ -314,7 +314,11 @@ class PlannedLayerTests(unittest.TestCase):
             self.assertIn(event.motion, TEXT_MOTIONS)
 
     def test_the_same_layout_never_runs_twice_back_to_back(self):
+        # a recessive margin label is always edge-aligned and exempt; the main
+        # editorial compositions never repeat
         for earlier, later in zip(self.events, self.events[1:]):
+            if "annotation" in (earlier.intent, later.intent):
+                continue
             self.assertNotEqual(earlier.layout, later.layout)
 
     def test_the_accent_is_never_spent_on_two_events_running(self):

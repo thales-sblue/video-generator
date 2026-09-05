@@ -48,10 +48,10 @@ export const breakDominant = (text: string, aggressive = false): string => {
     const at = spaces.reduce((best, s) => (Math.abs(s - mid) < Math.abs(best - mid) ? s : best), spaces[0]);
     return `${text.slice(0, at)}\n${text.slice(at + 1)}`;
   }
-  // hyphenless single word. Normally kept whole (fitSize scales it); when the
-  // editorial intensity wants it huge, split it near the middle so it stacks
-  // and fills the frame instead of shrinking to a stripe.
-  if (aggressive && text.length >= 8) {
+  // hyphenless single word. Split it near the middle so it stacks and fills the
+  // frame instead of shrinking to a stripe — always once it is long enough to
+  // clip a column, earlier still when the editorial intensity wants it huge.
+  if ((aggressive && text.length >= 8) || text.length >= 12) {
     const at = Math.round(text.length / 2);
     return `${text.slice(0, at)}\n${text.slice(at)}`;
   }

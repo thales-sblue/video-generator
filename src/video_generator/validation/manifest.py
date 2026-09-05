@@ -291,6 +291,24 @@ _MOTION_GRAPHICS_LAYOUTS = frozenset({
     "split-contrast", "poster-statement",
 })
 _MOTION_GRAPHICS_IMPORTANCE = frozenset({"dominant", "secondary", "support"})
+# The editorial-density fields the planner now stamps on every event. All are
+# optional (a scene document that predates them still validates) but, when
+# present, must carry a value from the closed vocabulary.
+_MOTION_GRAPHICS_INTENSITIES = frozenset({"low", "medium", "high", "peak"})
+_MOTION_GRAPHICS_INTENTS = frozenset({
+    "impact_word", "statement_build", "contrast", "question", "definition",
+    "number_hit", "sequence", "annotation", "quote_fragment",
+    "chapter_transition", "visual_interruption",
+})
+_MOTION_GRAPHICS_SURFACES = frozenset({"bare", "scrim", "card"})
+_MOTION_GRAPHICS_SCALE_HINTS = frozenset({"normal", "amplified", "giant"})
+_MOTION_GRAPHICS_EVENT_KEYS = {
+    "id", "start", "duration", "role", "layout", "variant", "motion", "blocks",
+}
+_MOTION_GRAPHICS_EVENT_OPTIONAL = {
+    "intensity", "intent", "surface", "scale_hint",
+    "chain_position", "chain_length",
+}
 _HEX_COLOUR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
@@ -339,21 +357,33 @@ def _motion_graphics_match(operation, timeline_duration: float) -> bool:
         isinstance(events, (str, bytes))
         or not isinstance(events, (list, tuple))
         or not events
-        or len(events) > 60
+        or len(events) > 160
     ):
         return False
     previous_end = 0.0
     for event in events:
         if not isinstance(event, Mapping):
             return False
-        if {"id", "start", "duration", "role", "layout", "motion", "blocks"} - set(event):
+        if (_MOTION_GRAPHICS_EVENT_KEYS - {"variant"}) - set(event):
             return False
-        if set(event) - {
-            "id", "start", "duration", "role", "layout", "variant", "motion", "blocks"
-        }:
+        if set(event) - _MOTION_GRAPHICS_EVENT_KEYS - _MOTION_GRAPHICS_EVENT_OPTIONAL:
             return False
         if event["layout"] not in _MOTION_GRAPHICS_LAYOUTS:
             return False
+        if (
+            ("intensity" in event and event["intensity"] not in _MOTION_GRAPHICS_INTENSITIES)
+            or ("intent" in event and event["intent"] not in _MOTION_GRAPHICS_INTENTS)
+            or ("surface" in event and event["surface"] not in _MOTION_GRAPHICS_SURFACES)
+            or ("scale_hint" in event and event["scale_hint"] not in _MOTION_GRAPHICS_SCALE_HINTS)
+        ):
+            return False
+        for key in ("chain_position", "chain_length"):
+            if key in event and (
+                isinstance(event[key], bool)
+                or not isinstance(event[key], int)
+                or event[key] < 0
+            ):
+                return False
         start = event["start"]
         duration = event["duration"]
         if (

@@ -82,6 +82,14 @@ def _longest_gap(events, total: float) -> float:
 def _metrics(events, total: float) -> dict:
     layouts = [e.layout for e in events]
     consecutive_repeats = sum(1 for a, b in zip(layouts, layouts[1:]) if a == b)
+    # the meaningful count: recessive margin labels are allowed to repeat, so a
+    # repeat only matters between two of the main editorial compositions
+    main = [
+        e.layout for e in events if getattr(e, "intent", None) != "annotation"
+    ]
+    main_consecutive_repeats = sum(
+        1 for a, b in zip(main, main[1:]) if a == b
+    )
     chains = Counter(e.chain_id for e in events if e.chain_id is not None)
     return {
         "events": len(events),
@@ -95,6 +103,7 @@ def _metrics(events, total: float) -> dict:
         "motion": dict(Counter(e.motion for e in events)),
         "surface": dict(Counter(e.surface for e in events)),
         "consecutive_layout_repeats": consecutive_repeats,
+        "consecutive_layout_repeats_main_events": main_consecutive_repeats,
         "statement_build_chains": len(chains),
         "chained_events": sum(chains.values()),
         "hook_events_0_30s": sum(1 for e in events if e.start_seconds < 30.0),
@@ -258,7 +267,8 @@ def main() -> int:
         f"intent: {m['intent']}\n"
         f"layout: {m['layout']}\n"
         f"chains: {m['statement_build_chains']} ({m['chained_events']} events)  "
-        f"consecutive-repeats: {m['consecutive_layout_repeats']}  "
+        f"consecutive-repeats: {m['consecutive_layout_repeats']} "
+        f"(main events {m['consecutive_layout_repeats_main_events']})  "
         f"hook 0-30s: {m['hook_events_0_30s']}\n"
         f"-> {OUT / 'edit-plan.json'}"
     )
