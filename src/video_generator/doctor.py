@@ -223,6 +223,45 @@ def _aligner_status() -> ToolStatus:
     )
 
 
+def _remotion_status() -> ToolStatus:
+    """The portable Node runtime plus the local Remotion project's install.
+
+    Degrades only the motion-graphics overlay: without it the plan, the
+    contract and the libass text path all still work. Fails soft here — a
+    broken lock is reported as a note, not an exception.
+    """
+
+    from video_generator.adapters.remotion import remotion_available
+    from video_generator.tooling import REMOTION_PROJECT_DIR, resolve_node_bin
+
+    try:
+        node = resolve_node_bin()
+    except Exception as exc:  # ToolResolutionError and anything unexpected
+        return ToolStatus(name="Remotion", available=False, note=f"Node lock error: {exc}")
+    if node is None:
+        return ToolStatus(
+            name="Remotion",
+            available=False,
+            note="no Node runtime; portable install expected under .local-tools/node",
+        )
+    installed = (
+        REMOTION_PROJECT_DIR / "node_modules" / "@remotion" / "cli" / "remotion-cli.js"
+    ).is_file()
+    if not installed:
+        return ToolStatus(
+            name="Remotion",
+            available=False,
+            path=node,
+            note="Node present; run `npm install` in remotion/ to enable the overlay",
+        )
+    return ToolStatus(
+        name="Remotion",
+        available=remotion_available(),
+        path=node,
+        note="portable Node and the remotion/ project are ready",
+    )
+
+
 def run_doctor(config: AppConfig) -> DoctorReport:
     node = _command_status("Node", "node", ("--version",))
     tools = (
@@ -232,6 +271,7 @@ def run_doctor(config: AppConfig) -> DoctorReport:
         _media_tool_status("ffprobe", "ffprobe"),
         _command_status("Git", "git", ("--version",)),
         _hyperframes_status(node),
+        _remotion_status(),
         _kokoro_status(),
         _aligner_status(),
     )

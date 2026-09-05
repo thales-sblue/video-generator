@@ -41,6 +41,12 @@ from video_generator.adapters.ffmpeg import (
     measure_luma,
 )
 from video_generator.adapters.ffprobe import MediaProbe, ProbeError, StreamProbe, probe_media
+from video_generator.adapters.remotion import (
+    RemotionError,
+    RemotionOverlay,
+    remotion_available,
+    render_motion_overlay,
+)
 
 __all__ = [
     "AlignerError",
@@ -62,6 +68,10 @@ __all__ = [
     "MediaProbe",
     "NarrationArtifact",
     "ProbeError",
+    "RemotionError",
+    "RemotionOverlay",
+    "remotion_available",
+    "render_motion_overlay",
     "SegmentArtifact",
     "SequenceArtifact",
     "SequenceClip",

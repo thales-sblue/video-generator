@@ -250,7 +250,7 @@ def scene_from_typography_operation(
     """
 
     items = parameters.get("items")
-    if not isinstance(items, list) or not items:
+    if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)) or not items:
         raise MotionGraphicsError("motion_typography parameters need a non-empty items list")
 
     events = tuple(

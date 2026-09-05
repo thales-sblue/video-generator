@@ -42,6 +42,7 @@ from video_generator.adapters import (
     probe_media,
     synthesize_narration,
 )
+from video_generator.adapters.remotion import RemotionError, render_motion_overlay
 from video_generator.domain import EditPlan
 from video_generator.subtitles import (
     SubtitleParseError,
@@ -87,6 +88,13 @@ TEXT_EVENT_STYLE_KEYS = {
     "font_name", "foreground", "accent", "emphasis_scale", "safe_margin_fraction",
 }
 MOTION_TYPOGRAPHY_KIND = "motion_typography"
+# The Remotion motion-graphics variant: the same editorial decisions, composed
+# and rendered as a transparent overlay instead of drawn by libass. Its
+# operation carries a full scene document (see
+# video_generator.domain.motion_graphics); the workflow renders it to an alpha
+# clip and hands that to the FFmpeg adapter as motion_overlay.
+MOTION_GRAPHICS_KIND = "motion_graphics"
+MOTION_GRAPHICS_SCENE_KEYS = {"schema_version", "composition", "theme", "events"}
 MOTION_TEXT_ITEM_KEYS = {"blocks", "start_seconds", "end_seconds"}
 MOTION_TEXT_ITEM_OPTIONAL = {"layout", "motion"}
 MOTION_TEXT_BLOCK_KEYS = {"text"}
@@ -416,6 +424,141 @@ def _text_event_cues(
             "text_events style safe_margin_fraction must lie in [0, 0.2]"
         )
     return tuple(cues), TextStyleSpec(font_name, foreground, accent, scale, margin)
+
+
+_MG_LAYOUTS = {
+    "dominant-word", "small-plus-massive", "stacked-editorial",
+    "split-contrast", "poster-statement",
+}
+_MG_IMPORTANCE = {"dominant", "secondary", "support"}
+
+
+def _validate_motion_graphics_scene(parameters: Mapping[str, object]) -> dict:
+    """Check a ``motion_graphics`` operation's parameters are a whole scene.
+
+    The operation carries the document produced by
+    :func:`video_generator.domain.motion_graphics.build_motion_graphics_scene`.
+    The workflow does not re-plan it — it only makes sure the shape is intact
+    before handing it to the Remotion adapter, and returns it for the caller.
+    """
+
+    values = dict(parameters)
+    unknown = set(values) - MOTION_GRAPHICS_SCENE_KEYS
+    if unknown:
+        raise SequenceWorkflowError(
+            f"motion_graphics does not accept: {', '.join(sorted(unknown))}"
+        )
+    if values.get("schema_version") != 1:
+        raise SequenceWorkflowError("motion_graphics scene schema_version must be 1")
+    composition = values.get("composition")
+    if not isinstance(composition, Mapping) or set(composition) != {
+        "width", "height", "fps", "durationInSeconds"
+    }:
+        raise SequenceWorkflowError(
+            "motion_graphics composition needs width, height, fps, durationInSeconds"
+        )
+    for key in ("width", "height", "fps", "durationInSeconds"):
+        value = composition[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise SequenceWorkflowError(f"motion_graphics composition {key} must be positive")
+    theme = values.get("theme")
+    if not isinstance(theme, Mapping) or not {"foreground", "accent", "muted"} <= set(theme):
+        raise SequenceWorkflowError("motion_graphics theme needs foreground, accent, muted")
+    events = values.get("events")
+    if isinstance(events, (str, bytes)) or not isinstance(events, (list, tuple)):
+        raise SequenceWorkflowError("motion_graphics events must be an array")
+    if not events or len(events) > 60:
+        raise SequenceWorkflowError("motion_graphics requires between 1 and 60 events")
+    for event in events:
+        if not isinstance(event, Mapping):
+            raise SequenceWorkflowError("each motion_graphics event must be an object")
+        if not {"id", "start", "duration", "role", "layout", "motion", "blocks"} <= set(event):
+            raise SequenceWorkflowError("a motion_graphics event is missing required keys")
+        if event["layout"] not in _MG_LAYOUTS:
+            raise SequenceWorkflowError(f"unknown motion_graphics layout: {event['layout']!r}")
+        for name in ("start", "duration"):
+            value = event[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise SequenceWorkflowError(f"motion_graphics event {name} must be a number >= 0")
+        blocks = event["blocks"]
+        if isinstance(blocks, (str, bytes)) or not isinstance(blocks, (list, tuple)):
+            raise SequenceWorkflowError("motion_graphics event blocks must be an array")
+        if not 1 <= len(blocks) <= 3:
+            raise SequenceWorkflowError("a motion_graphics event holds one to three blocks")
+        for block in blocks:
+            if not isinstance(block, Mapping) or "text" not in block or "importance" not in block:
+                raise SequenceWorkflowError("a motion_graphics block needs text and importance")
+            text = block["text"]
+            if not isinstance(text, str) or not text.strip() or len(text) > 40:
+                raise SequenceWorkflowError("motion_graphics block text must be 1-40 characters")
+            if any(character in text for character in "<>{}"):
+                raise SequenceWorkflowError(
+                    "motion_graphics block text must not contain markup characters"
+                )
+            if block["importance"] not in _MG_IMPORTANCE:
+                raise SequenceWorkflowError(
+                    f"motion_graphics block importance must be one of {sorted(_MG_IMPORTANCE)}"
+                )
+    return values
+
+
+def motion_graphics_scene_from_plan(plan: EditPlan) -> "dict | None":
+    """Return the validated ``motion_graphics`` scene in ``plan``, or ``None``."""
+
+    for operation in plan.operations:
+        if operation.kind == MOTION_GRAPHICS_KIND:
+            return _validate_motion_graphics_scene(operation.parameters)
+    return None
+
+
+# The overlay is rendered at the timeline fps so it composites frame-for-frame.
+_MOTION_GRAPHICS_FPS = 30
+
+
+def _render_motion_graphics_overlay(
+    plan: EditPlan,
+    canvas: "tuple[int, int] | None",
+    expected_duration: float,
+    timeout: float,
+) -> "Path | None":
+    """Render the plan's ``motion_graphics`` scene to an alpha overlay clip.
+
+    Returns the overlay path, or ``None`` when the plan has no such operation.
+    Fails closed: a missing toolchain or a Remotion error raises
+    :class:`SequenceWorkflowError` rather than quietly dropping the type layer.
+    The composition is pinned here to the measured canvas and duration, so the
+    overlay can never drift from the video it is laid over.
+    """
+
+    scene = motion_graphics_scene_from_plan(plan)
+    if scene is None:
+        return None
+    if canvas is None:
+        raise SequenceWorkflowError(
+            "motion_graphics requires the plan to declare a target_format"
+        )
+    scene = dict(scene)
+    scene["composition"] = {
+        "width": int(canvas[0]),
+        "height": int(canvas[1]),
+        "fps": _MOTION_GRAPHICS_FPS,
+        "durationInSeconds": round(float(expected_duration), 3),
+    }
+    overlay_path = Path(plan.output_path).with_name(
+        Path(plan.output_path).stem + ".motion.mov"
+    )
+    try:
+        overlay = render_motion_overlay(
+            scene,
+            overlay_path,
+            codec="prores",
+            timeout_seconds=max(float(timeout) * 6.0, 1800.0),
+        )
+    except RemotionError as exc:
+        raise SequenceWorkflowError(
+            f"Remotion motion-graphics overlay failed: {exc}"
+        ) from exc
+    return Path(overlay.output_path)
 
 
 def _motion_text_cues(
@@ -856,6 +999,7 @@ def _operations_from_plan(plan: EditPlan) -> PlanOperations:
     text_events_seen = False
     motion_text: tuple[MotionTextCue, ...] = ()
     motion_text_seen = False
+    motion_graphics_seen = False
     direction: DirectionSpec | None = None
     music_path: str | None = None
     music: MusicSpec | None = None
@@ -906,6 +1050,11 @@ def _operations_from_plan(plan: EditPlan) -> PlanOperations:
         if operation.kind == CAPTIONS_KIND:
             if captions_seen:
                 raise SequenceWorkflowError("video-sequence accepts at most one captions operation")
+            if motion_graphics_seen:
+                raise SequenceWorkflowError(
+                    "motion_graphics replaces the burned caption track: a plan with "
+                    "composed motion graphics must not also carry a captions operation"
+                )
             if len(segments) < 2:
                 raise SequenceWorkflowError("captions must follow all timeline segments")
             if music_path is not None:
@@ -948,10 +1097,43 @@ def _operations_from_plan(plan: EditPlan) -> PlanOperations:
             text_events, text_style = _text_event_cues(operation.parameters)
             text_events_seen = True
             continue
+        if operation.kind == MOTION_GRAPHICS_KIND:
+            if motion_graphics_seen:
+                raise SequenceWorkflowError(
+                    "video-sequence accepts at most one motion_graphics operation"
+                )
+            if motion_text_seen:
+                raise SequenceWorkflowError(
+                    "motion_graphics and motion_typography are mutually exclusive: "
+                    "the on-screen type is either composed by Remotion or drawn by libass"
+                )
+            if captions_seen or caption_source is not None:
+                raise SequenceWorkflowError(
+                    "motion_graphics replaces the burned caption track: a plan with "
+                    "composed motion graphics must not also carry a captions operation"
+                )
+            if len(segments) < 2:
+                raise SequenceWorkflowError(
+                    "motion_graphics must follow all timeline segments"
+                )
+            if music_path is not None:
+                raise SequenceWorkflowError("motion_graphics must precede music")
+            if operation.source is not None:
+                raise SequenceWorkflowError("motion_graphics does not take a source")
+            if operation.start_seconds is not None or operation.end_seconds is not None:
+                raise SequenceWorkflowError("motion_graphics timing belongs to its events")
+            _validate_motion_graphics_scene(operation.parameters)
+            motion_graphics_seen = True
+            continue
         if operation.kind == MOTION_TYPOGRAPHY_KIND:
             if motion_text_seen:
                 raise SequenceWorkflowError(
                     "video-sequence accepts at most one motion_typography operation"
+                )
+            if motion_graphics_seen:
+                raise SequenceWorkflowError(
+                    "motion_graphics and motion_typography are mutually exclusive: "
+                    "the on-screen type is either composed by Remotion or drawn by libass"
                 )
             if len(segments) < 2:
                 raise SequenceWorkflowError(
@@ -1017,6 +1199,7 @@ def _operations_from_plan(plan: EditPlan) -> PlanOperations:
                 captions_seen
                 or text_events_seen
                 or motion_text_seen
+                or motion_graphics_seen
                 or music_path is not None
                 or fade is not None
                 or direction is not None
@@ -1399,9 +1582,15 @@ def run_sequence_workflow(
         if before_compose is not None:
             before_compose(plan)
 
+        motion_overlay_path = _render_motion_graphics_overlay(
+            plan, canvas, expected_duration, timeout
+        )
+
         create_artifact = compose or compose_video_sequence
         try:
             compose_kwargs = {"timeout_seconds": timeout}
+            if motion_overlay_path is not None:
+                compose_kwargs["motion_overlay"] = str(motion_overlay_path)
             if narration_path is not None:
                 compose_kwargs["narration_path"] = narration_path
             if narration_lead_in:

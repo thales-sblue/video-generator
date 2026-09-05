@@ -19,6 +19,10 @@ SUPPORTED_TOOLS = {"ffmpeg", "ffprobe"}
 KOKORO_LOCAL_ROOT = PROJECT_ROOT / ".local-tools" / "kokoro"
 KOKORO_ASSET_NAMES = ("kokoro-v1.0.onnx", "voices-v1.0.bin")
 
+NODE_LOCK_PATH = PROJECT_ROOT / "config" / "node-lock.json"
+NODE_LOCAL_ROOT = PROJECT_ROOT / ".local-tools" / "node"
+REMOTION_PROJECT_DIR = PROJECT_ROOT / "remotion"
+
 WHISPER_LOCAL_ROOT = PROJECT_ROOT / ".local-tools" / "whisper"
 # A CTranslate2 Whisper conversion is a directory, not one file: these four
 # entries are what faster-whisper loads, and all four must be present before a
@@ -159,6 +163,45 @@ def resolve_whisper_model(name: str | None = None) -> str | None:
                 )
         return str(candidate.resolve())
     return None
+
+
+def resolve_node_bin() -> str | None:
+    """Return the portable Node executable for the Remotion project, or ``None``.
+
+    ``None`` means Node is not installed at all, which degrades only the
+    Remotion motion-graphics overlay — every contract, plan and the libass text
+    path keep working. Fails closed with :class:`ToolResolutionError` when
+    ``config/node-lock.json`` names an install that is present but broken, so a
+    half-unpacked Node never silently produces a different render. An explicit
+    ``REMOTION_NODE_BIN`` overrides the locked install; the system ``PATH`` is a
+    last resort.
+    """
+
+    override = os.environ.get("REMOTION_NODE_BIN")
+    if override:
+        candidate = Path(override).expanduser()
+        if not candidate.is_file():
+            raise ToolResolutionError(f"REMOTION_NODE_BIN is not a file: {candidate}")
+        return str(candidate.resolve())
+
+    if NODE_LOCAL_ROOT.exists():
+        try:
+            lock = json.loads(NODE_LOCK_PATH.read_text(encoding="utf-8"))
+            install = (PROJECT_ROOT / lock["install_directory"]).resolve()
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ToolResolutionError("cannot load the Node integrity lock") from exc
+        try:
+            install.relative_to(NODE_LOCAL_ROOT.resolve())
+        except ValueError as exc:
+            raise ToolResolutionError("Node lock resolves outside .local-tools") from exc
+        node = install / "node.exe"
+        if not node.is_file():
+            node = install / "bin" / "node"
+        if not node.is_file():
+            raise ToolResolutionError(f"locked Node executable is missing under {install}")
+        return str(node.resolve())
+
+    return shutil.which("node")
 
 
 def resolve_media_tool(
