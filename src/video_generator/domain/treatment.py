@@ -189,6 +189,9 @@ class TreatmentState:
     grade: str | None = None
     hold: bool = False
     reading: bool = False
+    # A deliberately sub-second state — the cut-in of a graphic interruption.
+    # It is held to ``min_interrupt_seconds`` instead of ``min_state_seconds``.
+    brief: bool = False
     rationale: str = ""
     schema_version: int = SCHEMA_VERSION
 
@@ -208,7 +211,7 @@ class TreatmentState:
             raise TreatmentError("crop_bias must be one of " + ", ".join(CROP_BIASES))
         if self.grade is not None and self.grade not in GRADE_INTENSITIES:
             raise TreatmentError("grade must be null or one of " + ", ".join(GRADE_INTENSITIES))
-        for name in ("hold", "reading"):
+        for name in ("hold", "reading", "brief"):
             if not isinstance(getattr(self, name), bool):
                 raise TreatmentError(f"{name} must be a boolean")
         if self.motion == "detail_push" and self.composition != "extreme_crop":
@@ -235,6 +238,7 @@ class TreatmentState:
             "grade": self.grade,
             "hold": self.hold,
             "reading": self.reading,
+            "brief": self.brief,
             "rationale": self.rationale,
         }
 
@@ -243,7 +247,7 @@ class TreatmentState:
         if not isinstance(data, Mapping):
             raise TreatmentError("a state payload must be an object")
         required = {"composition", "motion", "scale", "duration_fraction"}
-        optional = {"crop_bias", "grade", "hold", "reading", "rationale", "schema_version"}
+        optional = {"crop_bias", "grade", "hold", "reading", "brief", "rationale", "schema_version"}
         missing = required - set(data)
         unknown = set(data) - required - optional
         if missing:
@@ -259,6 +263,7 @@ class TreatmentState:
             grade=data.get("grade"),
             hold=bool(data.get("hold", False)),
             reading=bool(data.get("reading", False)),
+            brief=bool(data.get("brief", False)),
             rationale=data.get("rationale", ""),
             schema_version=data.get("schema_version", SCHEMA_VERSION),
         )
@@ -1025,6 +1030,7 @@ def _build_states(
                 crop_bias=shot.crop_bias,
                 grade="strong",
                 hold=True,
+                brief=True,
                 rationale="a hard graphic cut-in, one beat only",
             ),
             TreatmentState(
@@ -1049,10 +1055,11 @@ def _reframe_bias(bias: str) -> str:
 
 
 def _viable(states: Sequence[TreatmentState], duration: float, policy: EditorialTreatmentPolicy) -> bool:
-    return all(
-        state.duration_fraction * duration >= policy.min_state_seconds - 1e-6
-        for state in states
-    )
+    for state in states:
+        floor = policy.min_interrupt_seconds if state.brief else policy.min_state_seconds
+        if state.duration_fraction * duration < floor - 1e-6:
+            return False
+    return True
 
 
 # --------------------------------------------------------------------------- #
