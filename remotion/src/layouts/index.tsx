@@ -91,8 +91,13 @@ const DominantWord: React.FC<LayoutProps> = ({event, theme, width, height}) => {
   const {mx, my, inner} = useFrameGeom(width, height);
   const [kicker, word] = event.blocks.length === 2 ? event.blocks : [null, event.blocks[0]];
   const boost = boostOf(event);
-  const text = breakDominant(word.text, boost > 1.15);
-  const size = fitSize(text, 'dominant', height, inner, boost);
+  // a boosted word bleeds toward the right margin but never past it; fitSize is
+  // handed the real column so a long word shrinks to fit even when the mid-word
+  // wrap did not land it inside on its own
+  const rightMargin = boost > 1.15 ? Math.round(mx * 0.55) : mx;
+  const avail = width - mx - rightMargin;
+  const text = breakDominant(word.text, word.text.length >= 8);
+  const size = fitSize(text, 'dominant', height, avail, boost);
   return (
     <AbsoluteFill>
       <Surface surface={event.surface} anchor="bottom" />
@@ -100,7 +105,7 @@ const DominantWord: React.FC<LayoutProps> = ({event, theme, width, height}) => {
         style={{
           position: 'absolute',
           left: mx,
-          right: boost > 1.15 ? Math.round(mx * 0.4) : mx,
+          right: rightMargin,
           bottom: my + height * 0.06,
           display: 'flex',
           flexDirection: 'column',
