@@ -487,5 +487,138 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(m["static_image_shots_over_threshold"], ["scene_01_shot_01"])
 
 
+import tempfile
+from pathlib import Path
+
+from video_generator.domain.planning import (
+    NarrativeScript,
+    plan_scenes,
+    plan_shot_editorial_treatment,
+    plan_shot_motion_typography,
+    plan_shot_visual_direction,
+    plan_shots,
+    shot_plan_to_edit_plan,
+    treatment_inputs,
+    visual_direction_operation,
+)
+from video_generator.domain.direction import VisualDirectionPolicy
+from video_generator.domain import TargetFormat
+from video_generator.validation.manifest import _sequence_plan_matches
+from video_generator.workflows.sequence import _operations_from_plan
+
+_SCRIPT = (
+    "Voce acha que decide sozinho. Nao decide, e isso tem nome.\n\n"
+    "Em 1974 um estudo mostrou que a maioria muda de ideia sob pressao.\n\n"
+    "Mas quando a informacao contradiz o que voce ja pensava, comeca o interrogatorio.\n\n"
+    "O corredor vazio continua ali, e ninguem olha para ele.\n\n"
+    "No fim, entender o ser humano comeca quando paramos de idealiza-lo.\n"
+)
+
+
+class PlanIntegrationTests(unittest.TestCase):
+    def _planned(self, tmp):
+        script = NarrativeScript.from_text("s1", _SCRIPT, total_duration_seconds=120.0)
+        scene_plan = plan_scenes(script)
+        shot_plan, _ = plan_shots(
+            scene_plan, seed=0, semantic=True, visual_relevance=True
+        )
+        directions = plan_shot_visual_direction(shot_plan, seed=0)
+        motion_events = plan_shot_motion_typography(scene_plan, shot_plan)
+        treatments = plan_shot_editorial_treatment(
+            scene_plan,
+            shot_plan,
+            directions=directions.by_shot(),
+            motion_events=motion_events,
+            seed=0,
+        )
+        source = tmp / "asset.jpg"
+        source.write_bytes(b"x")
+        bindings = {shot.asset_id: str(source) for shot in shot_plan.shots}
+        plan = shot_plan_to_edit_plan(
+            shot_plan,
+            bindings,
+            plan_id="p",
+            brief_id="b",
+            output_path=str(tmp / "out.mp4"),
+            target_format=TargetFormat(1920, 1080, "cover"),
+            extra_operations=(visual_direction_operation(VisualDirectionPolicy()),),
+            directions=directions.by_shot(),
+            treatments=treatments.by_shot(),
+        )
+        return scene_plan, shot_plan, directions, treatments, plan
+
+    def test_the_treatment_plan_covers_every_shot_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, shot_plan, _, treatments, _ = self._planned(Path(directory))
+            self.assertEqual(
+                [t.shot_id for t in treatments.treatments],
+                [s.shot_id for s in shot_plan.shots],
+            )
+
+    def test_a_non_static_shot_is_expanded_into_its_states(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, shot_plan, _, treatments, plan = self._planned(Path(directory))
+            segments = [
+                op for op in plan.operations
+                if op.kind in ("image_clip", "sequence_clip")
+            ]
+            extra = sum(t.internal_cuts for t in treatments.treatments)
+            # a multi-state treatment adds one segment per internal cut
+            self.assertGreater(extra, 0)
+            self.assertEqual(len(segments) - len(shot_plan.shots), extra)
+
+    def test_the_expanded_plan_still_passes_the_manifest_grammar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            *_, plan = self._planned(Path(directory))
+            self.assertTrue(_sequence_plan_matches(plan))
+
+    def test_the_sequence_workflow_accepts_the_expanded_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            *_, plan = self._planned(Path(directory))
+            parsed = _operations_from_plan(plan)
+            self.assertGreaterEqual(len(parsed.segments), 2)
+
+    def test_expanded_segment_durations_sum_to_the_timeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, shot_plan, _, _, plan = self._planned(Path(directory))
+            total = sum(s.duration_seconds for s in shot_plan.shots)
+            got = 0.0
+            for op in plan.operations:
+                if op.kind == "image_clip":
+                    got += op.parameters["duration_seconds"]
+                elif op.kind == "sequence_clip":
+                    got += op.end_seconds - op.start_seconds
+            self.assertAlmostEqual(got, total, places=2)
+
+    def test_without_treatments_the_plan_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            _, shot_plan, directions, _, _ = self._planned(tmp)
+            source = tmp / "asset.jpg"
+            bindings = {shot.asset_id: str(source) for shot in shot_plan.shots}
+            kw = dict(
+                plan_id="p", brief_id="b", output_path=str(tmp / "out.mp4"),
+                target_format=TargetFormat(1920, 1080, "cover"),
+                directions=directions.by_shot(),
+            )
+            a = shot_plan_to_edit_plan(shot_plan, bindings, **kw)
+            b = shot_plan_to_edit_plan(shot_plan, bindings, treatments={}, **kw)
+            self.assertEqual(a.to_dict(), b.to_dict())
+
+    def test_treatment_inputs_score_intensity_and_flag_reading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            scene_plan, shot_plan, directions, _, _ = self._planned(tmp)
+            motion_events = plan_shot_motion_typography(scene_plan, shot_plan)
+            rows = treatment_inputs(
+                scene_plan, shot_plan,
+                directions=directions.by_shot(), motion_events=motion_events,
+            )
+            self.assertEqual(len(rows), len(shot_plan.shots))
+            self.assertTrue(all(r.intensity in EDITORIAL_INTENSITIES for r in rows))
+            # the opening shots sit inside the hook window and run loud
+            self.assertIn(rows[0].intensity, ("high", "peak"))
+
+
 if __name__ == "__main__":
     unittest.main()

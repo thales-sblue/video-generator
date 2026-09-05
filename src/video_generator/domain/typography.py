@@ -971,17 +971,19 @@ def _raise_to(current: str, floor: str) -> str:
     return current if _INTENSITY_ORDER[current] >= _INTENSITY_ORDER[floor] else floor
 
 
-def _classify_intensity(unit: _Unit, in_hook: bool) -> str:
-    """How hard the edit should lean on this sentence.
+def classify_intensity(text: str, importance: float, *, in_hook: bool) -> str:
+    """How hard the edit should lean on a sentence, from its text and weight.
 
     A band off importance, then floors raised by structure: the hook is never
     below ``high``, and a question, a turn against the argument, a number or a
     stated conclusion each pull a mid sentence up a step. The result is an
     uneven spend — the opening and every hinge of the argument run loud, a
     mid-paragraph aside stays a margin note.
+
+    Public so the editorial-treatment layer scores a shot on the same scale the
+    type layer already uses, instead of inventing a second one that can drift.
     """
 
-    importance = unit.importance
     if importance >= 0.66:
         level = "peak"
     elif importance >= 0.48:
@@ -992,15 +994,19 @@ def _classify_intensity(unit: _Unit, in_hook: bool) -> str:
         level = "low"
     if in_hook:
         level = _raise_to(level, "high")
-    if "?" in unit.text:
+    if "?" in text:
         level = _raise_to(level, "high")
-    if _split_on_contrast(unit.text) is not None:
+    if _split_on_contrast(text) is not None:
         level = _raise_to(level, "high")
-    if _has_number(unit.text):
+    if _has_number(text):
         level = _raise_to(level, "high")
-    if _has_conclusion(unit.text):
+    if _has_conclusion(text):
         level = _raise_to(level, "peak")
     return level
+
+
+def _classify_intensity(unit: _Unit, in_hook: bool) -> str:
+    return classify_intensity(unit.text, unit.importance, in_hook=in_hook)
 
 
 def _sentence_units(
