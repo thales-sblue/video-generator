@@ -131,6 +131,62 @@ class TextStyleSpec:
     accent: str = "&H003CA3E5"
     emphasis_scale: float = 1.6
     safe_margin_fraction: float = 0.06
+    # Appended, never inserted: this dataclass is constructed positionally in
+    # the workflow, so a new field goes on the end or every argument shifts.
+    # --- Editorial Motion Typography only ---------------------------------- #
+    # The second face. Motion typography rests on setting a quiet line against
+    # a heavy word, and one family cannot carry that contrast on its own; the
+    # default repeats ``font_name`` so nothing changes for existing callers.
+    support_font_name: str = ""
+    # The support line's colour. Dimmer than the foreground on purpose: at
+    # equal weight the small line competes with the word it is introducing.
+    muted: str = "&H00CEC8C4"
+
+
+# What a font name may contain before it is written into an ASS ``\fn``
+# override. Anything else could close the override block and turn a style value
+# into subtitle syntax.
+_FONT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
+
+
+@dataclass(frozen=True, slots=True)
+class MotionTextBlockCue:
+    """One run of type inside a motion-typography event."""
+
+    text: str
+    weight: str = "massive"
+    accent: bool = False
+
+
+MOTION_TEXT_WEIGHTS = ("micro", "small", "large", "massive")
+MOTION_TEXT_LAYOUTS = (
+    "dominant_word",
+    "stacked_hierarchy",
+    "small_plus_massive",
+    "split_statement",
+    "edge_aligned",
+    "centered_poster",
+    "contrast_pair",
+)
+MOTION_TEXT_MOTIONS = ("fade_rise", "scale_in", "masked_reveal", "stagger_rise")
+
+
+@dataclass(frozen=True, slots=True)
+class MotionTextCue:
+    """One typographic intervention: several blocks composed into a frame.
+
+    Not a caption and not a :class:`TextEventCue` either. A caption cue is one
+    line in a fixed band; this is a small piece of art direction — several
+    blocks at different sizes, placed by a named layout, arriving under a named
+    motion. The adapter owns the pixels; the composition that produced them
+    lives in ``video_generator.domain.typography``.
+    """
+
+    blocks: "tuple[MotionTextBlockCue, ...]"
+    start_seconds: float
+    end_seconds: float
+    layout: str = "stacked_hierarchy"
+    motion: str = "fade_rise"
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +266,7 @@ class SequenceArtifact:
     # so a new field goes on the end or it silently shifts every argument.
     text_event_count: int = 0
     directed_segment_count: int = 0
+    motion_text_count: int = 0
 
 
 IMAGE_TIMELINE_FPS = 30
@@ -386,6 +443,218 @@ def _event_text(cue: "TextEventCue", style: "TextStyleSpec") -> str:
         f"{text[:start]}{{\\c{accent}}}{text[start:end]}"
         f"{{\\c{base}}}{text[end:]}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Editorial Motion Typography — pixels for a composition the domain designed
+# --------------------------------------------------------------------------- #
+# The typographic scale, as multiples of the same base the captions use. The
+# jump from "small" to "large" is deliberately violent: a scale that steps
+# evenly reads as one size badly printed, and the whole point of this layer is
+# that a viewer sees the hierarchy before reading a word.
+_MOTION_WEIGHT_SCALE = {"micro": 0.70, "small": 0.90, "large": 2.30, "massive": 4.10}
+# Mean glyph advance of an uppercase grotesque, in ems. Used only to shrink a
+# block that would otherwise run off the frame — libass does the real
+# typesetting, this just has to be conservative enough never to overflow.
+_MOTION_ADVANCE = 0.605
+# Letter-spacing, in ems. Wide tracking is what makes a small line read as a
+# label rather than as a caption that got lost.
+_MOTION_TRACKING = {"micro": 0.20, "small": 0.17, "large": 0.0, "massive": -0.01}
+_MOTION_LINE_HEIGHT = 1.14
+# How far a block travels as it arrives, as a fraction of its own size, and how
+# long each motion takes. Small numbers: the type should look placed, not flown
+# in.
+_MOTION_RISE = 0.26
+_MOTION_STAGGER_MS = 150
+_MOTION_LEAD_MS = 55
+_MOTION_ALIGNMENTS = {"left": 7, "right": 9, "centre": 8}
+
+
+def _motion_style(width: int, height: int, style: "TextStyleSpec") -> str:
+    """The single ASS style every motion block overrides from."""
+
+    return (
+        f"Style: Motion,{style.font_name},"
+        f"{max(12, round(height * _CAPTION_FONT_FRACTION))},"
+        f"{style.foreground},{style.foreground},&H000A0A0C,&HA0000000,"
+        f"0,0,0,0,100,100,0,0,1,{max(2, round(height / 300))},"
+        f"{max(1, round(height / 640))},7,0,0,0,1\n"
+    )
+
+
+def _motion_size(
+    text: str, weight: str, height: int, available: float
+) -> float:
+    """The pixel size for one block, shrunk if it would leave the frame."""
+
+    size = height * _CAPTION_FONT_FRACTION * _MOTION_WEIGHT_SCALE[weight]
+    advance = _MOTION_ADVANCE + max(0.0, _MOTION_TRACKING[weight])
+    estimated = max(1, len(text)) * advance * size
+    if estimated > available > 0:
+        size *= available / estimated
+    return max(10.0, size)
+
+
+def _motion_placements(
+    cue: "MotionTextCue", width: int, height: int, style: "TextStyleSpec"
+) -> "list[tuple[str, float, float, float, MotionTextBlockCue]]":
+    """Where every block of one event sits, in real pixels.
+
+    Seven compositions, each answering "where does the eye land first" a
+    different way. They share one stacking routine and differ only in their
+    anchor, which is what keeps them a family rather than seven templates: the
+    asymmetry, the negative space and the flush edges are in the anchors.
+    """
+
+    margin_x = max(8, round(width * style.safe_margin_fraction))
+    margin_y = max(8, round(height * style.safe_margin_fraction))
+    layout = cue.layout
+    blocks = list(cue.blocks)
+
+    # a tighter left margin: type that touches the edge reads as part of the
+    # frame rather than as something laid on top of it
+    left = round(margin_x * 0.42) if layout == "edge_aligned" else margin_x
+    indent = round(width * 0.17) if layout == "contrast_pair" else 0
+    available = width - left - margin_x - indent
+
+    sizes = [
+        _motion_size(block.text, block.weight, height, available) for block in blocks
+    ]
+    heights = [size * _MOTION_LINE_HEIGHT for size in sizes]
+    gaps = [
+        max(sizes[index], sizes[index + 1]) * (0.34 if layout == "contrast_pair" else 0.10)
+        for index in range(len(sizes) - 1)
+    ]
+    total = sum(heights) + sum(gaps)
+
+    def _stack(anchor: str, x: float, top: float, shift: float = 0.0) -> list:
+        placements = []
+        cursor = top
+        for index, block in enumerate(blocks):
+            placements.append(
+                (anchor, x + (shift if index else 0.0), cursor, sizes[index], block)
+            )
+            cursor += heights[index] + (gaps[index] if index < len(gaps) else 0.0)
+        return placements
+
+    if layout == "dominant_word":
+        # off-centre and low: the frame keeps its picture, the word takes the
+        # weight
+        return _stack("left", left, height * 0.61 - heights[0] / 2)
+    if layout == "stacked_hierarchy":
+        return _stack("left", left, height * 0.27)
+    if layout == "small_plus_massive":
+        return _stack("left", left, height * 0.56 - total / 2)
+    if layout == "edge_aligned":
+        return _stack("left", left, height * 0.86 - total)
+    if layout == "centered_poster":
+        return _stack("centre", width / 2, height * 0.46 - total / 2)
+    if layout == "contrast_pair":
+        return _stack("left", left, height * 0.26, shift=indent)
+    # split_statement: one block high-left, the other low-right, and as much
+    # empty frame as possible between them
+    first, second = blocks[0], blocks[-1]
+    return [
+        ("left", left, height * 0.14, sizes[0], first),
+        (
+            "right",
+            width - margin_x,
+            height * 0.84 - sizes[-1] * _MOTION_LINE_HEIGHT,
+            sizes[-1],
+            second,
+        ),
+    ]
+
+
+def _motion_override(
+    anchor: str,
+    x: float,
+    y: float,
+    size: float,
+    block: "MotionTextBlockCue",
+    cue: "MotionTextCue",
+    index: int,
+    width: int,
+    style: "TextStyleSpec",
+) -> str:
+    """The ASS override run that sets, places and animates one block."""
+
+    support = block.weight in ("micro", "small")
+    colour = _inline_colour(
+        style.accent if block.accent else (style.muted if support else style.foreground)
+    )
+    tracking = _MOTION_TRACKING[block.weight] * size
+    face = (style.support_font_name or style.font_name) if support else style.font_name
+    parts = [
+        f"\\an{_MOTION_ALIGNMENTS[anchor]}",
+        f"\\fn{face}",
+        f"\\fs{size:.1f}",
+        f"\\b{0 if support else 1}",
+        f"\\c{colour}",
+        "\\3c&H000000&",
+        # The support line needs a *relatively* heavier outline than the word
+        # it introduces. At 28 px a 3 % outline is under a pixel, which is why
+        # the small type kept disappearing into a crowd or a bright wall while
+        # the display word beside it stayed perfectly readable.
+        f"\\bord{max(3.0, size * 0.13) if support else max(2.0, size * 0.030):.1f}",
+        f"\\shad{max(1.6, size * 0.055) if support else max(1.2, size * 0.022):.1f}",
+        "\\4a&H40&",
+        "\\be1",
+    ]
+    if abs(tracking) >= 0.5:
+        parts.append(f"\\fsp{tracking:.1f}")
+    rise = size * _MOTION_RISE
+    if cue.motion == "scale_in":
+        parts.append(
+            f"\\pos({x:.0f},{y:.0f})\\fad(140,220)"
+            "\\fscx84\\fscy84\\t(0,260,\\fscx100\\fscy100)"
+        )
+    elif cue.motion == "masked_reveal":
+        # A rectangular clip that grows downward while the block rises into it:
+        # the word is uncovered rather than moved, which is the one motion that
+        # reads as editing rather than as animation.
+        top = int(y - size * 0.34)
+        bottom = int(y + size * _MOTION_LINE_HEIGHT + size * 0.06)
+        parts.append(
+            f"\\move({x:.0f},{y + rise:.0f},{x:.0f},{y:.0f},0,340)\\fad(0,220)"
+            f"\\clip(0,{top},{width},{bottom})"
+        )
+    else:  # fade_rise and stagger_rise share the arrival, not the timing
+        parts.append(
+            f"\\move({x:.0f},{y + rise:.0f},{x:.0f},{y:.0f},0,320)\\fad(200,240)"
+        )
+    return "{" + "".join(parts) + "}"
+
+
+def _motion_dialogues(
+    cue: "MotionTextCue",
+    start: float,
+    end: float,
+    width: int,
+    height: int,
+    style: "TextStyleSpec",
+) -> "list[str]":
+    """Every Dialogue line for one event, one per block.
+
+    A block per line is what makes the stagger real: the support line is
+    already legible when the display word lands, which is the hierarchy being
+    revealed in time rather than merely printed.
+    """
+
+    step = _MOTION_STAGGER_MS if cue.motion == "stagger_rise" else _MOTION_LEAD_MS
+    lines = []
+    for index, (anchor, x, y, size, block) in enumerate(
+        _motion_placements(cue, width, height, style)
+    ):
+        override = _motion_override(
+            anchor, x, y, size, block, cue, index, width, style
+        )
+        begin = min(start + index * step / 1000.0, max(start, end - 0.2))
+        lines.append(
+            f"Dialogue: 1,{_ass_timestamp(begin)},{_ass_timestamp(end)},"
+            f"Motion,,0,0,0,,{override}{block.text}"
+        )
+    return lines
 
 
 def _caption_ass_header(width: int, height: int) -> str:
@@ -1342,6 +1611,7 @@ def compose_video_sequence(
     narration_lead_in_seconds: float = 0.0,
     captions: Sequence[CaptionCue] = (),
     text_events: Sequence[TextEventCue] = (),
+    motion_text: "Sequence[MotionTextCue]" = (),
     text_style: "TextStyleSpec | None" = None,
     direction: "DirectionSpec | None" = None,
     music_path: str | Path | None = None,
@@ -1590,6 +1860,59 @@ def compose_video_sequence(
         raise FFmpegError(
             "text events require a (width, height) canvas for pixel-accurate layout"
         )
+    if isinstance(motion_text, (str, bytes)) or not isinstance(motion_text, Sequence):
+        raise FFmpegError("motion_text must be a sequence of MotionTextCue values")
+    normalized_motion = tuple(motion_text)
+    if len(normalized_motion) > 60:
+        raise FFmpegError("video sequence accepts at most 60 motion text events")
+    if not all(isinstance(cue, MotionTextCue) for cue in normalized_motion):
+        raise FFmpegError("motion_text must contain only MotionTextCue values")
+    resolved_motion: list[tuple[MotionTextCue, float, float]] = []
+    for cue in normalized_motion:
+        if cue.layout not in MOTION_TEXT_LAYOUTS:
+            raise FFmpegError(f"motion text layout must be one of {MOTION_TEXT_LAYOUTS}")
+        if cue.motion not in MOTION_TEXT_MOTIONS:
+            raise FFmpegError(f"motion text motion must be one of {MOTION_TEXT_MOTIONS}")
+        blocks = tuple(cue.blocks)
+        if not blocks or len(blocks) > 3:
+            raise FFmpegError("a motion text event holds between one and three blocks")
+        if not all(isinstance(block, MotionTextBlockCue) for block in blocks):
+            raise FFmpegError("motion text blocks must be MotionTextBlockCue values")
+        for block in blocks:
+            if not isinstance(block.text, str) or not block.text.strip():
+                raise FFmpegError("motion text block text must be a non-empty string")
+            text = block.text.strip()
+            if len(text) > 40:
+                raise FFmpegError("motion text block must contain at most 40 characters")
+            if any(ord(character) < 32 for character in text):
+                raise FFmpegError("motion text must not contain control characters")
+            if any(character in text for character in "<>{}"):
+                # the rule every text layer here obeys: copy is data and must
+                # never be able to become ASS override syntax
+                raise FFmpegError(
+                    "motion text must not contain subtitle markup characters"
+                )
+            if block.weight not in MOTION_TEXT_WEIGHTS:
+                raise FFmpegError(f"motion text weight must be one of {MOTION_TEXT_WEIGHTS}")
+            if not isinstance(block.accent, bool):
+                raise FFmpegError("motion text accent must be a boolean")
+        start = _time(cue.start_seconds, "motion text start_seconds")
+        end = _time(cue.end_seconds, "motion text end_seconds")
+        if end - start < 0.2:
+            raise FFmpegError("a motion text event must last at least 200 ms")
+        if end > duration:
+            raise FFmpegError(
+                "motion text end_seconds must not exceed the sequence duration"
+            )
+        resolved_motion.append((cue, start, end))
+    # Two compositions on screen at once is not a hierarchy, it is a collision.
+    for (_a, _s1, e1), (_b, s2, _e2) in zip(resolved_motion, resolved_motion[1:]):
+        if s2 < e1:
+            raise FFmpegError("motion text events must be ordered and non-overlapping")
+    if resolved_motion and canvas_size is None:
+        raise FFmpegError(
+            "motion text requires a (width, height) canvas for pixel-accurate layout"
+        )
     narration: Path | None = None
     narration_lead_in = _time(narration_lead_in_seconds, "narration_lead_in_seconds")
     if narration_path is None:
@@ -1681,18 +2004,23 @@ def compose_video_sequence(
             delete=False,
         ) as reserved:
             temporary = Path(reserved.name)
-        if resolved_captions or resolved_events:
+        if resolved_captions or resolved_events or resolved_motion:
             caption_width, caption_height = canvas_size  # type: ignore[misc]
             style = text_style or TextStyleSpec()
+            for name in (style.font_name, style.support_font_name or style.font_name):
+                if not _FONT_NAME.match(name):
+                    raise FFmpegError(f"font name is not a plain family name: {name}")
             header = _caption_ass_header(caption_width, caption_height)
+            extra_styles = ""
             if resolved_events:
+                extra_styles += _emphasis_styles(caption_width, caption_height, style)
+            if resolved_motion:
+                extra_styles += _motion_style(caption_width, caption_height, style)
+            if extra_styles:
                 # the extra styles belong in the [V4+ Styles] block, which ends
                 # where the [Events] block begins
                 header = header.replace(
-                    "\n\n[Events]\n",
-                    "\n" + _emphasis_styles(caption_width, caption_height, style)
-                    + "\n[Events]\n",
-                    1,
+                    "\n\n[Events]\n", "\n" + extra_styles + "\n[Events]\n", 1
                 )
             with tempfile.NamedTemporaryFile(
                 mode="w",
@@ -1717,6 +2045,11 @@ def compose_video_sequence(
                         f"Dialogue: 1,{_ass_timestamp(start)},{_ass_timestamp(end)},"
                         f"{name},,0,0,0,,{override}{_event_text(cue, style)}\n"
                     )
+                for cue, start, end in resolved_motion:
+                    for line in _motion_dialogues(
+                        cue, start, end, caption_width, caption_height, style
+                    ):
+                        caption_stream.write(line + "\n")
     except OSError as exc:
         if temporary is not None:
             _cleanup(temporary)
@@ -2024,6 +2357,7 @@ def compose_video_sequence(
         narration_source_path=str(narration) if narration is not None else None,
         caption_count=len(resolved_captions),
         text_event_count=len(resolved_events),
+        motion_text_count=len(resolved_motion),
         music_source_path=str(music) if music is not None else None,
         music_gain_db=gain,
         image_count=sum(1 for kind, _, _, _ in resolved_clips if kind == "image"),

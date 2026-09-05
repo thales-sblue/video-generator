@@ -300,6 +300,32 @@ entra no plano como uma operação `text_events` carregando o `VisualStyle`
 tipografia e margens de segurança). A identidade veste o asset escolhido — ela
 nunca escolhe o asset: a ordem é relevância semântica primeiro, estética depois.
 
+`--motion-typography <path>` (exige `--semantic`) liga a **Editorial Motion
+Typography v1** (`domain/typography.py`) **no lugar** de `--text-events`: o
+texto na tela deixa de ser uma linha de ênfase e passa a ser uma composição
+tipográfica. O pipeline é
+`narração -> ênfase -> conceito de texto -> papel -> layout -> motion -> timing`:
+
+- **papéis** — `hook`, `keyword`, `contrast`, `statement`, `question`;
+- **layouts** — `dominant_word`, `stacked_hierarchy`, `small_plus_massive`,
+  `split_statement`, `edge_aligned`, `centered_poster`, `contrast_pair`;
+- **motions** — `fade_rise`, `scale_in`, `masked_reveal`, `stagger_rise`
+  (um bloco por linha de `Dialogue`, então o stagger é real: a linha pequena já
+  está legível quando a palavra grande chega);
+- **pesos** — `micro`, `small`, `large`, `massive`, e nenhum evento de mais de
+  um bloco pode usar um peso só. O contraste de escala é a camada.
+
+A voz carrega a informação, então a camada é **rara**: ~18 intervenções em
+209 s, não uma por frase. E o texto é **derivado**, nunca recortado: uma palavra
+dominante mais um conector licenciado (só dispara se a própria deixa está na
+frase) ou uma segunda palavra de conteúdo; `_is_derived` recusa qualquer
+composição que reproduza um trecho contíguo da narração. Com
+`--narration-captions <srt>` cada evento é cravado no instante medido em que a
+palavra-âncora é falada, em vez de no shot que a contém. `--typography-policy`
+traz a policy do canal (cadência, piso de importância) e, num objeto `style`,
+as duas fontes — uma display pesada para a palavra, uma leve para a linha de
+apoio. Sem a flag nada muda: o plano continua emitindo `text_events`.
+
 `--visual-direction <policy.json>` (exige `--semantic`) liga a **Visual
 Direction v1** (`domain/direction.py`): a camada que decide **como** o asset
 escolhido aparece. A relevância semântica escolhe o material; esta escreve a

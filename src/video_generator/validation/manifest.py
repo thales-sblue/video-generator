@@ -191,6 +191,101 @@ def _visual_direction_matches(operation) -> bool:
     return True
 
 
+_MOTION_TEXT_LAYOUTS = (
+    "dominant_word", "stacked_hierarchy", "small_plus_massive", "split_statement",
+    "edge_aligned", "centered_poster", "contrast_pair",
+)
+_MOTION_TEXT_MOTIONS = ("fade_rise", "scale_in", "masked_reveal", "stagger_rise")
+_MOTION_TEXT_WEIGHTS = ("micro", "small", "large", "massive")
+_MOTION_TEXT_STYLE_KEYS = {
+    "font_name", "support_font_name", "foreground", "accent", "muted",
+    "safe_margin_fraction",
+}
+
+
+def _motion_typography_match(operation, timeline_duration: float) -> bool:
+    """Whether a ``motion_typography`` operation is the shape the workflow accepts.
+
+    Same job as :func:`_text_events_match` for the newer layer: a plan that
+    carries a well-formed typographic layer must not fail validation on form.
+    """
+
+    parameters = dict(operation.parameters)
+    if (
+        operation.source is not None
+        or operation.start_seconds is not None
+        or operation.end_seconds is not None
+        or set(parameters) - {"items", "style"}
+    ):
+        return False
+    items = parameters.get("items")
+    if (
+        isinstance(items, (str, bytes))
+        or not isinstance(items, (list, tuple))
+        or not items
+        or len(items) > 60
+    ):
+        return False
+    previous_end = 0.0
+    for item in items:
+        if not isinstance(item, Mapping):
+            return False
+        if {"blocks", "start_seconds", "end_seconds"} - set(item):
+            return False
+        if set(item) - {"blocks", "start_seconds", "end_seconds", "layout", "motion"}:
+            return False
+        blocks = item["blocks"]
+        if (
+            isinstance(blocks, (str, bytes))
+            or not isinstance(blocks, (list, tuple))
+            or not 1 <= len(blocks) <= 3
+        ):
+            return False
+        for block in blocks:
+            if not isinstance(block, Mapping) or set(block) - {
+                "text", "weight", "accent"
+            }:
+                return False
+            text = block.get("text")
+            if (
+                not isinstance(text, str)
+                or not text.strip()
+                or len(text.strip()) > 40
+                or any(ord(ch) < 32 or ch in "<>{}" for ch in text)
+                or block.get("weight", "massive") not in _MOTION_TEXT_WEIGHTS
+                or not isinstance(block.get("accent", False), bool)
+            ):
+                return False
+        start = item["start_seconds"]
+        end = item["end_seconds"]
+        if (
+            not _finite(start)
+            or not _finite(end)
+            or start < previous_end
+            or end - start < 0.2
+            or end > timeline_duration
+            or item.get("layout", "stacked_hierarchy") not in _MOTION_TEXT_LAYOUTS
+            or item.get("motion", "fade_rise") not in _MOTION_TEXT_MOTIONS
+        ):
+            return False
+        previous_end = float(end)
+    style = parameters.get("style")
+    if style is None:
+        return True
+    if not isinstance(style, Mapping) or set(style) - _MOTION_TEXT_STYLE_KEYS:
+        return False
+    for name in ("font_name", "support_font_name"):
+        value = style.get(name, "Sans")
+        if not isinstance(value, str):
+            return False
+    for name in ("foreground", "accent", "muted"):
+        value = style.get(name, "&H00FFFFFF")
+        if not isinstance(value, str) or not _ASS_COLOUR.match(value):
+            return False
+    margin = style.get("safe_margin_fraction", 0.06)
+    return bool(_finite(margin) and 0 <= margin <= 0.2)
+
+
 def _text_events_match(operation, timeline_duration: float) -> bool:
     """Whether a ``text_events`` operation is the shape the workflow accepts.
 
@@ -407,6 +502,10 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
         if not _text_events_match(operations[index], timeline_duration):
             return False
         index += 1
+    if index < len(operations) and operations[index].kind == "motion_typography":
+        if not _motion_typography_match(operations[index], timeline_duration):
+            return False
+        index += 1
     if index < len(operations) and operations[index].kind == "fade":
         if not _fade_matches(operations[index], timeline_duration):
             return False
@@ -531,7 +630,8 @@ def validate_render_manifest(
             ManifestValidationIssue(
                 "workflow_plan_mismatch",
                 "video-sequence manifest requires at least two timeline segments followed "
-                "by optional visual_direction, captions, text_events, fade, "
+                "by optional visual_direction, captions, text_events, "
+                "motion_typography, fade, "
                 "looped music and matched narration, in that order",
             )
         )

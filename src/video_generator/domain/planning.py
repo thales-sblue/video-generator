@@ -43,6 +43,14 @@ from video_generator.domain.editorial import (
 )
 from video_generator.domain.models import EditOperation, EditPlan, TargetFormat
 from video_generator.domain.relevance import VISUAL_INTENTS, VISUAL_ROLES
+from video_generator.domain.typography import (
+    DEFAULT_TYPOGRAPHY_POLICY,
+    MotionTextEvent,
+    MotionTypographyPolicy,
+    motion_typography_operation,
+    plan_motion_typography,
+    spoken_words,
+)
 
 SCHEMA_VERSION = 1
 
@@ -2295,6 +2303,35 @@ def plan_shot_text_events(
         shot_timeline(shot_plan),
         policy=editorial_policy or DEFAULT_EDITORIAL_POLICY,
         hook_policy=hook_policy,
+    )
+
+
+def plan_shot_motion_typography(
+    scene_plan: "ScenePlan",
+    shot_plan: "ShotPlan",
+    *,
+    editorial_policy: "EditorialPolicy | None" = None,
+    typography_policy: "MotionTypographyPolicy | None" = None,
+    caption_cues: "Sequence[tuple[str, float, float]] | None" = None,
+) -> "tuple[MotionTextEvent, ...]":
+    """The typographic layer for a planned video, timed against its own shots.
+
+    ``caption_cues`` is optional and is the difference between type that lands
+    on its word and type that lands on the shot around it: pass the same
+    force-aligned subtitles the render burns, and every event is snapped onto
+    the measured moment its anchor word is spoken.
+    """
+
+    beats = read_beats(
+        narration_slices(scene_plan, shot_plan),
+        policy=editorial_policy or DEFAULT_EDITORIAL_POLICY,
+    )
+    words = spoken_words(caption_cues) if caption_cues else ()
+    return plan_motion_typography(
+        beats,
+        shot_timeline(shot_plan),
+        policy=typography_policy or DEFAULT_TYPOGRAPHY_POLICY,
+        words=words,
     )
 
 

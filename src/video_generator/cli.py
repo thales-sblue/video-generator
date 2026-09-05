@@ -32,6 +32,7 @@ from video_generator.narration import NarrationError, render_prosodic_narration
 from video_generator.subtitles import (
     SubtitleParseError,
     cues_from_word_timings,
+    parse_subtitle_cues,
     render_srt,
 )
 from video_generator.doctor import format_report, run_doctor
@@ -54,12 +55,19 @@ from video_generator.domain import (
     VisualDirectionPolicy,
     apply_overrides,
     plan_scenes,
+    plan_shot_motion_typography,
     plan_shot_text_events,
     plan_shot_visual_direction,
     plan_shots,
     shot_plan_to_edit_plan,
     text_events_operation,
     visual_direction_operation,
+)
+from video_generator.domain.typography import (
+    DEFAULT_TYPOGRAPHY_POLICY,
+    MotionTypographyPolicy,
+    TypographyError,
+    motion_typography_operation,
 )
 from video_generator.manifests import (
     ManifestError,
@@ -363,6 +371,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--text-events",
         help="also write the editorial emphasis layer as JSON at this path "
         "(needs --semantic)",
+    )
+    plan_scenes_cmd.add_argument(
+        "--motion-typography",
+        help="Editorial Motion Typography v1: compose the on-screen type as "
+        "layouts of several weighted blocks instead of an emphasis line, write "
+        "the plan as JSON at this path, and carry it into the EditPlan in "
+        "place of text_events (needs --semantic)",
+    )
+    plan_scenes_cmd.add_argument(
+        "--typography-policy",
+        help="a MotionTypographyPolicy JSON path, optionally with a 'style' "
+        "object carrying display_font / support_font / muted",
+    )
+    plan_scenes_cmd.add_argument(
+        "--narration-captions",
+        help="a force-aligned .srt/.vtt of the same script, so each "
+        "typographic event lands on the word it is about rather than on the "
+        "shot that contains it",
     )
     plan_scenes_cmd.add_argument(
         "--visual-direction",
@@ -1145,8 +1171,20 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
         hook_seconds = getattr(args, "hook_seconds", None)
         text_events_path = getattr(args, "text_events", None)
         direction_path = getattr(args, "visual_direction", None)
+        typography_path = getattr(args, "motion_typography", None)
+        typography_policy_path = getattr(args, "typography_policy", None)
+        narration_captions_path = getattr(args, "narration_captions", None)
         if not semantic and (hook_seconds is not None or text_events_path is not None):
             raise PlanningError("--hook-seconds and --text-events require --semantic")
+        if not semantic and typography_path is not None:
+            raise PlanningError("--motion-typography requires --semantic")
+        if typography_path is None and (
+            typography_policy_path is not None or narration_captions_path is not None
+        ):
+            raise PlanningError(
+                "--typography-policy and --narration-captions require "
+                "--motion-typography"
+            )
         editorial_translation = bool(getattr(args, "editorial_translation", False))
         if visual_relevance and not semantic:
             raise PlanningError("--visual-relevance requires --semantic")
@@ -1163,6 +1201,43 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
                 json.loads(
                     Path(direction_path).expanduser().read_text(encoding="utf-8")
                 )
+            )
+
+        typography_policy = DEFAULT_TYPOGRAPHY_POLICY
+        typography_style: dict[str, str] = {}
+        if typography_policy_path is not None:
+            values = json.loads(
+                Path(typography_policy_path).expanduser().read_text(encoding="utf-8")
+            )
+            if not isinstance(values, dict):
+                raise PlanningError("--typography-policy must be a JSON object")
+            # Same convention the overrides file uses: a leading "_" key is a
+            # note to the next reader, not an instruction.
+            values = {k: v for k, v in values.items() if not k.startswith("_")}
+            # The fonts and the muted colour travel in the same file as the
+            # rhythm: one document per channel decision, not three.
+            raw_style = values.pop("style", {})
+            if not isinstance(raw_style, dict):
+                raise PlanningError("typography policy style must be an object")
+            unknown = set(raw_style) - {"display_font", "support_font", "muted"}
+            if unknown:
+                raise PlanningError(
+                    f"typography style does not accept: {', '.join(sorted(unknown))}"
+                )
+            typography_style = {
+                key: value for key, value in raw_style.items() if value is not None
+            }
+            typography_policy = MotionTypographyPolicy.from_dict(values)
+
+        caption_cues: tuple[tuple[str, float, float], ...] | None = None
+        if narration_captions_path is not None:
+            path = Path(narration_captions_path).expanduser()
+            suffix = path.suffix.lower()
+            if suffix not in (".srt", ".vtt"):
+                raise PlanningError("--narration-captions must be a .srt or .vtt file")
+            caption_cues = parse_subtitle_cues(
+                path.read_text(encoding="utf-8"),
+                source_format="srt" if suffix == ".srt" else "vtt",
             )
 
         scene_plan = plan_scenes(script, policy=policy, seed=args.seed)
@@ -1229,6 +1304,30 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
                     + "\n"
                 )
 
+        typography = ()
+        if semantic and typography_path is not None:
+            typography = plan_shot_motion_typography(
+                scene_plan,
+                shot_plan,
+                typography_policy=typography_policy,
+                caption_cues=caption_cues,
+            )
+            targets[Path(typography_path).expanduser()] = (
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "script_id": script.script_id,
+                        "policy": typography_policy.to_dict(),
+                        "style": typography_style,
+                        "events": [event.to_dict() for event in typography],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                )
+                + "\n"
+            )
+
         bindings: dict[str, str] | None = None
         if args.assets is not None:
             bindings = json.loads(
@@ -1266,7 +1365,20 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
             extra: tuple[EditOperation, ...] = ()
             if direction_policy is not None:
                 extra += (visual_direction_operation(direction_policy),)
-            if events:
+            if typography:
+                # The two text layers are alternatives, never a stack: burning
+                # an emphasis line under a composed typographic frame is the
+                # caption look this layer exists to replace.
+                extra += (
+                    motion_typography_operation(
+                        typography,
+                        visual_style=DARK_DOCUMENTARY_V1,
+                        display_font=typography_style.get("display_font"),
+                        support_font=typography_style.get("support_font"),
+                        muted=typography_style.get("muted"),
+                    ),
+                )
+            elif events:
                 extra += (
                     text_events_operation(events, visual_style=DARK_DOCUMENTARY_V1),
                 )
@@ -1294,7 +1406,7 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
         for path, payload in targets.items():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(payload, encoding="utf-8")
-    except (PlanningError, ContractError, DirectionError) as exc:
+    except (PlanningError, ContractError, DirectionError, TypographyError) as exc:
         print(f"Planning error: {exc}", file=sys.stderr)
         return 2
     except OSError as exc:
@@ -1314,8 +1426,17 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
         "out_dir": str(out_dir),
         "edit_plan": str(Path(args.emit_edit_plan)) if edit_plan is not None else None,
     }
-    if events:
+    if events and not typography:
         summary["text_events"] = len(events)
+    if typography:
+        summary["motion_typography"] = {
+            "events": len(typography),
+            "roles": sorted({event.role for event in typography}),
+            "layouts": sorted({event.layout for event in typography}),
+            "motions": sorted({event.motion for event in typography}),
+            "blocks": sum(len(event.blocks) for event in typography),
+            "timed_against_narration": caption_cues is not None,
+        }
     if direction_plan is not None:
         compositions: dict[str, int] = {}
         motions: dict[str, int] = {}

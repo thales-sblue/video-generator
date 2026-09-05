@@ -20,6 +20,11 @@ from video_generator.adapters import (
     DIRECTION_MOTIONS,
     DirectionSpec,
     GRADE_INTENSITIES,
+    MOTION_TEXT_LAYOUTS,
+    MOTION_TEXT_MOTIONS,
+    MOTION_TEXT_WEIGHTS,
+    MotionTextBlockCue,
+    MotionTextCue,
     TEXT_EVENT_ANIMATIONS,
     TEXT_EVENT_POSITIONS,
     TEXT_ZONES,
@@ -81,6 +86,18 @@ TEXT_EVENT_ITEM_OPTIONAL = {"position", "animation", "emphasis", "highlight"}
 TEXT_EVENT_STYLE_KEYS = {
     "font_name", "foreground", "accent", "emphasis_scale", "safe_margin_fraction",
 }
+MOTION_TYPOGRAPHY_KIND = "motion_typography"
+MOTION_TEXT_ITEM_KEYS = {"blocks", "start_seconds", "end_seconds"}
+MOTION_TEXT_ITEM_OPTIONAL = {"layout", "motion"}
+MOTION_TEXT_BLOCK_KEYS = {"text"}
+MOTION_TEXT_BLOCK_OPTIONAL = {"weight", "accent"}
+MOTION_TEXT_STYLE_KEYS = {
+    "font_name", "support_font_name", "foreground", "accent", "muted",
+    "safe_margin_fraction",
+}
+# The same rule the adapter enforces: a font name is a family name, not a place
+# to hide subtitle syntax.
+_FONT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
 VISUAL_DIRECTION_KIND = "visual_direction"
 # The framing / movement / grade keys a timeline segment may carry. All
 # optional: a segment that states none of them is composed exactly as before.
@@ -401,6 +418,186 @@ def _text_event_cues(
     return tuple(cues), TextStyleSpec(font_name, foreground, accent, scale, margin)
 
 
+def _motion_text_cues(
+    parameters: Mapping[str, object]
+) -> "tuple[tuple[MotionTextCue, ...], TextStyleSpec | None]":
+    """Parse a ``motion_typography`` operation into cues plus an optional style.
+
+    A separate operation from ``text_events`` rather than more keys on it: an
+    emphasis cue is one line with a position, and this is several blocks at
+    several sizes composed by a named layout. Folding the two together would
+    make both contracts optional-everything.
+    """
+
+    values = dict(parameters)
+    unknown = set(values) - {"items", "style"}
+    if unknown:
+        raise SequenceWorkflowError(
+            f"motion_typography does not accept: {', '.join(sorted(unknown))}"
+        )
+    items = values.get("items")
+    if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
+        raise SequenceWorkflowError("motion_typography items must be an array")
+    if not items or len(items) > 60:
+        raise SequenceWorkflowError("motion_typography requires between 1 and 60 items")
+
+    cues: list[MotionTextCue] = []
+    previous_end = 0.0
+    for index, item in enumerate(items):
+        if not isinstance(item, Mapping):
+            raise SequenceWorkflowError(f"motion text {index} must be an object")
+        missing = MOTION_TEXT_ITEM_KEYS - set(item)
+        if missing:
+            raise SequenceWorkflowError(
+                f"motion text {index} requires {', '.join(sorted(missing))}"
+            )
+        extra = set(item) - MOTION_TEXT_ITEM_KEYS - MOTION_TEXT_ITEM_OPTIONAL
+        if extra:
+            raise SequenceWorkflowError(
+                f"motion text {index} does not accept: {', '.join(sorted(extra))}"
+            )
+        raw_blocks = item["blocks"]
+        if isinstance(raw_blocks, (str, bytes)) or not isinstance(
+            raw_blocks, (list, tuple)
+        ):
+            raise SequenceWorkflowError(f"motion text {index} blocks must be an array")
+        if not 1 <= len(raw_blocks) <= 3:
+            raise SequenceWorkflowError(
+                f"motion text {index} holds between one and three blocks"
+            )
+        blocks: list[MotionTextBlockCue] = []
+        for position, raw in enumerate(raw_blocks):
+            if not isinstance(raw, Mapping):
+                raise SequenceWorkflowError(
+                    f"motion text {index} block {position} must be an object"
+                )
+            block_missing = MOTION_TEXT_BLOCK_KEYS - set(raw)
+            if block_missing:
+                raise SequenceWorkflowError(
+                    f"motion text {index} block {position} requires text"
+                )
+            block_extra = set(raw) - MOTION_TEXT_BLOCK_KEYS - MOTION_TEXT_BLOCK_OPTIONAL
+            if block_extra:
+                raise SequenceWorkflowError(
+                    f"motion text {index} block {position} does not accept: "
+                    f"{', '.join(sorted(block_extra))}"
+                )
+            text = raw["text"]
+            if not isinstance(text, str):
+                raise SequenceWorkflowError(
+                    f"motion text {index} block {position} text must be a string"
+                )
+            stripped = " ".join(text.split())
+            if not stripped or len(stripped) > 40:
+                raise SequenceWorkflowError(
+                    f"motion text {index} block {position} text must contain "
+                    "1 to 40 characters"
+                )
+            if any(ord(character) < 32 for character in stripped):
+                raise SequenceWorkflowError(
+                    f"motion text {index} block {position} must not contain "
+                    "control characters"
+                )
+            if any(character in stripped for character in "<>{}"):
+                raise SequenceWorkflowError(
+                    f"motion text {index} block {position} must not contain "
+                    "subtitle markup characters"
+                )
+            weight = raw.get("weight", "massive")
+            if not isinstance(weight, str) or weight not in MOTION_TEXT_WEIGHTS:
+                raise SequenceWorkflowError(
+                    f"motion text {index} block {position} weight must be one of "
+                    f"{MOTION_TEXT_WEIGHTS}"
+                )
+            accent = raw.get("accent", False)
+            if not isinstance(accent, bool):
+                raise SequenceWorkflowError(
+                    f"motion text {index} block {position} accent must be a boolean"
+                )
+            blocks.append(MotionTextBlockCue(stripped, weight, accent))
+        layout = item.get("layout", "stacked_hierarchy")
+        motion = item.get("motion", "fade_rise")
+        if not isinstance(layout, str) or layout not in MOTION_TEXT_LAYOUTS:
+            raise SequenceWorkflowError(
+                f"motion text {index} layout must be one of {MOTION_TEXT_LAYOUTS}"
+            )
+        if not isinstance(motion, str) or motion not in MOTION_TEXT_MOTIONS:
+            raise SequenceWorkflowError(
+                f"motion text {index} motion must be one of {MOTION_TEXT_MOTIONS}"
+            )
+        start = _runtime_number(
+            item["start_seconds"], f"motion text {index} start_seconds", allow_zero=True
+        )
+        end = _runtime_number(
+            item["end_seconds"], f"motion text {index} end_seconds", allow_zero=False
+        )
+        if end - start < 0.2:
+            raise SequenceWorkflowError(
+                f"motion text {index} must last at least 200 ms"
+            )
+        if start < previous_end:
+            raise SequenceWorkflowError(
+                "motion text events must be ordered and non-overlapping"
+            )
+        cues.append(MotionTextCue(tuple(blocks), start, end, layout, motion))
+        previous_end = end
+
+    style_values = values.get("style")
+    if style_values is None:
+        return tuple(cues), None
+    if not isinstance(style_values, Mapping):
+        raise SequenceWorkflowError("motion_typography style must be an object")
+    unknown_style = set(style_values) - MOTION_TEXT_STYLE_KEYS
+    if unknown_style:
+        raise SequenceWorkflowError(
+            f"motion_typography style does not accept: {', '.join(sorted(unknown_style))}"
+        )
+    defaults = TextStyleSpec()
+    font_name = style_values.get("font_name", defaults.font_name)
+    support_font = style_values.get("support_font_name", "")
+    foreground = style_values.get("foreground", defaults.foreground)
+    accent = style_values.get("accent", defaults.accent)
+    muted = style_values.get("muted", defaults.muted)
+    for name, value in (("font_name", font_name), ("foreground", foreground),
+                        ("accent", accent), ("muted", muted)):
+        if not isinstance(value, str) or not value.strip():
+            raise SequenceWorkflowError(
+                f"motion_typography style {name} must be a non-empty string"
+            )
+    for name, value in (("foreground", foreground), ("accent", accent), ("muted", muted)):
+        if not _ASS_COLOUR.match(value):
+            raise SequenceWorkflowError(
+                f"motion_typography style {name} must be an ASS colour like &H00BBGGRR"
+            )
+    if not isinstance(support_font, str):
+        raise SequenceWorkflowError(
+            "motion_typography style support_font_name must be a string"
+        )
+    for name, value in (("font_name", font_name), ("support_font_name", support_font)):
+        if value and not _FONT_NAME.match(value):
+            raise SequenceWorkflowError(
+                f"motion_typography style {name} must be a plain font family name"
+            )
+    margin = _runtime_number(
+        style_values.get("safe_margin_fraction", defaults.safe_margin_fraction),
+        "motion_typography style safe_margin_fraction",
+        allow_zero=True,
+    )
+    if margin > 0.2:
+        raise SequenceWorkflowError(
+            "motion_typography style safe_margin_fraction must lie in [0, 0.2]"
+        )
+    return tuple(cues), TextStyleSpec(
+        font_name,
+        foreground,
+        accent,
+        defaults.emphasis_scale,
+        margin,
+        support_font,
+        muted,
+    )
+
+
 def _music_spec(parameters: Mapping[str, object]) -> MusicSpec:
     values = dict(parameters)
     required = {"duration_policy", "gain_db"}
@@ -638,6 +835,7 @@ class PlanOperations(NamedTuple):
     text_events: tuple[TextEventCue, ...]
     text_style: TextStyleSpec | None
     direction: DirectionSpec | None
+    motion_text: tuple[MotionTextCue, ...]
 
 
 def _operations_from_plan(plan: EditPlan) -> PlanOperations:
@@ -656,6 +854,8 @@ def _operations_from_plan(plan: EditPlan) -> PlanOperations:
     text_events: tuple[TextEventCue, ...] = ()
     text_style: TextStyleSpec | None = None
     text_events_seen = False
+    motion_text: tuple[MotionTextCue, ...] = ()
+    motion_text_seen = False
     direction: DirectionSpec | None = None
     music_path: str | None = None
     music: MusicSpec | None = None
@@ -748,6 +948,31 @@ def _operations_from_plan(plan: EditPlan) -> PlanOperations:
             text_events, text_style = _text_event_cues(operation.parameters)
             text_events_seen = True
             continue
+        if operation.kind == MOTION_TYPOGRAPHY_KIND:
+            if motion_text_seen:
+                raise SequenceWorkflowError(
+                    "video-sequence accepts at most one motion_typography operation"
+                )
+            if len(segments) < 2:
+                raise SequenceWorkflowError(
+                    "motion_typography must follow all timeline segments"
+                )
+            if music_path is not None:
+                raise SequenceWorkflowError("motion_typography must precede music")
+            if operation.source is not None:
+                raise SequenceWorkflowError("motion_typography does not take a source")
+            if operation.start_seconds is not None or operation.end_seconds is not None:
+                raise SequenceWorkflowError(
+                    "motion_typography timing belongs to its items"
+                )
+            motion_text, motion_style = _motion_text_cues(operation.parameters)
+            # The typographic style wins where both layers declare one: an
+            # emphasis cue can live inside a motion-typography palette, but not
+            # the other way round.
+            if motion_style is not None:
+                text_style = motion_style
+            motion_text_seen = True
+            continue
         if operation.kind == VISUAL_DIRECTION_KIND:
             if direction is not None:
                 raise SequenceWorkflowError(
@@ -791,6 +1016,7 @@ def _operations_from_plan(plan: EditPlan) -> PlanOperations:
             if (
                 captions_seen
                 or text_events_seen
+                or motion_text_seen
                 or music_path is not None
                 or fade is not None
                 or direction is not None
@@ -826,6 +1052,7 @@ def _operations_from_plan(plan: EditPlan) -> PlanOperations:
         if (
             captions_seen
             or text_events_seen
+            or motion_text_seen
             or music_path is not None
             or fade is not None
             or direction is not None
@@ -894,6 +1121,7 @@ def _operations_from_plan(plan: EditPlan) -> PlanOperations:
         text_events,
         text_style,
         direction,
+        motion_text,
     )
 
 
@@ -1067,6 +1295,7 @@ def run_sequence_workflow(
         text_events,
         text_style,
         direction,
+        motion_text,
     ) = _operations_from_plan(plan)
     if caption_source is not None:
         captions = _caption_cues_from_file(caption_source)
@@ -1181,8 +1410,10 @@ def run_sequence_workflow(
                 compose_kwargs["captions"] = captions
             if text_events:
                 compose_kwargs["text_events"] = text_events
-                if text_style is not None:
-                    compose_kwargs["text_style"] = text_style
+            if motion_text:
+                compose_kwargs["motion_text"] = motion_text
+            if (text_events or motion_text) and text_style is not None:
+                compose_kwargs["text_style"] = text_style
             if music_path is not None and music is not None:
                 compose_kwargs["music_path"] = music_path
                 compose_kwargs["music_gain_db"] = music.gain_db
@@ -1226,6 +1457,8 @@ def run_sequence_workflow(
             raise SequenceWorkflowError("compose returned unexpected caption metadata")
         if artifact.text_event_count != len(text_events):
             raise SequenceWorkflowError("compose returned unexpected text event metadata")
+        if artifact.motion_text_count != len(motion_text):
+            raise SequenceWorkflowError("compose returned unexpected motion text metadata")
         if artifact.image_count != expected_image_count:
             raise SequenceWorkflowError("compose returned unexpected image metadata")
         expected_music = _normalized(music_path) if music_path is not None else None

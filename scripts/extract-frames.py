@@ -87,7 +87,7 @@ def main(argv: list[str]) -> int:
             "-ss", format(max(0.0, timestamp), ".3f"),
             "-i", str(video),
             "-frames:v", "1",
-            "-vf", "scale=960:-2",
+            "-vf", "scale=1280:-2",
             str(target),
         ]
         subprocess.run(command, check=False, capture_output=True, timeout=120)
