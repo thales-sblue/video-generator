@@ -242,6 +242,51 @@ editorial, não só por vocabulário (ver abaixo). Sem `--visual-relevance` nada
 disso acontece: os campos ficam `null`, e queries e ritmo continuam byte-a-byte
 os mesmos.
 
+`--editorial-translation` (exige `--visual-relevance`) liga a **Editorial
+Visual Translation v1** (`domain/visual_concept.py`), a camada que faltava
+*antes* da query. A relevância dizia que tipo de imagem o beat pede; esta
+responde a pergunta anterior — **que coisa concreta poderia ser filmada para
+comunicar este pensamento, neste tom, neste momento?** — e é a resposta que vai
+para o provider.
+
+O motivo é medido. No corte de Visual Direction v1, 17 dos 59 shots não tinham
+conceito filmável nenhum (o léxico é indexado por substantivo isolado, e uma
+frase de ensaio não tem nenhum), e a query que chegava ao Pexels era um
+substantivo português solto — `momento`, `informacao`, `gostamos`. Outros 13
+pediam o **objeto clichê pelo nome**, porque é isso que o léxico guarda:
+`verdade` → *magnifying glass over a document* (seis lupas num corte, uma
+delas na mão de um homem diante de um espelho), `inteligencia` → *chess board*
+(quatro tabuleiros), `pergunta` → *question mark chalked on a board* (giz
+colorido na calçada sob a frase mais forte do fecho).
+
+A camada tem duas metades:
+
+- **Lado do beat.** `translate_beat` devolve um `FilmableConcept`: uma cena
+  inglesa, concreta e autorada, escolhida num banco de **campos semânticos** —
+  conjuntos de vocabulário português que nomeiam um movimento recorrente do
+  argumento (autoengano, crença e identidade, atenção algorítmica, escrutínio
+  da evidência…), cada um oferecendo várias cenas diferentes que podem
+  carregá-lo. A escada é **léxico primeiro** (a resposta concreta do
+  substantivo que a fala realmente disse é mais fiel que qualquer campo) e o
+  campo assume nos três casos em que o léxico é o problema: não há acerto,
+  a resposta é um objeto clichê que o beat nunca citou, ou aquela mesma cena
+  já respondeu a um beat anterior. Abaixo do campo vêm a cena de intenção e o
+  piso de tom. **Todo degrau é inglês autorado**, e é isso que remove a query
+  em português por construção, não por filtro.
+- **Lado do candidato.** `assess_editorial_fit` lê o candidato
+  *positivamente*: presença humana, plausibilidade documental, afinidade com o
+  conceito escolhido — e, do lado negativo, metáfora de banco de imagens que o
+  beat não pediu, registro lúdico e aparência de estúdio. Um sinal que os
+  metadados não sustentam é reportado como **unknown**, nunca fabricado. As
+  duas recusas novas (`stock_metaphor_cliche`, `playful_register_conflict`)
+  são **comparativas**: só valem enquanto existir uma alternativa sóbria de
+  pé, então um beat cujo resultado inteiro é clichê ainda recebe imagem.
+
+Isso complementa os vetos duros, não os substitui: o veto diz que a imagem é
+inutilizável em qualquer lugar; esta camada decide entre as que sobraram. Sem
+`--editorial-translation` nada disso acontece e o plano continua byte-a-byte o
+mesmo.
+
 `--hook-seconds N` dá aos primeiros N segundos um teto de duração mais curto e
 proíbe reuso de asset ali (o piso e o jitter continuam: abertura cortada num
 metrônomo de 2 s é monotonia, não ritmo). `--text-events <path>` escreve a camada

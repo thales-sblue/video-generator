@@ -94,6 +94,19 @@ dele, nunca o contrário. É opt-in: `plan-shots(visual_relevance=True)` /
 `plan-scenes --visual-relevance`; sem isso os campos ficam ausentes e todo o
 comportamento anterior é preservado.
 
+`video_generator.domain.visual_concept` é a **Editorial Visual Translation
+v1**: a camada entre o *sentido* do beat e a query. `relevance` diz que tipo de
+imagem o beat pede; este módulo responde o que poderia ser **filmado** para
+comunicá-lo, com um banco de campos semânticos que devolve uma cena inglesa
+autorada (`FilmableConcept`) e uma escada de fallback que nunca cai na palavra
+da narração. Do outro lado devolve uma leitura **positiva** do candidato
+(`EditorialFit`), com sinais que os metadados sustentam e `unknown` para os que
+não sustentam, mais duas recusas comparativas que só valem enquanto houver
+alternativa sóbria. Importa exatamente um irmão — `relevance`, pelos dois
+vocabulários fechados e pelos nomes de recusa — e nada o importa de volta.
+Também é opt-in: `plan-shots(editorial_translation=True)` /
+`plan-scenes --editorial-translation`, que exige `--visual-relevance`.
+
 Três regras dessa camada valem registro porque não são óbvias:
 
 - **As queries de asset saem em inglês; narração e `visual_intent` ficam no

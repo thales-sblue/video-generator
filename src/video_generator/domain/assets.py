@@ -32,6 +32,13 @@ from video_generator.domain.relevance import (
     RelevancePolicy,
     assess_candidate,
 )
+from video_generator.domain.visual_concept import (
+    DEFAULT_TRANSLATION_POLICY,
+    EditorialFit,
+    TranslationPolicy,
+    assess_editorial_fit,
+    comparative_rejections,
+)
 
 SCHEMA_VERSION = 1
 
@@ -349,6 +356,13 @@ class AssetScoringPolicy:
     relevance_policy: "RelevancePolicy" = field(
         default_factory=lambda: DEFAULT_RELEVANCE_POLICY
     )
+    # Editorial Visual Translation v1. Off by default: with it off, no
+    # editorial-fit component is added to any breakdown and no comparative
+    # rejection is possible, so an older plan ranks exactly as it did before.
+    editorial_translation: bool = False
+    translation_policy: "TranslationPolicy" = field(
+        default_factory=lambda: DEFAULT_TRANSLATION_POLICY
+    )
 
     _FLOAT_FIELDS = (
         "weight_query_match",
@@ -369,7 +383,11 @@ class AssetScoringPolicy:
         ("min_meaningful_query_terms", 1),
         ("reuse_semantic_min_shared_terms", 1),
     )
-    _BOOL_FIELDS = ("disqualify_below_resolution", "require_orientation_match")
+    _BOOL_FIELDS = (
+        "disqualify_below_resolution",
+        "require_orientation_match",
+        "editorial_translation",
+    )
 
     def __post_init__(self) -> None:
         for name in self._FLOAT_FIELDS:
@@ -382,6 +400,10 @@ class AssetScoringPolicy:
             raise AssetResolutionError("min_short_edge must not exceed min_long_edge")
         if not isinstance(self.relevance_policy, RelevancePolicy):
             raise AssetResolutionError("relevance_policy must be a RelevancePolicy")
+        if not isinstance(self.editorial_translation, bool):
+            raise AssetResolutionError("editorial_translation must be a boolean")
+        if not isinstance(self.translation_policy, TranslationPolicy):
+            raise AssetResolutionError("translation_policy must be a TranslationPolicy")
         if self.max_mean_luma is not None:
             value = self.max_mean_luma
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -575,6 +597,10 @@ class ScoreBreakdown:
     # report readable.
     rejection_reasons: tuple[str, ...] = ()
     visual_family: str | None = None
+    # The positive reading of the candidate, when Editorial Visual Translation
+    # is on. Kept whole rather than flattened into the components, because
+    # what it *could not* infer is as much a part of the record as what it did.
+    editorial_fit: "EditorialFit | None" = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -696,6 +722,26 @@ def score_candidate(
     )
     components.update(assessment.components)
 
+    # --- Editorial Visual Translation v1 ----------------------------------- #
+    # The requirement's leading query is the filmable concept that was chosen
+    # for the beat, so its own words are what a candidate has to share to be
+    # *about the same picture* rather than about the same topic.
+    fit: "EditorialFit | None" = None
+    if policy.editorial_translation and policy.translation_policy.enabled:
+        concept_terms = frozenset(
+            t for t in _raw_tokens(requirement.queries[0] if requirement.queries else "")
+            if len(t) >= 4
+        )
+        fit = assess_editorial_fit(
+            bag,
+            concept_terms=concept_terms,
+            query_terms=query_terms,
+            narration_terms=frozenset(intent_terms),
+            visual_intent_class=requirement.visual_intent_class,
+            policy=policy.translation_policy,
+        )
+        components.update(fit.components(policy.translation_policy))
+
     components["repetition_penalty"] = -policy.reuse_repetition_penalty * max(0, uses - 1)
 
     if adjacent_terms and bag:
@@ -711,6 +757,7 @@ def score_candidate(
         disqualified_reasons=tuple(reasons),
         rejection_reasons=assessment.rejection_reasons,
         visual_family=assessment.family,
+        editorial_fit=fit,
     )
 
 
@@ -753,6 +800,7 @@ class CandidateVerdict:
     disqualified_reasons: tuple[str, ...]
     rejection_reasons: tuple[str, ...]
     visual_family: str | None
+    editorial_fit: "EditorialFit | None" = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "components", MappingProxyType(dict(self.components)))
@@ -760,6 +808,20 @@ class CandidateVerdict:
     @property
     def accepted(self) -> bool:
         return not (self.disqualified_reasons or self.rejection_reasons)
+
+    def with_rejections(self, reasons: "Sequence[str]") -> "CandidateVerdict":
+        """The same verdict with extra rejection reasons appended, in order."""
+
+        merged = tuple(dict.fromkeys(tuple(self.rejection_reasons) + tuple(reasons)))
+        return CandidateVerdict(
+            candidate_id=self.candidate_id,
+            score=self.score,
+            components=self.components,
+            disqualified_reasons=self.disqualified_reasons,
+            rejection_reasons=merged,
+            visual_family=self.visual_family,
+            editorial_fit=self.editorial_fit,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -769,6 +831,9 @@ class CandidateVerdict:
             "disqualified_reasons": list(self.disqualified_reasons),
             "rejection_reasons": list(self.rejection_reasons),
             "visual_family": self.visual_family,
+            "editorial_fit": (
+                self.editorial_fit.to_dict() if self.editorial_fit else None
+            ),
         }
 
 
@@ -787,6 +852,7 @@ def rank_candidates_with_report(
     uses_by_candidate = uses_by_candidate or {}
     scored: list[tuple[float, str, AssetCandidate]] = []
     verdicts: list[tuple[float, str, CandidateVerdict]] = []
+    survivors: list[tuple[str, EditorialFit]] = []
     for candidate in candidates:
         breakdown = score_candidate(
             requirement,
@@ -807,13 +873,35 @@ def rank_candidates_with_report(
                     disqualified_reasons=breakdown.disqualified_reasons,
                     rejection_reasons=breakdown.rejection_reasons,
                     visual_family=breakdown.visual_family,
+                    editorial_fit=breakdown.editorial_fit,
                 ),
             )
         )
         if breakdown.excluded:
             continue
+        if breakdown.editorial_fit is not None:
+            survivors.append((candidate.candidate_id, breakdown.editorial_fit))
         ranked_candidate = candidate.with_score(breakdown)
         scored.append((ranked_candidate.score, ranked_candidate.candidate_id, ranked_candidate))
+
+    # --- comparative editorial refusals ------------------------------------ #
+    # Decided here rather than per candidate because they are a statement
+    # about the *result set*: a stock metaphor or a playful frame is refused
+    # only while a sober documentary alternative is still standing. A beat
+    # whose every candidate is clichéd still gets a picture, and the report
+    # says so instead of leaving the shot unresolved.
+    comparative = comparative_rejections(survivors, policy.translation_policy)
+    if comparative:
+        scored = [row for row in scored if row[1] not in comparative]
+        verdicts = [
+            (
+                total,
+                cid,
+                verdict.with_rejections(comparative[cid]) if cid in comparative else verdict,
+            )
+            for total, cid, verdict in verdicts
+        ]
+
     scored.sort(key=lambda row: (-row[0], row[1]))
     verdicts.sort(key=lambda row: (-row[0], row[1]))
     return [row[2] for row in scored], tuple(row[2] for row in verdicts)

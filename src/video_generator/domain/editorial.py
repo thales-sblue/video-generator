@@ -42,6 +42,14 @@ from video_generator.domain.relevance import (
     VISUAL_ROLES,
     RelevancePolicy,
     read_relevance,
+    read_visual_intent,
+    read_visual_role,
+)
+from video_generator.domain.visual_concept import (
+    DEFAULT_TRANSLATION_POLICY,
+    FilmableConcept,
+    TranslationPolicy,
+    translate_beat,
 )
 
 SCHEMA_VERSION = 1
@@ -373,6 +381,16 @@ class EditorialPolicy:
     relevance_policy: RelevancePolicy = field(
         default_factory=lambda: DEFAULT_RELEVANCE_POLICY
     )
+    # Editorial Visual Translation v1, opt-in and layered on top of
+    # ``visual_relevance``. When true a beat is first asked *what could be
+    # filmed to communicate this*, and the answer — an authored English scene
+    # from :mod:`.visual_concept` — becomes the query the provider is asked,
+    # in place of whichever noun the concept lexicon happened to find. Off by
+    # default so an existing plan keeps producing byte-identical queries.
+    editorial_translation: bool = False
+    translation_policy: TranslationPolicy = field(
+        default_factory=lambda: DEFAULT_TRANSLATION_POLICY
+    )
 
     def __post_init__(self) -> None:
         concepts = dict(self.concept_lexicon)
@@ -418,6 +436,12 @@ class EditorialPolicy:
             raise EditorialError("visual_relevance must be a boolean")
         if not isinstance(self.relevance_policy, RelevancePolicy):
             raise EditorialError("relevance_policy must be a RelevancePolicy")
+        if not isinstance(self.editorial_translation, bool):
+            raise EditorialError("editorial_translation must be a boolean")
+        if not isinstance(self.translation_policy, TranslationPolicy):
+            raise EditorialError("translation_policy must be a TranslationPolicy")
+        if self.editorial_translation and not self.visual_relevance:
+            raise EditorialError("editorial_translation requires visual_relevance")
         object.__setattr__(self, "concept_lexicon", MappingProxyType(concepts))
         object.__setattr__(self, "emotion_lexicon", MappingProxyType(emotions))
         object.__setattr__(self, "entity_aliases", MappingProxyType(aliases))
@@ -458,6 +482,12 @@ class NarrationBeat:
     visual_role: str | None = None
     refined_query: str | None = None
     relevance_rationale: str | None = None
+    # --- Editorial Visual Translation v1 (optional) ------------------------ #
+    # The concrete thing a camera could have been pointed at for this beat.
+    # Present only when the policy enables the translation layer; when it is,
+    # ``asset_queries`` are this concept's queries rather than the concept
+    # lexicon's, and this field is the audit trail that says so.
+    filmable_concept: "FilmableConcept | None" = None
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -508,6 +538,10 @@ class NarrationBeat:
             "relevance_rationale",
             _optional_text(self.relevance_rationale, "relevance_rationale"),
         )
+        if self.filmable_concept is not None and not isinstance(
+            self.filmable_concept, FilmableConcept
+        ):
+            raise EditorialError("filmable_concept must be a FilmableConcept")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -526,6 +560,9 @@ class NarrationBeat:
             "visual_role": self.visual_role,
             "refined_query": self.refined_query,
             "relevance_rationale": self.relevance_rationale,
+            "filmable_concept": (
+                self.filmable_concept.to_dict() if self.filmable_concept else None
+            ),
         }
 
     @classmethod
@@ -539,6 +576,7 @@ class NarrationBeat:
             optional={
                 "schema_version", "shot_type_hint", "visual_intent_class",
                 "visual_role", "refined_query", "relevance_rationale",
+                "filmable_concept",
             },
         )
         return cls(
@@ -556,6 +594,11 @@ class NarrationBeat:
             visual_role=data.get("visual_role"),
             refined_query=data.get("refined_query"),
             relevance_rationale=data.get("relevance_rationale"),
+            filmable_concept=(
+                FilmableConcept.from_dict(data["filmable_concept"])
+                if data.get("filmable_concept")
+                else None
+            ),
             schema_version=data.get("schema_version", SCHEMA_VERSION),
         )
 
@@ -774,6 +817,15 @@ def read_beats(
     beats: list[NarrationBeat] = []
     previous_visual: str | None = None
     previous_query: str | None = None
+    # One tally per rung of the translation ladder. A field that has already
+    # answered two beats offers its third scene to the next one, which is what
+    # stops three shots of one scene asking for the same picture.
+    rotations: dict[str, int] = {}
+    # Which lexicon scenes have already answered a beat. The second beat that
+    # would be handed "person staring out of a window" is sent to the semantic
+    # field instead — this is the rule that broke the three-identical-queries
+    # runs measured in the last cut.
+    lexicon_scenes_used: set[str] = set()
     for index, (beat_id, text, context) in enumerate(rows):
         position = index / max(1, document_count - 1)
         tokens = _tokens(text)
@@ -784,8 +836,10 @@ def read_beats(
 
         # A concept term that leads the query should be specific to this beat.
         leading = [(t, e) for t, e in hits if t not in dominant] or hits
+        borrowed = False
         if not leading and context != text:
             # nothing filmable in this fragment; borrow the scene's concept
+            borrowed = True
             context_hits = _concept_hits(_tokens(context), policy)
             leading = [(t, e) for t, e in context_hits if t not in dominant] or context_hits
             emotion = emotion or _emotion_hit(_tokens(context), policy)
@@ -857,7 +911,64 @@ def read_beats(
             concept_hit=primary is not None,
             word_count=len(tokens),
         )
-        intent_bits = [visual or concept]
+
+        # --- Editorial Visual Translation v1 (opt-in) ---------------------- #
+        # Asked *before* the relevance reading refines a query, because it
+        # replaces what there is to refine: the queries above say which noun
+        # the slice contained, and these say what could be filmed to
+        # communicate the thought. Every one of them is authored English, so
+        # this is also the step at which a Portuguese token stops being able
+        # to reach the provider.
+        filmable: "FilmableConcept | None" = None
+        if policy.editorial_translation and policy.translation_policy.enabled:
+            intent_guess, _ = read_visual_intent(
+                text,
+                concept=concept,
+                emotion=emotion,
+                editorial_role=role,
+                has_concrete_concept=primary is not None,
+                policy=policy.relevance_policy,
+            )
+            role_guess, _ = read_visual_role(
+                intent_guess,
+                editorial_role=role,
+                importance=importance,
+                policy=policy.relevance_policy,
+            )
+            filmable = translate_beat(
+                text,
+                concept=concept,
+                lexicon_scene=visual,
+                context=context,
+                visual_intent_class=intent_guess,
+                visual_role=role_guess,
+                # A concept borrowed from the surrounding scene is not what
+                # *this* beat is about. When the beat's own words name a
+                # semantic field, that field is the better answer, and this is
+                # what stops a whole scene inheriting one noun's picture.
+                lexicon_repeat=bool(visual)
+                and (borrowed or visual in lexicon_scenes_used),
+                rotations=rotations,
+                policy=policy.translation_policy,
+            )
+            if filmable.register not in policy.translation_policy.accepted_registers:
+                raise EditorialError(
+                    f"concept {filmable.concept_id} has register "
+                    f"{filmable.register}, which this channel does not accept"
+                )
+            rotations[filmable.rotation_key] = (
+                rotations.get(filmable.rotation_key, 0) + 1
+            )
+            if filmable.source == "concept_lexicon":
+                lexicon_scenes_used.add(filmable.scene)
+            queries = list(filmable.queries)[: policy.max_queries_per_beat]
+            previous_visual = filmable.scene
+            previous_query = queries[0]
+
+        # With a filmable concept in hand the purpose line names the scene
+        # rather than the noun: it is the only other place the resolver reads
+        # for context terms, and an English scene is a term it can match.
+        intent_bits = [filmable.scene if filmable is not None else (visual or concept)]
         if entities:
             intent_bits.append(entities[0])
         if emotion:
@@ -885,6 +996,20 @@ def read_beats(
             rationale = reading.rationale
             queries = list(reading.queries())[: policy.max_queries_per_beat]
             previous_query = queries[0]
+            if filmable is not None and filmable.source != "concept_lexicon":
+                # The refinement exists to turn a bare topic into "topic +
+                # editorial intention". A scene authored by the translation
+                # layer already *is* that sentence — it carries its own light,
+                # place and mood — and measurement showed the extra modifiers
+                # diluting it, so those queries lead untouched.
+                #
+                # The lexicon rung is the opposite case and keeps the
+                # refinement: "long office corridor" is a bare topic, and
+                # dropping the "moody" in front of it measurably cost the
+                # opening its darkest images.
+                queries = list(filmable.queries)[: policy.max_queries_per_beat]
+                refined = queries[0]
+                previous_query = queries[0]
 
         beats.append(
             NarrationBeat(
@@ -902,6 +1027,7 @@ def read_beats(
                 visual_role=visual_role,
                 refined_query=refined,
                 relevance_rationale=rationale,
+                filmable_concept=filmable,
             )
         )
     return tuple(beats)

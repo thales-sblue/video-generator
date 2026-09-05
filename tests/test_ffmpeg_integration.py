@@ -17,6 +17,7 @@ import unittest
 from pathlib import Path
 
 from video_generator.adapters import FFmpegError, SequenceClip, SequenceImage, compose_video_sequence
+from video_generator.adapters.ffmpeg import measure_luma
 from video_generator.tooling import ToolResolutionError, _validated_local_bin
 
 
@@ -205,3 +206,49 @@ class FFmpegTargetFormatIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MeasureLumaSamplingTests(unittest.TestCase):
+    """The brightness measurement that decides how hard the channel grade may
+    push an asset. It used to read the first five frames, which measures 0.00
+    for any clip that opens on black.
+    """
+
+    def test_a_clip_that_opens_black_is_not_measured_as_black(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "opens-black.mp4"
+            # two seconds of black, then two of white: the mean of the whole
+            # clip is nowhere near either end.
+            _run(
+                "-f", "lavfi", "-i", "color=c=black:s=160x90:r=25:d=2",
+                "-f", "lavfi", "-i", "color=c=white:s=160x90:r=25:d=2",
+                "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+                "-map", "[v]", "-c:v", "libopenh264", "-b:v", "1M",
+                "-pix_fmt", "yuv420p", str(path),
+            )
+            first_frames = measure_luma(path, sample_interval_seconds=1 / 1000)
+            spread = measure_luma(path)
+            self.assertEqual(first_frames, 0.0)
+            self.assertIsNotNone(spread)
+            self.assertGreater(spread, 0.0)
+
+    def test_a_still_image_still_yields_a_measurement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _make_image(Path(tmp) / "grey.png", size="160x90", colour="gray")
+            measured = measure_luma(path)
+            self.assertIsNotNone(measured)
+            self.assertGreater(measured, 0.0)
+
+    def test_the_sampling_arguments_are_validated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _make_image(Path(tmp) / "grey.png", size="160x90", colour="gray")
+            for kwargs in (
+                {"frames": 0},
+                {"sample_interval_seconds": 0},
+                {"sample_interval_seconds": True},
+            ):
+                with self.assertRaises(FFmpegError):
+                    measure_luma(path, **kwargs)
+
+    def test_a_missing_file_measures_nothing_rather_than_failing(self):
+        self.assertIsNone(measure_luma(Path("nope") / "missing.mp4"))

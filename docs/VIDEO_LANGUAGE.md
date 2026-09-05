@@ -124,6 +124,34 @@ contradiz a narração (`tone_conflict`), CGI abstrato onde o beat pede gente
 (`abstract_cgi_mismatch`) e a mesma família visual três cortes seguidos
 (`visual_language_repetition`).
 
+### Tradução visual editorial (`TranslationPolicy`)
+
+Ainda faltava a pergunta anterior a todas essas: **que coisa concreta poderia
+ser filmada para comunicar este pensamento, neste tom, neste momento?** Sem
+ela, um beat cuja frase não contém nenhum substantivo do léxico não tinha
+conceito nenhum, e um beat abstrato recebia o objeto que o banco de imagens
+guarda como símbolo daquela abstração — lupa para investigação, tabuleiro de
+xadrez para inteligência, lâmpada para ideia, giz para criatividade.
+
+A **Editorial Visual Translation v1** responde antes de perguntar ao provider:
+
+- **conceito filmável** (`FilmableConcept`): uma cena inglesa concreta e
+  sóbria, com o campo semântico que a produziu, as alternativas que poderiam
+  tê-la substituído, as abstrações das quais aquele beat não pode receber um
+  objeto, e o degrau da escada que respondeu (`semantic_field`,
+  `concept_lexicon`, `intent_scene`, `tone_floor`);
+- **leitura positiva do candidato** (`EditorialFit`): `human_presence`,
+  `documentary_plausibility`, `concept_affinity`, `literalness_risk`,
+  `playful_register`, `staged_artifice` — cada um em [0, 1] **ou** declarado
+  `unknown` quando os metadados não permitem inferir.
+
+O objeto clichê não é proibido em lugar nenhum. Ele é recusado quando é uma
+**substituição preguiçosa**: o beat é abstrato, nunca citou aquele objeto, e
+existe no mesmo conjunto de resultados uma alternativa documental de pé. É
+essa comparação — e não uma lista de slugs — que tira um homem com lupa diante
+de um espelho de um ensaio sério, e um desenho de giz colorido de um fecho
+grave sem que a palavra `children` apareça em lugar algum.
+
 Três limites deliberados. **Refinar não pode diluir**: no máximo um modificador
 por eixo, e a query original permanece como fallback. **A leitura é lexical e
 determinística**, não semântica de verdade: ela erra em ironia, negação e

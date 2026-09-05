@@ -1269,6 +1269,7 @@ def measure_luma(
     source_path: "str | Path",
     *,
     frames: int = 5,
+    sample_interval_seconds: float = 1.0,
     timeout_seconds: float = 30,
 ) -> "float | None":
     """The mean brightness of a local image or video, in ``0.0..1.0``.
@@ -1278,6 +1279,13 @@ def measure_luma(
     statistics filter. Visual Direction uses it to decide how hard the channel
     grade may push an asset: a photograph that is already black must not be
     crushed, and one that arrived bright has to be pulled into the same world.
+
+    For a video the frames are taken ``sample_interval_seconds`` apart rather
+    than consecutively: reading the first five frames measures 0.00 for any
+    clip that opens on black, and grades it as if it were already dark. A
+    still image has one frame, which the rate filter drops, so the second
+    attempt below — the original single-pass measurement — is what answers for
+    images. Two cheap decodes at worst, and never a wrong number.
 
     Returns ``None`` when FFmpeg is unavailable or the file cannot be read, so
     a missing measurement degrades the grade to its default instead of failing
@@ -1289,6 +1297,11 @@ def measure_luma(
         return None
     if isinstance(frames, bool) or not isinstance(frames, int) or frames < 1:
         raise FFmpegError("frames must be a positive integer")
+    interval = sample_interval_seconds
+    if isinstance(interval, bool) or not isinstance(interval, (int, float)):
+        raise FFmpegError("sample_interval_seconds must be a number")
+    if interval <= 0:
+        raise FFmpegError("sample_interval_seconds must be greater than zero")
     timeout = _time(timeout_seconds, "timeout_seconds")
     if timeout == 0:
         raise FFmpegError("timeout_seconds must be greater than zero")
@@ -1298,25 +1311,27 @@ def measure_luma(
         return None
     if executable is None:
         return None
-    command = [
-        executable, "-v", "error", "-nostdin",
-        "-i", str(source.resolve()),
-        "-frames:v", str(frames),
-        "-vf", "scale=1:1:flags=area",
-        "-pix_fmt", "gray",
-        "-f", "rawvideo",
-        "-",
-    ]
-    try:
-        completed = subprocess.run(
-            command, check=False, capture_output=True, timeout=timeout, shell=False
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if completed.returncode != 0 or not completed.stdout:
-        return None
-    samples = completed.stdout
-    return round(sum(samples) / (len(samples) * 255.0), 4)
+    spread = f"fps=1/{float(interval):g},scale=1:1:flags=area"
+    for filter_chain in (spread, "scale=1:1:flags=area"):
+        command = [
+            executable, "-v", "error", "-nostdin",
+            "-i", str(source.resolve()),
+            "-frames:v", str(frames),
+            "-vf", filter_chain,
+            "-pix_fmt", "gray",
+            "-f", "rawvideo",
+            "-",
+        ]
+        try:
+            completed = subprocess.run(
+                command, check=False, capture_output=True, timeout=timeout, shell=False
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if completed.returncode == 0 and completed.stdout:
+            samples = completed.stdout
+            return round(sum(samples) / (len(samples) * 255.0), 4)
+    return None
 
 
 def compose_video_sequence(

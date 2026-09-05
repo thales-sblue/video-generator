@@ -78,6 +78,13 @@ REJECTION_REASONS = (
     "tone_conflict",
     "abstract_cgi_mismatch",
     "visual_language_repetition",
+    # Editorial Visual Translation v1 asks for these two, and they are
+    # comparative in a stronger sense than the five above: they are decided
+    # against the *rest of the result set*, not against the beat alone. A
+    # stock metaphor or a playful frame loses only while a sober documentary
+    # alternative is still standing, which is why they are not vetoes.
+    "stock_metaphor_cliche",
+    "playful_register_conflict",
     "hard_veto_cgi",
     "hard_veto_cartoon",
     "hard_veto_cheerful",

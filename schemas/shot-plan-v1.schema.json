@@ -234,6 +234,14 @@
               "null"
             ],
             "minLength": 1
+          },
+          "filmable_concept": {
+            "description": "Editorial Visual Translation v1: the id of the filmable concept the shot's queries came from, for example 'self_deception/2' or 'intent/metaphorical/1'. Null on a plan made without the translation layer.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
           }
         }
       }

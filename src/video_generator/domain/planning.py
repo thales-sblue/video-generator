@@ -919,6 +919,13 @@ class Shot:
     visual_intent_class: str | None = None
     visual_role: str | None = None
     refined_query: str | None = None
+    # --- Editorial Visual Translation v1 (optional) ------------------------ #
+    # The id of the filmable concept this shot's queries came from, e.g.
+    # ``self_deception/2``. Present only when the plan was made with the
+    # translation layer on. It is the one thing a report needs to answer
+    # "which concept was chosen for this shot, and how often did that concept
+    # answer the script?" without re-deriving anything.
+    filmable_concept: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "shot_id", _text(self.shot_id, "shot_id"))
@@ -984,6 +991,11 @@ class Shot:
         object.__setattr__(
             self, "refined_query", _optional_text(self.refined_query, "refined_query")
         )
+        object.__setattr__(
+            self,
+            "filmable_concept",
+            _optional_text(self.filmable_concept, "filmable_concept"),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1008,6 +1020,7 @@ class Shot:
             "visual_intent_class": self.visual_intent_class,
             "visual_role": self.visual_role,
             "refined_query": self.refined_query,
+            "filmable_concept": self.filmable_concept,
         }
 
     @classmethod
@@ -1022,6 +1035,7 @@ class Shot:
             optional={
                 "editorial_role", "asset_queries", "beat_concept",
                 "visual_intent_class", "visual_role", "refined_query",
+                "filmable_concept",
             },
         )
         return cls(
@@ -1046,6 +1060,7 @@ class Shot:
             visual_intent_class=data.get("visual_intent_class"),
             visual_role=data.get("visual_role"),
             refined_query=data.get("refined_query"),
+            filmable_concept=data.get("filmable_concept"),
         )
 
 
@@ -1598,6 +1613,7 @@ def plan_shots(
     asset_plan_id: str | None = None,
     semantic: bool = False,
     visual_relevance: bool = False,
+    editorial_translation: bool = False,
     editorial_policy: "EditorialPolicy | None" = None,
     hook_policy: "HookPolicy | None" = None,
 ) -> tuple["ShotPlan", "AssetRequirements"]:
@@ -1619,6 +1635,12 @@ def plan_shots(
     for its visual intent class and visual role, its leading query is refined
     to ask for both, and those two labels travel to the requirement so the
     resolver can rank and reject candidates on editorial fit.
+
+    ``editorial_translation=True`` (Editorial Visual Translation v1, needs
+    ``visual_relevance``) adds the layer before the query: every beat is asked
+    what could be *filmed* to communicate it, and the authored English scene
+    that answers becomes the query, in place of whichever Portuguese noun the
+    concept lexicon happened to find.
 
     ``hook_policy`` additionally gives the opening its own ceiling and forbids
     asset reuse there.
@@ -1653,10 +1675,14 @@ def plan_shots(
     layout_cache: "dict[str, tuple[list[float], list[bool], list[str]]]" = {}
     if visual_relevance and not semantic:
         raise PlanningError("visual_relevance requires semantic planning")
+    if editorial_translation and not visual_relevance:
+        raise PlanningError("editorial_translation requires visual_relevance")
     if semantic:
         editorial_policy = editorial_policy or DEFAULT_EDITORIAL_POLICY
         if visual_relevance and not editorial_policy.visual_relevance:
             editorial_policy = replace(editorial_policy, visual_relevance=True)
+        if editorial_translation and not editorial_policy.editorial_translation:
+            editorial_policy = replace(editorial_policy, editorial_translation=True)
         slice_rng = random.Random(seed)
         elapsed = 0.0
         slices: list[tuple[str, str, str]] = []
@@ -1761,12 +1787,18 @@ def plan_shots(
                 intent_class = narration_beat.visual_intent_class
                 visual_role = narration_beat.visual_role
                 refined_query = narration_beat.refined_query
+                filmable_concept = (
+                    narration_beat.filmable_concept.concept_id
+                    if narration_beat.filmable_concept is not None
+                    else None
+                )
             else:
                 visual_query = _visual_query(scale, shot_type, slice_text, policy)
                 asset_queries = ()
                 editorial_role = None
                 beat_concept = None
                 intent_class = visual_role = refined_query = None
+                filmable_concept = None
             purpose = f"{scene.visual_intent} — beat {local_index}/{scene_shot_count}"
 
             # asset + reuse
@@ -1842,6 +1874,7 @@ def plan_shots(
                 visual_intent_class=intent_class,
                 visual_role=visual_role,
                 refined_query=refined_query,
+                filmable_concept=filmable_concept,
             )
             scene_shots.append(shot)
             flat_scales.append(scale)
@@ -2159,6 +2192,7 @@ def apply_overrides(
                 visual_intent_class=shot.visual_intent_class,
                 visual_role=shot.visual_role,
                 refined_query=shot.refined_query,
+                filmable_concept=shot.filmable_concept,
             )
         )
 

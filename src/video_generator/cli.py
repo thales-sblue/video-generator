@@ -346,6 +346,14 @@ def build_parser() -> argparse.ArgumentParser:
         "them to the asset requirements (needs --semantic)",
     )
     plan_scenes_cmd.add_argument(
+        "--editorial-translation",
+        action="store_true",
+        help="Editorial Visual Translation v1: ask every beat what could be "
+        "filmed to communicate it and search for that scene in English, "
+        "instead of for whichever noun the slice contained; also read each "
+        "candidate positively (needs --visual-relevance)",
+    )
+    plan_scenes_cmd.add_argument(
         "--hook-seconds",
         type=float,
         help="give the opening its own tighter rhythm and no asset reuse "
@@ -1139,8 +1147,13 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
         direction_path = getattr(args, "visual_direction", None)
         if not semantic and (hook_seconds is not None or text_events_path is not None):
             raise PlanningError("--hook-seconds and --text-events require --semantic")
+        editorial_translation = bool(getattr(args, "editorial_translation", False))
         if visual_relevance and not semantic:
             raise PlanningError("--visual-relevance requires --semantic")
+        if editorial_translation and not visual_relevance:
+            raise PlanningError(
+                "--editorial-translation requires --visual-relevance"
+            )
         if direction_path is not None and not semantic:
             raise PlanningError("--visual-direction requires --semantic")
         hook_policy = HookPolicy(hook_seconds=hook_seconds) if hook_seconds else None
@@ -1160,6 +1173,7 @@ def _run_plan_scenes(args: argparse.Namespace) -> int:
             orientation=orientation,
             semantic=semantic,
             visual_relevance=visual_relevance,
+            editorial_translation=editorial_translation,
             hook_policy=hook_policy,
         )
 
