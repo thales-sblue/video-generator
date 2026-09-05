@@ -66,8 +66,15 @@ class ContractTests(unittest.TestCase):
         (event,) = scene["events"]
         self.assertEqual(
             set(event),
-            {"id", "start", "duration", "role", "layout", "variant", "motion", "blocks"},
+            {
+                "id", "start", "duration", "role", "layout", "variant", "motion",
+                "intensity", "intent", "surface", "scale_hint",
+                "chain_position", "chain_length", "blocks",
+            },
         )
+        self.assertEqual(event["intensity"], "medium")
+        self.assertEqual(event["surface"], "bare")
+        self.assertEqual(event["scale_hint"], "normal")
         self.assertEqual(event["layout"], "small-plus-massive")
         self.assertEqual(event["duration"], 3.0)
         self.assertEqual(
@@ -112,6 +119,37 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(
             [b["importance"] for b in scene["events"][0]["blocks"]],
             ["support", "secondary", "dominant"],
+        )
+
+    def test_intensity_drives_the_scale_hint(self) -> None:
+        for intensity, expected in (
+            ("low", "normal"),
+            ("medium", "normal"),
+            ("high", "amplified"),
+            ("peak", "giant"),
+        ):
+            ev = _event(intensity=intensity)
+            scene = build_motion_graphics_scene(
+                [ev], width=1920, height=1080, fps=30, duration_seconds=60
+            )
+            self.assertEqual(scene["events"][0]["scale_hint"], expected, intensity)
+
+    def test_a_margin_note_never_gets_an_amplified_scale(self) -> None:
+        ev = _event(intensity="peak", intent="annotation")
+        scene = build_motion_graphics_scene(
+            [ev], width=1920, height=1080, fps=30, duration_seconds=60
+        )
+        self.assertEqual(scene["events"][0]["scale_hint"], "normal")
+
+    def test_the_editorial_fields_pass_through(self) -> None:
+        ev = _event(intensity="high", intent="contrast", surface="scrim")
+        scene = build_motion_graphics_scene(
+            [ev], width=1920, height=1080, fps=30, duration_seconds=60
+        )
+        item = scene["events"][0]
+        self.assertEqual(
+            (item["intensity"], item["intent"], item["surface"]),
+            ("high", "contrast", "scrim"),
         )
 
     def test_wire_json_is_deterministic_and_sorted(self) -> None:

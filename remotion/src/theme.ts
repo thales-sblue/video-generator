@@ -12,6 +12,16 @@ export const SCALE: Record<MotionBlock['importance'], number> = {
   dominant: 0.152,
 };
 
+// Multiplier on the dominant word, driven by the editorial ``scale_hint``. A
+// ``peak`` beat gets a word that fills most of the frame and wraps; a ``high``
+// beat a clearly bigger-than-usual one; everything else its layout's own size.
+// Aggressive on purpose — the point is that a viewer feels the range.
+export const SCALE_BOOST: Record<'normal' | 'amplified' | 'giant', number> = {
+  normal: 1,
+  amplified: 1.32,
+  giant: 1.9,
+};
+
 export const WEIGHT: Record<MotionBlock['importance'], number> = {
   support: 500,
   secondary: 680,

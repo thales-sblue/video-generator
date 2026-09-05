@@ -20,9 +20,18 @@ The shape it produces (see ``remotion/src/schema.ts`` for the consuming side)::
       "theme": {"foreground", "accent", "muted", "background"},
       "events": [
         {"id", "start", "duration", "role", "layout", "variant", "motion",
+         "intensity", "intent", "surface", "scale_hint",
+         "chain_position", "chain_length",
          "blocks": [{"text", "importance", "accent"}]}
       ]
     }
+
+``intensity`` / ``intent`` / ``surface`` / ``scale_hint`` are the editorial-density
+fields: how hard the edit leans on this moment, which editorial move it is
+making, how the type meets the picture underneath, and how much of the frame the
+dominant word is allowed to take. Remotion reads them to size and place the
+type; a plan that predates them still renders, because every field has a
+back-compatible default.
 """
 
 from __future__ import annotations
@@ -33,6 +42,9 @@ from typing import Any, Mapping, Sequence
 
 from video_generator.domain.typography import (
     BLOCK_WEIGHTS,
+    EDITORIAL_INTENSITIES,
+    EDITORIAL_INTENTS,
+    SURFACES,
     TEXT_MOTIONS,
     TEXT_ROLES,
     MotionTextEvent,
@@ -40,6 +52,17 @@ from video_generator.domain.typography import (
 )
 
 SCHEMA_VERSION = 1
+
+# How much of the frame the dominant word is allowed to take. Driven off the
+# editorial intensity, not measured text: a ``peak`` beat gets a word that fills
+# most of the frame and wraps; a margin note stays at its layout's own size.
+SCALE_HINTS = ("normal", "amplified", "giant")
+_INTENSITY_SCALE: Mapping[str, str] = {
+    "low": "normal",
+    "medium": "normal",
+    "high": "amplified",
+    "peak": "giant",
+}
 
 
 class MotionGraphicsError(Exception):
@@ -153,6 +176,19 @@ def _event_dict(event: MotionTextEvent, timeline_end: float) -> dict[str, Any]:
     if not blocks:
         raise MotionGraphicsError(f"event {event.event_id} has no blocks")
 
+    if event.intensity not in EDITORIAL_INTENSITIES:
+        raise MotionGraphicsError(f"unknown intensity {event.intensity!r}")
+    if event.intent not in EDITORIAL_INTENTS:
+        raise MotionGraphicsError(f"unknown intent {event.intent!r}")
+    if event.surface not in SURFACES:
+        raise MotionGraphicsError(f"unknown surface {event.surface!r}")
+
+    scale_hint = _INTENSITY_SCALE.get(event.intensity, "normal")
+    if event.intent in ("annotation", "quote_fragment"):
+        scale_hint = "normal"
+    elif event.intent == "chapter_transition" and scale_hint == "giant":
+        scale_hint = "amplified"
+
     return {
         "id": event.event_id,
         "start": start,
@@ -161,6 +197,12 @@ def _event_dict(event: MotionTextEvent, timeline_end: float) -> dict[str, Any]:
         "layout": layout,
         "variant": variant,
         "motion": event.motion,
+        "intensity": event.intensity,
+        "intent": event.intent,
+        "surface": event.surface,
+        "scale_hint": scale_hint,
+        "chain_position": event.chain_position,
+        "chain_length": event.chain_length,
         "blocks": blocks,
     }
 

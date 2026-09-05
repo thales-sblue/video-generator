@@ -14,12 +14,15 @@ export const fitSize = (
   importance: MotionBlock['importance'],
   height: number,
   availableWidth: number,
+  boost = 1,
 ): number => {
-  const base = height * SCALE[importance];
+  const base = height * SCALE[importance] * boost;
   const longestLine = text.split('\n').reduce((m, l) => Math.max(m, l.length), 1);
   const advance = ADVANCE + Math.max(0, TRACKING[importance]);
   const estimated = longestLine * advance * base;
-  const room = availableWidth * BREATHING;
+  // an amplified/giant display word is allowed to run nearly to the margin —
+  // that near-bleed is the effect — where a normal one keeps its breathing room
+  const room = availableWidth * (boost > 1.15 ? 1.02 : BREATHING);
   if (room > 0 && estimated > room) {
     return Math.max(height * 0.02, base * (room / estimated));
   }
@@ -29,8 +32,11 @@ export const fitSize = (
 // Intentional line breaks: a long single word or short phrase set as the
 // dominant block is broken near its middle so it stacks instead of shrinking to
 // a stripe. Short words and support labels are left as one line.
-export const breakDominant = (text: string): string => {
-  if (text.length <= 9) {
+export const breakDominant = (text: string, aggressive = false): string => {
+  if (text.includes('\n')) {
+    return text;
+  }
+  if (text.length <= (aggressive ? 6 : 9)) {
     return text;
   }
   const spaces: number[] = [];
@@ -42,6 +48,12 @@ export const breakDominant = (text: string): string => {
     const at = spaces.reduce((best, s) => (Math.abs(s - mid) < Math.abs(best - mid) ? s : best), spaces[0]);
     return `${text.slice(0, at)}\n${text.slice(at + 1)}`;
   }
-  // hyphenless single word: keep whole, fitSize will scale it
+  // hyphenless single word. Normally kept whole (fitSize scales it); when the
+  // editorial intensity wants it huge, split it near the middle so it stacks
+  // and fills the frame instead of shrinking to a stripe.
+  if (aggressive && text.length >= 8) {
+    const at = Math.round(text.length / 2);
+    return `${text.slice(0, at)}\n${text.slice(at)}`;
+  }
   return text;
 };

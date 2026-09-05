@@ -1,8 +1,9 @@
 import React from 'react';
-import {AbsoluteFill} from 'remotion';
+import {AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig} from 'remotion';
 import type {MotionEvent, MotionTheme} from '../schema';
 import {Block} from '../Block';
 import {fitSize, breakDominant} from '../text';
+import {SCALE_BOOST} from '../theme';
 
 export type LayoutProps = {
   event: MotionEvent;
@@ -17,6 +18,53 @@ const useFrameGeom = (width: number, height: number) => {
   const mx = Math.round(width * MARGIN);
   const my = Math.round(height * MARGIN);
   return {mx, my, inner: width - mx * 2};
+};
+
+// how much bigger the dominant word runs for this event's editorial intensity
+const boostOf = (event: MotionEvent): number => SCALE_BOOST[event.scale_hint] ?? 1;
+
+/* ------------------------------------------------------------------ */
+/* Surface — how the type meets the picture underneath it              */
+/* ------------------------------------------------------------------ */
+// `bare` (the default and the whole point of the layer) draws nothing: the type
+// lives on the moving asset, held legible by its own halo. `scrim` fades a soft
+// dark wash in under the block for a busy plate. `card` is the rare full
+// title-card dim, kept for a definition or a chapter break. All of it fades in
+// with the event so it never reads as a hard cut to black.
+const Surface: React.FC<{surface: MotionEvent['surface']; anchor: 'bottom' | 'center'}> = ({
+  surface,
+  anchor,
+}) => {
+  const frame = useCurrentFrame();
+  const {durationInFrames} = useVideoConfig();
+  if (surface === 'bare') {
+    return null;
+  }
+  const inTo = interpolate(frame, [0, 8], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
+  const outTo = interpolate(
+    frame,
+    [durationInFrames - 8, durationInFrames - 1],
+    [1, 0],
+    {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'},
+  );
+  const opacity = Math.min(inTo, outTo);
+  if (surface === 'card') {
+    return (
+      <AbsoluteFill
+        style={{
+          opacity,
+          background:
+            'radial-gradient(130% 100% at 50% 46%, rgba(4,5,8,0.42), rgba(4,5,8,0.78) 82%)',
+        }}
+      />
+    );
+  }
+  // scrim: a band under the type, biased to where the block sits
+  const band =
+    anchor === 'bottom'
+      ? 'linear-gradient(0deg, rgba(4,5,8,0.72) 2%, rgba(4,5,8,0.34) 34%, rgba(4,5,8,0) 62%)'
+      : 'radial-gradient(70% 46% at 34% 50%, rgba(4,5,8,0.6), rgba(4,5,8,0) 72%)';
+  return <AbsoluteFill style={{opacity, background: band}} />;
 };
 
 // A thin accent tick — a small piece of graphic furniture that ties the type to
@@ -42,15 +90,17 @@ const Rule: React.FC<{theme: MotionTheme; width: number; thickness: number}> = (
 const DominantWord: React.FC<LayoutProps> = ({event, theme, width, height}) => {
   const {mx, my, inner} = useFrameGeom(width, height);
   const [kicker, word] = event.blocks.length === 2 ? event.blocks : [null, event.blocks[0]];
-  const text = breakDominant(word.text);
-  const size = fitSize(text, 'dominant', height, inner);
+  const boost = boostOf(event);
+  const text = breakDominant(word.text, boost > 1.15);
+  const size = fitSize(text, 'dominant', height, inner, boost);
   return (
     <AbsoluteFill>
+      <Surface surface={event.surface} anchor="bottom" />
       <div
         style={{
           position: 'absolute',
           left: mx,
-          right: mx,
+          right: boost > 1.15 ? Math.round(mx * 0.4) : mx,
           bottom: my + height * 0.06,
           display: 'flex',
           flexDirection: 'column',
@@ -89,15 +139,17 @@ const SmallPlusMassive: React.FC<LayoutProps> = ({event, theme, width, height}) 
   const {mx, inner} = useFrameGeom(width, height);
   const support = event.blocks[0];
   const massive = event.blocks[event.blocks.length - 1];
-  const text = breakDominant(massive.text);
-  const size = fitSize(text, 'dominant', height, inner);
+  const boost = boostOf(event);
+  const text = breakDominant(massive.text, boost > 1.15);
+  const size = fitSize(text, 'dominant', height, inner, boost);
   return (
     <AbsoluteFill>
+      <Surface surface={event.surface} anchor="center" />
       <div
         style={{
           position: 'absolute',
           left: mx,
-          right: width * 0.34,
+          right: boost > 1.15 ? Math.round(mx * 0.5) : width * 0.34,
           top: '50%',
           transform: 'translateY(-52%)',
           display: 'flex',
@@ -142,8 +194,10 @@ const StackedEditorial: React.FC<LayoutProps> = ({event, theme, width, height}) 
   const ramp: Array<'support' | 'secondary' | 'dominant'> =
     event.blocks.length >= 3 ? ['support', 'secondary', 'dominant'] : ['support', 'dominant'];
   const avail = width - left - mx - step * (event.blocks.length - 1);
+  const boost = boostOf(event);
   return (
     <AbsoluteFill>
+      <Surface surface={event.surface} anchor={edge ? 'bottom' : 'center'} />
       <div
         style={{
           position: 'absolute',
@@ -158,11 +212,11 @@ const StackedEditorial: React.FC<LayoutProps> = ({event, theme, width, height}) 
       >
         {event.blocks.map((b, i) => {
           const imp = ramp[Math.min(i, ramp.length - 1)];
-          const text = imp === 'dominant' ? breakDominant(b.text) : b.text;
+          const text = imp === 'dominant' ? breakDominant(b.text, boost > 1.15) : b.text;
           const row = (
             <Block
               block={{...b, importance: imp, text}}
-              size={fitSize(text, imp, height, avail)}
+              size={fitSize(text, imp, height, avail, imp === 'dominant' ? boost : 1)}
               index={i}
               blockCount={event.blocks.length}
               motion={event.motion}
@@ -193,15 +247,17 @@ const SplitContrast: React.FC<LayoutProps> = ({event, theme, width, height}) => 
   const {mx, my, inner} = useFrameGeom(width, height);
   const a = event.blocks[0];
   const b = event.blocks[event.blocks.length - 1];
+  const boost = boostOf(event);
 
   if (event.variant === 'pair') {
     const indent = Math.round(width * 0.08);
     const left = mx + indent;
     const avail = width - left - mx;
     const sizeA = fitSize(a.text, 'secondary', height, avail);
-    const sizeB = fitSize(breakDominant(b.text), 'dominant', height, avail);
+    const sizeB = fitSize(breakDominant(b.text, boost > 1.15), 'dominant', height, avail, boost);
     return (
       <AbsoluteFill>
+        <Surface surface={event.surface} anchor="center" />
         <div
           style={{
             position: 'absolute',
@@ -238,13 +294,14 @@ const SplitContrast: React.FC<LayoutProps> = ({event, theme, width, height}) => 
   const availBot = width * 0.62;
   return (
     <AbsoluteFill>
+      <Surface surface={event.surface} anchor="center" />
       <div style={{position: 'absolute', left: mx, top: height * 0.13, maxWidth: availTop}}>
         <Block block={{...a, importance: 'secondary'}} size={fitSize(a.text, 'secondary', height, availTop)} index={0} blockCount={2} motion={event.motion} theme={theme} />
       </div>
       <div style={{position: 'absolute', right: mx, bottom: my + height * 0.05, maxWidth: availBot, textAlign: 'right'}}>
         <Block
-          block={{...b, importance: 'dominant', text: breakDominant(b.text)}}
-          size={fitSize(breakDominant(b.text), 'dominant', height, availBot)}
+          block={{...b, importance: 'dominant', text: breakDominant(b.text, boost > 1.15)}}
+          size={fitSize(breakDominant(b.text, boost > 1.15), 'dominant', height, availBot, boost)}
           index={1}
           blockCount={2}
           motion={event.motion}
@@ -263,10 +320,12 @@ const PosterStatement: React.FC<LayoutProps> = ({event, theme, width, height}) =
   const {mx, inner} = useFrameGeom(width, height);
   const kicker = event.blocks.length >= 2 ? event.blocks[0] : null;
   const word = event.blocks[event.blocks.length - 1];
-  const text = breakDominant(word.text);
-  const size = fitSize(text, 'dominant', height, inner);
+  const boost = boostOf(event);
+  const text = breakDominant(word.text, boost > 1.15);
+  const size = fitSize(text, 'dominant', height, inner, boost);
   return (
     <AbsoluteFill style={{alignItems: 'center', justifyContent: 'center'}}>
+      <Surface surface={event.surface} anchor="center" />
       <div
         style={{
           display: 'flex',

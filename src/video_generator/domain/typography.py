@@ -52,7 +52,52 @@ class TypographyError(Exception):
 # --------------------------------------------------------------------------- #
 # Why the words are on screen at all. The role is decided from the sentence,
 # and it is what picks the layout pool below.
-TEXT_ROLES = ("hook", "keyword", "contrast", "statement", "question")
+TEXT_ROLES = (
+    "hook",
+    "keyword",
+    "contrast",
+    "statement",
+    "question",
+    "definition",
+    "number",
+    "annotation",
+    "sequence",
+    "transition",
+)
+
+# How hard the edit leans on this moment. A viewer with the sound off should be
+# able to feel the difference: a ``low`` note sits in a corner, a ``peak`` beat
+# can carry a whole built statement across one shot. The planner spends its
+# event budget unevenly on purpose — the hook, a reveal, a turn in the argument
+# and a conclusion get ``high``/``peak``; a mid-paragraph aside gets ``low``.
+EDITORIAL_INTENSITIES = ("low", "medium", "high", "peak")
+
+# A small, reusable grammar of editorial moments. Every planned event names the
+# move it is making so the layer stops reading as "some words, stylishly set"
+# and starts reading as an edit: a word hit, a statement built in stages, a
+# contrast, a question put to the viewer, a definition, a number landing, a run
+# of parallel fragments, a margin annotation, a lifted quote, a chapter break,
+# or a graphic interruption cut in against the footage.
+EDITORIAL_INTENTS = (
+    "impact_word",
+    "statement_build",
+    "contrast",
+    "question",
+    "definition",
+    "number_hit",
+    "sequence",
+    "annotation",
+    "quote_fragment",
+    "chapter_transition",
+    "visual_interruption",
+)
+
+# How the type meets the picture underneath it. ``bare`` is the default and the
+# point of the whole layer — words living on the moving asset, held legible by
+# their own halo. ``scrim`` adds a soft local gradient just behind the block for
+# a busy plate; ``card`` is the rare full title-card dim, kept for a definition
+# or a chapter break.
+SURFACES = ("bare", "scrim", "card")
 
 # Reusable compositions. Each one is a different answer to "where does the eye
 # land first", and each is defined once in the adapter as real pixel geometry.
@@ -112,11 +157,18 @@ _LAYOUT_WEIGHTS: Mapping[str, Mapping[int, tuple[str, ...]]] = MappingProxyType(
 # event used, so a role that fires twice in a row still changes shape.
 _ROLE_LAYOUTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
-        "hook": ("small_plus_massive", "stacked_hierarchy", "dominant_word"),
+        "hook": ("small_plus_massive", "stacked_hierarchy", "dominant_word", "edge_aligned"),
         "keyword": ("dominant_word", "edge_aligned"),
         "contrast": ("contrast_pair", "split_statement"),
         "statement": ("stacked_hierarchy", "edge_aligned", "small_plus_massive"),
         "question": ("centered_poster", "split_statement"),
+        "definition": ("centered_poster", "stacked_hierarchy"),
+        "number": ("dominant_word", "small_plus_massive"),
+        # a margin note is quiet by construction: one line, flush to an edge
+        "annotation": ("edge_aligned", "dominant_word"),
+        # a built run alternates a display line with a stepped stack
+        "sequence": ("dominant_word", "stacked_hierarchy", "small_plus_massive", "edge_aligned"),
+        "transition": ("centered_poster", "small_plus_massive"),
     }
 )
 
@@ -496,6 +548,12 @@ class MotionTextEvent:
     beat_id: str | None = None
     importance: float = 0.0
     rationale: str | None = None
+    intensity: str = "medium"
+    intent: str = "impact_word"
+    surface: str = "bare"
+    chain_id: str | None = None
+    chain_position: int = 0
+    chain_length: int = 1
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -542,6 +600,28 @@ class MotionTextEvent:
         object.__setattr__(self, "importance", float(importance))
         if self.rationale is not None and not isinstance(self.rationale, str):
             raise TypographyError("rationale must be a string")
+        if self.intensity not in EDITORIAL_INTENSITIES:
+            raise TypographyError(
+                f"intensity must be one of {', '.join(EDITORIAL_INTENSITIES)}"
+            )
+        if self.intent not in EDITORIAL_INTENTS:
+            raise TypographyError(
+                f"intent must be one of {', '.join(EDITORIAL_INTENTS)}"
+            )
+        if self.surface not in SURFACES:
+            raise TypographyError(f"surface must be one of {', '.join(SURFACES)}")
+        if self.chain_id is not None and (
+            not isinstance(self.chain_id, str) or not self.chain_id.strip()
+        ):
+            raise TypographyError("chain_id must be a non-empty string")
+        for name in ("chain_position", "chain_length"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise TypographyError(f"{name} must be a non-negative integer")
+        if self.chain_length < 1:
+            raise TypographyError("chain_length must be at least 1")
+        if self.chain_position >= self.chain_length:
+            raise TypographyError("chain_position must be inside the chain")
 
     @property
     def duration_seconds(self) -> float:
@@ -566,6 +646,12 @@ class MotionTextEvent:
             "beat_id": self.beat_id,
             "importance": self.importance,
             "rationale": self.rationale,
+            "intensity": self.intensity,
+            "intent": self.intent,
+            "surface": self.surface,
+            "chain_id": self.chain_id,
+            "chain_position": self.chain_position,
+            "chain_length": self.chain_length,
         }
 
     @classmethod
@@ -574,7 +660,11 @@ class MotionTextEvent:
             "event_id", "blocks", "role", "layout", "motion",
             "start_seconds", "end_seconds",
         }
-        optional = {"beat_id", "importance", "rationale", "schema_version"}
+        optional = {
+            "beat_id", "importance", "rationale", "schema_version",
+            "intensity", "intent", "surface",
+            "chain_id", "chain_position", "chain_length",
+        }
         missing = required - set(data)
         if missing:
             raise TypographyError(f"event requires {', '.join(sorted(missing))}")
@@ -595,43 +685,71 @@ class MotionTextEvent:
             beat_id=data.get("beat_id"),
             importance=data.get("importance", 0.0),
             rationale=data.get("rationale"),
+            intensity=data.get("intensity", "medium"),
+            intent=data.get("intent", "impact_word"),
+            surface=data.get("surface", "bare"),
+            chain_id=data.get("chain_id"),
+            chain_position=data.get("chain_position", 0),
+            chain_length=data.get("chain_length", 1),
             schema_version=data.get("schema_version", SCHEMA_VERSION),
         )
 
 
 @dataclass(frozen=True, slots=True)
 class MotionTypographyPolicy:
-    """How often type may interrupt, and how long it stays.
+    """How densely type edits the piece, and how long each note stays.
 
-    ``min_events`` exists because the failure this layer is most likely to have
-    is silence: a strict gap plus a strict importance floor can easily produce
-    four interventions in three and a half minutes. When the first pass falls
-    short the gap is relaxed in steps rather than the quality bar, so the
-    events that get added are the next-best ones rather than the next-loudest.
+    The layer this policy drives is meant to read as a *cut*, not a caption and
+    not an occasional card: a modern video-essay carries some graphic element
+    most of the time, packed hard through the hook and around every turn in the
+    argument, thinning to a margin note through a quiet paragraph. So the
+    defaults are dense — a dozen-plus interventions a minute in the body, nearly
+    double that in the hook — and the guards that keep it honest are *hierarchy*
+    (every multi-block event sets two weights), *derivation* (a standalone event
+    never just crops the sentence) and *variety* (no layout three times running).
+
+    ``min_events`` still matters because the failure mode is silence; when the
+    first pass falls short the gap relaxes in steps rather than the quality bar.
+    ``max_dark_seconds`` is the opposite guard: no stretch longer than this may
+    pass with nothing on screen, and a coverage pass fills the gaps with quiet
+    annotations rather than louder emphasis.
     """
 
-    min_events: int = 18
-    max_events: int = 24
-    min_gap_seconds: float = 6.5
-    min_importance: float = 0.38
+    min_events: int = 42
+    max_events: int = 90
+    min_gap_seconds: float = 1.9
+    min_importance: float = 0.30
     hook_seconds: float = 30.0
-    hook_min_gap_seconds: float = 5.0
-    hook_min_importance: float = 0.3
-    hold_seconds: float = 3.0
-    min_hold_seconds: float = 1.4
+    hook_min_gap_seconds: float = 1.5
+    hook_min_importance: float = 0.18
+    hold_seconds: float = 2.6
+    min_hold_seconds: float = 0.85
     lead_in_seconds: float = 0.12
-    accent_importance: float = 0.72
+    accent_importance: float = 0.66
+    # coverage: the longest run the frame may hold no graphic element at all
+    max_dark_seconds: float = 5.0
+    # the hook is held to a tighter ceiling — it has to read as busier
+    hook_max_dark_seconds: float = 2.2
+    # a built statement / parallel run may span at most this many fragments
+    chain_max_fragments: int = 4
+    # and only a unit this important is allowed to become a chain
+    chain_min_importance: float = 0.52
+    # how many separate notes one shot window may carry when it peaks
+    peak_stack: int = 3
 
     def __post_init__(self) -> None:
-        for name in ("min_events", "max_events"):
+        for name in ("min_events", "max_events", "chain_max_fragments", "peak_stack"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise TypographyError(f"{name} must be a positive integer")
         if self.min_events > self.max_events:
             raise TypographyError("min_events must not exceed max_events")
+        if self.chain_max_fragments > 4:
+            raise TypographyError("chain_max_fragments must not exceed 4")
         for name in (
             "min_gap_seconds", "hook_seconds", "hook_min_gap_seconds",
-            "hold_seconds", "min_hold_seconds",
+            "hold_seconds", "min_hold_seconds", "max_dark_seconds",
+            "hook_max_dark_seconds",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -641,7 +759,7 @@ class MotionTypographyPolicy:
             object.__setattr__(self, name, float(value))
         for name in (
             "min_importance", "hook_min_importance", "accent_importance",
-            "lead_in_seconds",
+            "lead_in_seconds", "chain_min_importance",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -665,6 +783,11 @@ class MotionTypographyPolicy:
             "min_hold_seconds": self.min_hold_seconds,
             "lead_in_seconds": self.lead_in_seconds,
             "accent_importance": self.accent_importance,
+            "max_dark_seconds": self.max_dark_seconds,
+            "hook_max_dark_seconds": self.hook_max_dark_seconds,
+            "chain_max_fragments": self.chain_max_fragments,
+            "chain_min_importance": self.chain_min_importance,
+            "peak_stack": self.peak_stack,
         }
 
     @classmethod
@@ -791,9 +914,93 @@ class _Candidate:
     role: str
     anchor: str
     score: float
+    intent: str = "impact_word"
+    intensity: str = "medium"
+    surface: str = "bare"
+    # set only for fragments of a built statement / parallel run
+    chain_id: str | None = None
+    chain_position: int = 0
+    chain_length: int = 1
+    # a fragment carries its own sub-window so the chain reads across the shot
+    window_override: "tuple[float, float] | None" = None
+    weights_override: "tuple[str, ...] | None" = None
 
 
 _SENTENCE_END = ".!?;"
+
+# Where a sentence stops naming things and starts concluding. A unit that turns
+# here is the payoff of its paragraph, so it is set at ``peak`` and read as a
+# definition rather than another keyword.
+_CONCLUSION_CUES = (
+    "ou seja", "isso significa", "no fundo", "no fim", "no fim das contas",
+    "a verdade e", "a questao e", "e por isso", "portanto", "resultado",
+    "conclusao", "significa que", "no final",
+)
+# A number that lands — a count, a percentage, a year — is one of the few
+# things type does better than the voice, so it always earns a hit.
+_NUMBER_WORDS = frozenset(
+    """
+    zero um dois duas tres quatro cinco seis sete oito nove dez onze doze treze
+    quatorze catorze quinze dezesseis dezessete dezoito dezenove vinte trinta
+    quarenta cinquenta sessenta setenta oitenta noventa cem cento mil milhao
+    milhoes bilhao bilhoes metade dobro triplo dezenas centenas milhares
+    """.split()
+)
+_DIGIT = re.compile(r"\d")
+
+
+def _has_number(text: str) -> "str | None":
+    """The first token of ``text`` that reads as a quantity, folded, or ``None``."""
+
+    for word in _words(text):
+        folded = _bare(word)
+        if _DIGIT.search(word) or folded in _NUMBER_WORDS or folded.endswith("%"):
+            return folded or word
+    return None
+
+
+def _has_conclusion(text: str) -> bool:
+    folded = " ".join(_bare(w) for w in _words(text))
+    return any(f" {cue} " in f" {folded} " for cue in _CONCLUSION_CUES)
+
+
+_INTENSITY_ORDER = {name: index for index, name in enumerate(EDITORIAL_INTENSITIES)}
+
+
+def _raise_to(current: str, floor: str) -> str:
+    return current if _INTENSITY_ORDER[current] >= _INTENSITY_ORDER[floor] else floor
+
+
+def _classify_intensity(unit: _Unit, in_hook: bool) -> str:
+    """How hard the edit should lean on this sentence.
+
+    A band off importance, then floors raised by structure: the hook is never
+    below ``high``, and a question, a turn against the argument, a number or a
+    stated conclusion each pull a mid sentence up a step. The result is an
+    uneven spend — the opening and every hinge of the argument run loud, a
+    mid-paragraph aside stays a margin note.
+    """
+
+    importance = unit.importance
+    if importance >= 0.66:
+        level = "peak"
+    elif importance >= 0.48:
+        level = "high"
+    elif importance >= 0.34:
+        level = "medium"
+    else:
+        level = "low"
+    if in_hook:
+        level = _raise_to(level, "high")
+    if "?" in unit.text:
+        level = _raise_to(level, "high")
+    if _split_on_contrast(unit.text) is not None:
+        level = _raise_to(level, "high")
+    if _has_number(unit.text):
+        level = _raise_to(level, "high")
+    if _has_conclusion(unit.text):
+        level = _raise_to(level, "peak")
+    return level
 
 
 def _sentence_units(
@@ -882,7 +1089,12 @@ def _themes(beat: NarrationBeat) -> frozenset[str]:
 
 
 def _compose(
-    narration: str, themes: frozenset[str], motifs: Mapping[str, int], in_hook: bool
+    narration: str,
+    themes: frozenset[str],
+    motifs: Mapping[str, int],
+    in_hook: bool,
+    *,
+    min_score: float = _MIN_DOMINANT_SCORE,
 ) -> "tuple[tuple[str, ...], str, str] | None":
     """The text concept: which words go on screen, why, and which one anchors.
 
@@ -891,6 +1103,10 @@ def _compose(
     transcription: a contrast becomes its two poles, a question becomes its
     subject, and anything else becomes a dominant word plus either a licensed
     connector or the sentence's second-strongest word.
+
+    ``min_score`` is the bar a word must clear to hold the frame. The hook and
+    the loudest beats pass a lower bar — a viewer who has not committed is worth
+    a word on screen that a mid-paragraph aside would not be.
     """
 
     narration = narration.strip()
@@ -905,8 +1121,8 @@ def _compose(
         if (
             left
             and right
-            and right[1] >= _MIN_DOMINANT_SCORE
-            and left[1] >= _MIN_DOMINANT_SCORE
+            and right[1] >= min_score
+            and left[1] >= min_score
             and _distinct(left[0], right[0])
         ):
             texts = (left[0].upper(), right[0].upper())
@@ -916,7 +1132,7 @@ def _compose(
     # 2. a question is asked of the viewer, so it is set as one
     if "?" in narration:
         best = _best_word(narration, themes, motifs)
-        if best is not None and best[1] >= _MIN_DOMINANT_SCORE:
+        if best is not None and best[1] >= min_score:
             connector = _connector(narration) or "A PERGUNTA"
             texts = (connector, best[0].upper())
             if _distinct(connector, best[0]) and _is_derived(texts, narration):
@@ -924,7 +1140,7 @@ def _compose(
 
     # 3. everything else: a dominant word, plus support if the sentence offers it
     ranked = _ranked_words(narration, themes, motifs)
-    if not ranked or ranked[0][1] < _MIN_DOMINANT_SCORE:
+    if not ranked or ranked[0][1] < min_score:
         return None
     best = ranked[0]
     role = "hook" if in_hook else "statement"
@@ -968,7 +1184,141 @@ def _compose(
     return None
 
 
-def _choose_layout(role: str, block_count: int, used: Mapping[str, int], previous: str | None) -> str:
+# Little words a built fragment may open with but never end on, and never set
+# on their own: the fragment "ELE" is a pronoun the writer leaned on, "uma
+# versão dela" is a tail. They are kept only as the quiet last fragment.
+_CHAIN_GLUE = frozenset(
+    "e mas ou que se de do da dos das no na nos nas em um uma o a os as ao aos"
+    " por para com sua seu isso ele ela nao ja entao assim".split()
+)
+
+
+def _fragment_blocks(fragment: list[str]) -> "tuple[str, ...] | None":
+    """A chain fragment as one or two blocks, in reading order.
+
+    Reduced to what carries meaning: at most one leading connector kept as the
+    quiet head, then one or two content words, the last of which is the payoff.
+    A fragment that will not reduce this far is not a fragment.
+    """
+
+    tokens = [w.strip(_STRIP) for w in fragment if w.strip(_STRIP)]
+    if not tokens:
+        return None
+    content = [w for w in tokens if _bare(w) not in _STOPWORDS]
+    if not content:
+        # a pure-glue fragment ("ele", "e por isso") — keep it small and whole
+        text = " ".join(tokens[:3])
+        return (text.upper(),) if len(text) <= _BLOCK_CHARS else None
+    content = content[:2]
+    lead = ""
+    first_content = tokens.index(content[0])
+    if first_content == 1 and _bare(tokens[0]) in _CHAIN_GLUE:
+        lead = tokens[0]
+    if len(content) == 1:
+        head = f"{lead} {content[0]}".strip().upper()
+        return (head,) if len(head) <= _BLOCK_CHARS else (content[0].upper(),)
+    head = f"{lead} {content[0]}".strip().upper()
+    tail = content[1].upper()
+    if len(head) > _BLOCK_CHARS or not head.strip():
+        return (tail,)
+    return (head, tail)
+
+
+def _compose_chain(
+    narration: str,
+    themes: frozenset[str],
+    motifs: Mapping[str, int],
+    *,
+    max_fragments: int,
+) -> "list[tuple[tuple[str, ...], str]] | None":
+    """Break one strong sentence into a built run of 2..N fragments.
+
+    This is the one place the layer is *allowed* to reproduce a contiguous run
+    of the narration, because that is the whole effect: "SEU CÉREBRO -> NÃO
+    GUARDA / A REALIDADE -> ELE / RECONSTRÓI -> uma versão dela." A fragment is
+    one or two content words (plus at most a leading connector), consecutive
+    fragments must differ, and the run needs at least two of them.
+
+    Returns a list of ``(blocks, anchor)`` in reading order; ``None`` when the
+    sentence does not break into a run.
+    """
+
+    words = _words(narration)
+    content_total = sum(1 for w in words if _bare(w) and _bare(w) not in _STOPWORDS)
+    if len(words) < 4 or len(words) > 26 or content_total < 3:
+        return None
+
+    # cut after a clause mark, or every two content words so a long clause steps
+    fragments: list[list[str]] = []
+    current: list[str] = []
+    content_in_current = 0
+    for index, surface in enumerate(words):
+        current.append(surface)
+        folded = _bare(surface)
+        if folded and folded not in _STOPWORDS:
+            content_in_current += 1
+        ends_clause = surface.rstrip("\"')]").endswith((",", ";", ":", "—", "–"))
+        if (
+            (ends_clause or content_in_current >= 2)
+            and content_in_current >= 1
+            and index < len(words) - 1
+        ):
+            fragments.append(current)
+            current = []
+            content_in_current = 0
+    if current:
+        fragments.append(current)
+
+    # fold a trailing pure-glue fragment into its neighbour
+    while len(fragments) >= 2 and all(
+        _bare(w) in _STOPWORDS or not _bare(w) for w in fragments[-1]
+    ):
+        fragments[-2].extend(fragments.pop())
+
+    if len(fragments) < 2:
+        return None
+    if len(fragments) > max_fragments:
+        head = fragments[: max_fragments - 1]
+        tail = [w for frag in fragments[max_fragments - 1 :] for w in frag]
+        fragments = head + [tail]
+
+    out: list[tuple[tuple[str, ...], str]] = []
+    previous_stem = ""
+    for frag in fragments:
+        blocks = _fragment_blocks(frag)
+        if blocks is None:
+            return None
+        anchor_word = next(
+            (
+                _bare(w)
+                for w in reversed(frag)
+                if _bare(w) and _bare(w) not in _STOPWORDS
+            ),
+            _bare(frag[-1]) if frag else "",
+        )
+        stem = _stem(blocks[-1])
+        if stem and stem == previous_stem and out:
+            return None
+        previous_stem = stem
+        out.append((blocks, anchor_word or blocks[-1].lower()))
+    if len(out) < 2:
+        return None
+    return out
+
+
+def _choose_layout(
+    role: str,
+    block_count: int,
+    used: Mapping[str, int],
+    recent: "Sequence[str]",
+) -> str:
+    """Pick a composition for this role that the last few events did not use.
+
+    ``recent`` is the tail of the layout history (most-recent last). A layout is
+    only reused once it has been out of sight for three events, so the cut never
+    settles into an A-B-C-A-B-C rhythm even when the same role fires repeatedly.
+    """
+
     pool = [
         layout
         for layout in _ROLE_LAYOUTS[role]
@@ -976,15 +1326,54 @@ def _choose_layout(role: str, block_count: int, used: Mapping[str, int], previou
     ]
     if not pool:
         pool = [
-            layout
-            for layout in TEXT_LAYOUTS
-            if block_count in _LAYOUT_BLOCKS[layout]
+            layout for layout in TEXT_LAYOUTS if block_count in _LAYOUT_BLOCKS[layout]
         ]
-    rotated = pool[used.get(role, 0) % len(pool):] + pool[: used.get(role, 0) % len(pool)]
+    offset = used.get(role, 0) % len(pool)
+    rotated = pool[offset:] + pool[:offset]
+    blocked = set(recent[-3:])
     for layout in rotated:
-        if layout != previous:
+        if layout not in blocked:
+            return layout
+    # everything in the pool was used recently — take the oldest of them
+    for layout in rotated:
+        if layout != (recent[-1] if recent else None):
             return layout
     return rotated[0]
+
+
+_MOTION_POOL = TEXT_MOTIONS  # rotate through all four for variety
+
+
+def _choose_motion(layout: str, recent: "Sequence[str]") -> str:
+    """The canonical motion for a layout, unless the last two events used it.
+
+    Keeps the four-motion vocabulary but stops a repeated layout family from
+    also repeating its move.
+    """
+
+    canonical = _LAYOUT_MOTION[layout]
+    if canonical not in recent[-2:]:
+        return canonical
+    for motion in _MOTION_POOL:
+        if motion not in recent[-2:]:
+            return motion
+    return canonical
+
+
+def _intent_for(role: str, unit: _Unit) -> str:
+    if role == "contrast":
+        return "contrast"
+    if role == "question":
+        return "question"
+    if _has_number(unit.text):
+        return "number_hit"
+    if _has_conclusion(unit.text):
+        return "definition"
+    return "impact_word"
+
+
+def _scene_of(beat_id: str) -> str:
+    return beat_id.rsplit("_shot", 1)[0] if "_shot" in beat_id else beat_id
 
 
 def plan_motion_typography(
@@ -994,13 +1383,19 @@ def plan_motion_typography(
     policy: MotionTypographyPolicy = DEFAULT_TYPOGRAPHY_POLICY,
     words: Sequence[SpokenWord] = (),
 ) -> tuple[MotionTextEvent, ...]:
-    """Compose the typographic layer for a narrated piece.
+    """Compose the editorial motion-typography layer for a narrated piece.
+
+    The layer reads as a *cut*: dense through the hook, packed around every
+    turn in the argument, and never fully dark for more than a few seconds. It
+    gets there four ways — a built ``statement_build`` chain breaks a strong
+    sentence into stages; ``_classify_intensity`` spends the event budget
+    unevenly; a ``peak`` sentence may carry a second hit; and a coverage pass
+    fills any remaining silence with quiet margin annotations.
 
     ``timings`` maps a ``beat_id`` to the ``(start, end)`` its shot occupies, so
     this function still computes no timing of its own. When ``words`` carries a
-    force-aligned word timeline the events are additionally snapped onto the
-    moment their anchor word is actually spoken, which is the difference
-    between type that lands on a word and type that lands near it.
+    force-aligned timeline the events are snapped onto the moment their anchor
+    word is actually spoken.
     """
 
     if not isinstance(policy, MotionTypographyPolicy):
@@ -1013,34 +1408,200 @@ def plan_motion_typography(
     measured = tuple(words) if stream_alignment(stream, words) >= 0.75 else ()
     timeline_end = max((float(v[1]) for v in timings.values()), default=0.0)
 
-    def _consider(unit: _Unit) -> "_Candidate | None":
-        in_hook = unit.window[0] < policy.hook_seconds
+    def _anchor_start(unit: _Unit, anchor: str, fallback: float) -> float:
+        if not measured:
+            return fallback
+        first = min(unit.first, len(measured) - 1)
+        stop = min(unit.stop, len(measured))
+        folded = _bare(anchor)
+        spoken = next((w for w in measured[first:stop] if w.folded == folded), None)
+        base = spoken.start_seconds if spoken else measured[first].start_seconds
+        return max(0.0, base - policy.lead_in_seconds)
+
+    def _unit_end(unit: _Unit, fallback: float) -> float:
+        if not measured:
+            return fallback
+        stop = min(unit.stop, len(measured))
+        first = min(unit.first, len(measured) - 1)
+        return measured[max(first, stop - 1)].end_seconds
+
+    def _timed(candidate: _Candidate) -> tuple[float, float]:
+        w0, w1 = candidate.unit.window
+        if candidate.chain_id is not None and candidate.chain_length > 1:
+            # a fragment owns a slice of the sentence, in order
+            span = max(0.6, w1 - w0)
+            n = candidate.chain_length
+            pos = candidate.chain_position
+            slot0 = w0 + span * pos / n
+            slot1 = w0 + span * (pos + 1) / n
+            start = _anchor_start(candidate.unit, candidate.anchor, slot0)
+            # keep every fragment inside its own slot so the run stays ordered
+            start = min(max(start, slot0), max(slot0, slot1 - 0.25))
+            hold = min(
+                policy.hold_seconds,
+                max(policy.min_hold_seconds, (slot1 - slot0) + 0.5),
+            )
+            finish = start + hold
+        else:
+            start = _anchor_start(candidate.unit, candidate.anchor, w0)
+            end = _unit_end(candidate.unit, w1)
+            hold = min(
+                policy.hold_seconds,
+                max(policy.min_hold_seconds, end - start + 0.8),
+            )
+            finish = start + hold
+        if timeline_end:
+            finish = min(finish, timeline_end)
+        return start, finish
+
+    def _consider(unit: _Unit, *, in_hook: bool) -> list[_Candidate]:
         floor = policy.hook_min_importance if in_hook else policy.min_importance
         if unit.importance < floor:
-            return None
-        composed = _compose(unit.text, _themes(unit.beat), motifs, in_hook)
-        if composed is None:
-            return None
-        texts, role, anchor = composed
-        score = unit.importance
-        # the two shapes that earn the frame most: a turn in the argument, and
-        # a question aimed at the viewer
-        if role == "contrast":
-            score += 0.10
-        elif role == "question":
-            score += 0.22
-        if in_hook:
-            score += 0.10
-        return _Candidate(unit, texts, role, anchor, score)
+            return []
+        themes = _themes(unit.beat)
+        intensity = _classify_intensity(unit, in_hook)
+        # the hook and the loudest beats read a word onto the frame at a lower
+        # bar than a mid-paragraph aside would
+        soft = _INTENSITY_ORDER[intensity] >= _INTENSITY_ORDER["high"] or in_hook
+        min_score = _MIN_DOMINANT_SCORE * (0.78 if soft else 1.0)
+        out: list[_Candidate] = []
+
+        # 1. a strong sentence, built in stages — but a clean two-pole contrast
+        # stays a contrast (that composition is scarcer and says more), unless
+        # the sentence is long enough to both turn *and* build
+        poles = _split_on_contrast(unit.text)
+        clean_contrast = poles is not None and len(_words(unit.text)) <= 13
+        if (
+            not clean_contrast
+            and _INTENSITY_ORDER[intensity] >= _INTENSITY_ORDER["high"]
+            and (unit.importance >= policy.chain_min_importance or in_hook)
+        ):
+            chain = _compose_chain(
+                unit.text, themes, motifs, max_fragments=policy.chain_max_fragments
+            )
+            if chain is not None:
+                cid = f"chain_{unit.first:04d}"
+                length = len(chain)
+                for pos, (blocks, anchor) in enumerate(chain):
+                    last = pos == length - 1
+                    out.append(
+                        _Candidate(
+                            unit=unit,
+                            texts=blocks,
+                            role="sequence",
+                            anchor=anchor,
+                            score=unit.importance + 0.16 + (0.05 if in_hook else 0.0),
+                            intent="statement_build",
+                            intensity=intensity,
+                            surface="bare",
+                            chain_id=cid,
+                            chain_position=pos,
+                            chain_length=length,
+                            weights_override=(
+                                ("micro", "small") if (last and len(blocks) == 2)
+                                else ("small",) if last
+                                else None
+                            ),
+                        )
+                    )
+                return out
+
+        # 2. the ordinary single intervention
+        composed = _compose(unit.text, themes, motifs, in_hook, min_score=min_score)
+        if composed is not None:
+            texts, role, anchor = composed
+            intent = _intent_for(role, unit)
+            if intent == "number_hit":
+                role = "number"
+            elif intent == "definition":
+                role = "definition"
+            surface = (
+                "card" if intent in ("definition",)
+                else "scrim" if intensity == "low"
+                else "bare"
+            )
+            score = unit.importance
+            if role == "contrast":
+                score += 0.10
+            elif role == "question":
+                score += 0.22
+            elif role in ("number", "definition"):
+                score += 0.14
+            if in_hook:
+                score += 0.12
+            score += 0.05 * _INTENSITY_ORDER[intensity]
+            out.append(
+                _Candidate(
+                    unit=unit,
+                    texts=texts,
+                    role=role,
+                    anchor=anchor,
+                    score=score,
+                    intent=intent,
+                    intensity=intensity,
+                    surface=surface,
+                )
+            )
+            # 3. a loud sentence may land a second, quieter hit on its runner-up
+            if _INTENSITY_ORDER[intensity] >= _INTENSITY_ORDER["high"] and len(texts) == 1:
+                extra = _ranked_words(
+                    unit.text, themes, motifs, exclude=frozenset({_bare(anchor)})
+                )
+                if (
+                    extra
+                    and extra[0][1] >= _MIN_DOMINANT_SCORE * 0.9
+                    and _distinct(extra[0][0], anchor)
+                ):
+                    out.append(
+                        _Candidate(
+                            unit=unit,
+                            texts=(extra[0][0].upper(),),
+                            role="keyword",
+                            anchor=extra[0][0],
+                            score=unit.importance - 0.08,
+                            intent="impact_word",
+                            intensity="medium" if intensity == "high" else "high",
+                            surface="bare",
+                        )
+                    )
+        return out
 
     candidates: list[_Candidate] = []
+    seen_scenes: set[str] = set()
     for index, unit in enumerate(units):
-        candidate = _consider(unit)
-        if candidate is not None:
-            candidates.append(candidate)
-        # Two short sentences side by side are how this script states most of
-        # its oppositions ("Para uma, é confirmação. Para a outra, é
-        # propaganda."), and neither half carries the contrast alone.
+        in_hook = unit.window[0] < policy.hook_seconds
+        scene = _scene_of(unit.beat.beat_id)
+        first_of_scene = scene not in seen_scenes
+        seen_scenes.add(scene)
+
+        # a chapter turn: the opening sentence of a new scene that is important
+        # enough to announce, set as a quiet centred card
+        if (
+            first_of_scene
+            and index > 0
+            and unit.importance >= policy.min_importance + 0.06
+        ):
+            concept = _best_word(unit.beat.concept, _themes(unit.beat), motifs) or _best_word(
+                unit.text, _themes(unit.beat), motifs
+            )
+            if concept is not None and concept[1] >= _MIN_DOMINANT_SCORE:
+                candidates.append(
+                    _Candidate(
+                        unit=unit,
+                        texts=(concept[0].upper(),),
+                        role="transition",
+                        anchor=concept[0],
+                        score=unit.importance + 0.04,
+                        intent="chapter_transition",
+                        intensity=_raise_to(_classify_intensity(unit, in_hook), "high"),
+                        surface="card",
+                    )
+                )
+
+        candidates.extend(_consider(unit, in_hook=in_hook))
+
+        # two short sentences side by side are how the script states most of its
+        # oppositions; neither half carries the contrast alone
         if index + 1 < len(units):
             nxt = units[index + 1]
             joined = f"{unit.text} {nxt.text}"
@@ -1057,109 +1618,273 @@ def plan_motion_typography(
                     importance=max(unit.importance, nxt.importance),
                     window=(unit.window[0], nxt.window[1]),
                 )
-                paired = _consider(pair)
-                if paired is not None and paired.role == "contrast":
-                    candidates.append(paired)
-
-    def _timed(candidate: _Candidate) -> tuple[float, float]:
-        start, end = candidate.unit.window
-        if measured:
-            first = min(candidate.unit.first, len(measured) - 1)
-            stop = min(candidate.unit.stop, len(measured))
-            anchor = _bare(candidate.anchor)
-            spoken = next(
-                (w for w in measured[first:stop] if w.folded == anchor), None
-            )
-            start = spoken.start_seconds if spoken else measured[first].start_seconds
-            start = max(0.0, start - policy.lead_in_seconds)
-            end = measured[max(first, stop - 1)].end_seconds
-        hold = min(policy.hold_seconds, max(policy.min_hold_seconds, end - start + 0.8))
-        finish = start + hold
-        if timeline_end:
-            finish = min(finish, timeline_end)
-        return start, finish
+                for paired in _consider(pair, in_hook=in_hook):
+                    if paired.role == "contrast":
+                        candidates.append(paired)
 
     placed = [(candidate, *_timed(candidate)) for candidate in candidates]
 
     accepted: list[tuple[_Candidate, float, float]] = []
     claimed: set[str] = set()
 
-    def _fits(start: float, end: float, gap: float) -> bool:
-        for _c, other_start, other_end in accepted:
-            if start < other_end + gap and other_start < end + gap:
+    def _fits(candidate: _Candidate, start: float, end: float, gap: float) -> bool:
+        for other, other_start, other_end in accepted:
+            if other.chain_id is not None and other.chain_id == candidate.chain_id:
+                # siblings of a built run are allowed to sit shoulder to shoulder
+                continue
+            same_shot_peak = (
+                other.unit.beat.beat_id == candidate.unit.beat.beat_id
+                and _INTENSITY_ORDER[other.intensity] >= _INTENSITY_ORDER["high"]
+                and _INTENSITY_ORDER[candidate.intensity] >= _INTENSITY_ORDER["high"]
+            )
+            effective = min(gap, 0.4) if same_shot_peak else gap
+            if start < other_end + effective and other_start < end + effective:
                 return False
         return True
 
     def _fresh(candidate: _Candidate) -> bool:
-        """Whether this event says something the layer has not said already.
-
-        The same dominant word twice is the failure mode of any keyword-driven
-        emphasis layer: a script about intelligence will happily put
-        INTELIGÊNCIA on screen six times and call it a motif.
-        """
-
+        if candidate.chain_id is not None or candidate.intent in (
+            "annotation", "statement_build", "sequence", "quote_fragment"
+        ):
+            return True
         return _stem(candidate.texts[-1]) not in claimed
 
     def _accept(row: tuple[_Candidate, float, float]) -> None:
         accepted.append(row)
-        claimed.add(_stem(row[0].texts[-1]))
+        if row[0].chain_id is None:
+            claimed.add(_stem(row[0].texts[-1]))
 
-    # The opening is taken in time order: a viewer who has not decided to stay
-    # is the one case where the earlier word is worth more than the better one.
+    # index the placed rows by chain so a built run is accepted whole or not at all
+    by_chain: dict[str, list[tuple[_Candidate, float, float]]] = {}
+    for row in placed:
+        if row[0].chain_id is not None:
+            by_chain.setdefault(row[0].chain_id, []).append(row)
+
+    def _group_of(row: tuple[_Candidate, float, float]) -> list[tuple[_Candidate, float, float]]:
+        if row[0].chain_id is not None:
+            return sorted(by_chain[row[0].chain_id], key=lambda r: r[0].chain_position)
+        return [row]
+
+    def _try_group(
+        group: list[tuple[_Candidate, float, float]], gap: float
+    ) -> bool:
+        if any(any(g[0] is a[0] for a in accepted) for g in group):
+            return False
+        if len(accepted) + len(group) > policy.max_events:
+            return False
+        if not all(_fresh(g[0]) for g in group):
+            return False
+        if not all(_fits(g[0], g[1], g[2], gap) for g in group):
+            return False
+        for g in group:
+            _accept(g)
+        return True
+
+    # the opening, in time order: a viewer who has not committed is the one case
+    # where the earlier word beats the better one
+    done_chains: set[str] = set()
     for row in placed:
         if row[1] >= policy.hook_seconds:
             continue
         if len(accepted) >= policy.max_events:
             break
-        if _fresh(row[0]) and _fits(row[1], row[2], policy.hook_min_gap_seconds):
-            _accept(row)
+        cid = row[0].chain_id
+        if cid is not None and cid in done_chains:
+            continue
+        if _try_group(_group_of(row), policy.hook_min_gap_seconds) and cid is not None:
+            done_chains.add(cid)
 
     body = [row for row in placed if row[1] >= policy.hook_seconds]
-    ranked = sorted(body, key=lambda r: (-r[0].score, r[1]))
-    for relaxation in (1.0, 0.7, 0.5):
+    # keep whole chains together: rank by the chain's best score, then by time
+    chain_score: dict[str, float] = {}
+    for cand, *_rest in body:
+        if cand.chain_id is not None:
+            chain_score[cand.chain_id] = max(
+                chain_score.get(cand.chain_id, 0.0), cand.score
+            )
+
+    def _rank_key(row: tuple[_Candidate, float, float]) -> tuple[float, float]:
+        cand = row[0]
+        base = chain_score.get(cand.chain_id, cand.score) if cand.chain_id else cand.score
+        return (-base, row[1])
+
+    ranked = sorted(body, key=_rank_key)
+    for relaxation in (1.0, 0.75, 0.55, 0.4):
         gap = policy.min_gap_seconds * relaxation
         for row in ranked:
             if len(accepted) >= policy.max_events:
                 break
+            cid = row[0].chain_id
+            if cid is not None and cid in done_chains:
+                continue
             if any(row[0] is other[0] for other in accepted):
                 continue
-            if _fresh(row[0]) and _fits(row[1], row[2], gap):
-                _accept(row)
+            if _try_group(_group_of(row), gap) and cid is not None:
+                done_chains.add(cid)
         if len(accepted) >= policy.min_events:
             break
 
+    # coverage: no stretch of frame stays fully dark for long. Fill the gaps
+    # with quiet margin notes drawn from whatever unit covers that moment.
+    def _unit_at(t: float) -> "_Unit | None":
+        best: _Unit | None = None
+        for unit in units:
+            if unit.window[0] <= t < unit.window[1]:
+                return unit
+            if unit.window[0] <= t:
+                best = unit
+        return best
+
+    def _ceiling_at(t: float) -> float:
+        return policy.hook_max_dark_seconds if t < policy.hook_seconds else policy.max_dark_seconds
+
+    def _dark_gaps() -> list[tuple[float, float]]:
+        spans = sorted((s, e) for _c, s, e in accepted)
+        gaps: list[tuple[float, float]] = []
+        cursor = 0.0
+        for s, e in spans:
+            if s - cursor > _ceiling_at((cursor + s) / 2):
+                gaps.append((cursor, s))
+            cursor = max(cursor, e)
+        if timeline_end - cursor > _ceiling_at((cursor + timeline_end) / 2):
+            gaps.append((cursor, timeline_end))
+        return gaps
+
+    if timeline_end:
+        # quiet margin notes, one per ceiling-worth of silence, drawn from the
+        # unit that covers that moment. It skips a slot it cannot fill and keeps
+        # going — the hook is held to a tighter ceiling than the body.
+        for _pass in range(8):
+            gaps = _dark_gaps()
+            if not gaps or len(accepted) >= policy.max_events:
+                break
+            progressed = False
+            for g0, g1 in gaps:
+                ceiling = _ceiling_at((g0 + g1) / 2)
+                slots = max(1, round((g1 - g0) / ceiling) - 1) if g1 - g0 > ceiling * 1.6 else 1
+                hold = min(2.4, max(policy.min_hold_seconds, ceiling * 0.42))
+                usable0, usable1 = g0 + 0.7, g1 - hold - 0.7
+                if usable1 <= usable0:
+                    continue
+                for k in range(slots):
+                    if len(accepted) >= policy.max_events:
+                        break
+                    target = usable0 + (usable1 - usable0) * (k + 0.5) / slots
+                    unit = _unit_at(target)
+                    if unit is None:
+                        continue
+                    note = _best_word(unit.beat.concept, _themes(unit.beat), motifs)
+                    pool = ([note[0]] if note else []) + [
+                        r[0] for r in _ranked_words(unit.text, _themes(unit.beat), motifs)
+                    ]
+                    note_word = next(
+                        (w for w in pool if _stem(w.upper()) not in claimed),
+                        pool[0] if pool else "",
+                    )
+                    if not note_word:
+                        continue
+                    start = target
+                    if measured:
+                        anchored = _anchor_start(unit, note_word, target)
+                        if usable0 <= anchored <= usable1:
+                            start = anchored
+                    start = min(max(start, usable0), usable1)
+                    end = min(timeline_end, start + hold)
+                    note_candidate = _Candidate(
+                        unit=unit,
+                        texts=(note_word.upper(),),
+                        role="annotation",
+                        anchor=note_word,
+                        score=unit.importance,
+                        intent="annotation",
+                        intensity="low",
+                        surface="scrim",
+                        weights_override=("micro",),
+                    )
+                    if end - start >= policy.min_hold_seconds * 0.7 and _fits(
+                        note_candidate, start, end, 0.25
+                    ):
+                        _accept((note_candidate, start, end))
+                        progressed = True
+            if not progressed:
+                break
+
     accepted.sort(key=lambda r: r[1])
-    # A late event may still have grown into its successor once the anchors
-    # moved; the earlier one yields, because it has already been read.
+    # a late event may have grown into its successor once the anchors moved; the
+    # earlier one yields, because it has already been read — but chain siblings
+    # are meant to touch, so they are exempt
     trimmed: list[tuple[_Candidate, float, float]] = []
     for index, (candidate, start, end) in enumerate(accepted):
         if index + 1 < len(accepted):
-            end = min(end, accepted[index + 1][1] - 0.2)
+            nxt_cand, nxt_start, _nxt_end = accepted[index + 1]
+            same_chain = (
+                candidate.chain_id is not None
+                and candidate.chain_id == nxt_cand.chain_id
+            )
+            # chain siblings are meant to touch; everyone else yields a little
+            end = min(end, nxt_start if same_chain else nxt_start - 0.15)
         if end - start < policy.min_hold_seconds * 0.7:
             continue
         trimmed.append((candidate, start, end))
 
     events: list[MotionTextEvent] = []
     used: dict[str, int] = {}
-    previous_layout: str | None = None
+    recent_layouts: list[str] = []
+    recent_motions: list[str] = []
     previous_accent = False
     for index, (candidate, start, end) in enumerate(trimmed, start=1):
-        layout = _choose_layout(candidate.role, len(candidate.texts), used, previous_layout)
+        block_count = len(candidate.texts)
+        if candidate.intent == "annotation":
+            # a margin label stays recessive and consistent; alternate the two
+            # single-block compositions so it still never repeats back to back
+            layout = "edge_aligned" if (recent_layouts[-1:] != ["edge_aligned"]) else "dominant_word"
+        elif candidate.intent == "chapter_transition":
+            layout = "centered_poster" if block_count == 2 else "dominant_word"
+        else:
+            layout = _choose_layout(candidate.role, block_count, used, recent_layouts)
+        # a hard guarantee the cut never repeats a composition back to back,
+        # whichever branch chose it
+        if recent_layouts and layout == recent_layouts[-1]:
+            alt = next(
+                (
+                    other
+                    for other in TEXT_LAYOUTS
+                    if other != layout and block_count in _LAYOUT_BLOCKS[other]
+                ),
+                layout,
+            )
+            layout = alt
         used[candidate.role] = used.get(candidate.role, 0) + 1
-        previous_layout = layout
-        weights = _LAYOUT_WEIGHTS[layout][len(candidate.texts)]
-        # The accent is a colour this channel owns, so it is spent sparingly:
-        # never twice running, however many events deserve it on merit.
-        accent_last = not previous_accent and (
-            candidate.role in ("contrast", "question")
-            or candidate.unit.importance >= policy.accent_importance
+        recent_layouts.append(layout)
+
+        if candidate.intent in ("visual_interruption",):
+            motion = "scale_in"
+        elif candidate.chain_id is not None:
+            motion = "stagger_rise" if "stagger_rise" not in recent_motions[-1:] else "masked_reveal"
+        else:
+            motion = _choose_motion(layout, recent_motions)
+        recent_motions.append(motion)
+
+        weights = candidate.weights_override or _LAYOUT_WEIGHTS[layout][block_count]
+        if len(weights) != block_count:
+            weights = _LAYOUT_WEIGHTS[layout][block_count]
+
+        accent_last = (
+            not previous_accent
+            and candidate.intent not in ("annotation",)
+            and candidate.intensity != "low"
+            and (
+                candidate.role in ("contrast", "question")
+                or candidate.unit.importance >= policy.accent_importance
+                or candidate.intensity == "peak"
+            )
         )
         previous_accent = accent_last
         blocks = tuple(
             TextBlock(
                 text=text,
                 weight=weight,
-                accent=accent_last and position == len(candidate.texts) - 1,
+                accent=accent_last and position == block_count - 1,
             )
             for position, (text, weight) in enumerate(zip(candidate.texts, weights))
         )
@@ -1169,15 +1894,22 @@ def plan_motion_typography(
                 blocks=blocks,
                 role=candidate.role,
                 layout=layout,
-                motion=_LAYOUT_MOTION[layout],
+                motion=motion,
                 start_seconds=round(start, 3),
                 end_seconds=round(end, 3),
                 beat_id=candidate.unit.beat.beat_id,
                 importance=candidate.unit.importance,
+                intensity=candidate.intensity,
+                intent=candidate.intent,
+                surface=candidate.surface,
+                chain_id=candidate.chain_id,
+                chain_position=candidate.chain_position,
+                chain_length=candidate.chain_length,
                 rationale=(
-                    f"{candidate.role} · {layout} · {_LAYOUT_MOTION[layout]} · "
-                    f"anchor:{candidate.anchor} · importance "
-                    f"{candidate.unit.importance:.2f} · from: {candidate.unit.text}"
+                    f"{candidate.intent} · {candidate.intensity} · {candidate.role} · "
+                    f"{layout} · {motion} · anchor:{candidate.anchor} · "
+                    f"importance {candidate.unit.importance:.2f} · "
+                    f"from: {candidate.unit.text}"
                 ),
             )
         )
