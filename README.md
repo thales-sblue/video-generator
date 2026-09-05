@@ -301,30 +301,46 @@ tipografia e margens de segurança). A identidade veste o asset escolhido — el
 nunca escolhe o asset: a ordem é relevância semântica primeiro, estética depois.
 
 `--motion-typography <path>` (exige `--semantic`) liga a **Editorial Motion
-Typography v1** (`domain/typography.py`) **no lugar** de `--text-events`: o
-texto na tela deixa de ser uma linha de ênfase e passa a ser uma composição
-tipográfica. O pipeline é
-`narração -> ênfase -> conceito de texto -> papel -> layout -> motion -> timing`:
+Typography** (`domain/typography.py`) **no lugar** de `--text-events`: o texto
+na tela deixa de ser uma linha de ênfase e passa a ser **edição** — denso no
+hook, forte em cada virada do argumento, quase nunca com a tela muda por mais
+de alguns segundos. O pipeline é
+`narração -> intensidade -> momento editorial -> conceito -> layout -> motion -> timing`:
 
-- **papéis** — `hook`, `keyword`, `contrast`, `statement`, `question`;
+- **intensidade** — `low` / `medium` / `high` / `peak`, decidida por
+  `_classify_intensity` a partir da importância do beat, com piso elevado pelo
+  hook, por uma pergunta, um contraste, um número ou uma conclusão. O orçamento
+  de eventos é gasto de forma desigual de propósito;
+- **momentos editoriais** (`intent`) — `impact_word`, `statement_build`,
+  `contrast`, `question`, `definition`, `number_hit`, `sequence`, `annotation`,
+  `quote_fragment`, `chapter_transition`, `visual_interruption`; cada um escolhe
+  papel, pool de layout, motion e forma de bloco;
+- **papéis** — `hook`, `keyword`, `contrast`, `statement`, `question`,
+  `definition`, `number`, `annotation`, `sequence`, `transition`;
 - **layouts** — `dominant_word`, `stacked_hierarchy`, `small_plus_massive`,
-  `split_statement`, `edge_aligned`, `centered_poster`, `contrast_pair`;
-- **motions** — `fade_rise`, `scale_in`, `masked_reveal`, `stagger_rise`
-  (um bloco por linha de `Dialogue`, então o stagger é real: a linha pequena já
-  está legível quando a palavra grande chega);
+  `split_statement`, `edge_aligned`, `centered_poster`, `contrast_pair` (nunca o
+  mesmo duas vezes seguidas entre eventos principais);
+- **motions** — `fade_rise`, `scale_in`, `masked_reveal`, `stagger_rise`;
 - **pesos** — `micro`, `small`, `large`, `massive`, e nenhum evento de mais de
-  um bloco pode usar um peso só. O contraste de escala é a camada.
+  um bloco pode usar um peso só. Um `scale_hint` derivado da intensidade
+  amplia a palavra dominante (1× / 1,32× / 1,9×) no renderer Remotion;
+- **superfície** (`surface`) — `bare` (o texto vive sobre o asset em movimento,
+  segurado pelo próprio halo — o padrão), `scrim` (um véu local sob um plano
+  cheio), `card` (o raro título com fundo escuro, para uma definição ou uma
+  virada de capítulo).
 
-A voz carrega a informação, então a camada é **rara**: ~18 intervenções em
-209 s, não uma por frase. E o texto é **derivado**, nunca recortado: uma palavra
-dominante mais um conector licenciado (só dispara se a própria deixa está na
-frase) ou uma segunda palavra de conteúdo; `_is_derived` recusa qualquer
-composição que reproduza um trecho contíguo da narração. Com
-`--narration-captions <srt>` cada evento é cravado no instante medido em que a
-palavra-âncora é falada, em vez de no shot que a contém. `--typography-policy`
-traz a policy do canal (cadência, piso de importância) e, num objeto `style`,
-as duas fontes — uma display pesada para a palavra, uma leve para a linha de
-apoio. Sem a flag nada muda: o plano continua emitindo `text_events`.
+A camada é **densa** por construção: ~17 intervenções por minuto, com uma
+passada de cobertura que não deixa nenhum trecho maior que o teto
+(`max_dark_seconds`) sem ao menos uma pequena nota de margem. O texto continua
+**derivado** — `_is_derived` recusa qualquer composição que recorte um trecho
+contíguo da narração — com **uma** exceção: `statement_build` quebra uma frase
+forte numa sequência de 2–4 fragmentos que se tocam ("SEU CÉREBRO -> NÃO GUARDA
+/ A REALIDADE -> ELE / RECONSTRÓI -> uma versão dela"), aceita inteira ou não.
+Com `--narration-captions <srt>` cada evento é cravado no instante medido em que
+a palavra-âncora é falada. `--typography-policy` traz a policy do canal
+(cadência, pisos de importância, tetos de cobertura, tamanho de cadeia) e, num
+objeto `style`, as duas fontes. Sem a flag nada muda: o plano continua emitindo
+`text_events`.
 
 `--visual-direction <policy.json>` (exige `--semantic`) liga a **Visual
 Direction v1** (`domain/direction.py`): a camada que decide **como** o asset
