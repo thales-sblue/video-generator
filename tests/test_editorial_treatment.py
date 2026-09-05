@@ -139,6 +139,20 @@ class PolicyTests(unittest.TestCase):
             DEFAULT_TREATMENT_POLICY.to_dict(),
         )
 
+    def test_the_project_policy_on_disk_is_valid_when_present(self):
+        import json as _json
+        from pathlib import Path as _Path
+
+        path = (
+            _Path(__file__).resolve().parents[1]
+            / "projects" / "desumanizando_01" / "editorial-treatment-v1.json"
+        )
+        if not path.exists():
+            self.skipTest("no project editorial-treatment policy on disk")
+        EditorialTreatmentPolicy.from_dict(
+            _json.loads(path.read_text(encoding="utf-8"))
+        )
+
     def test_invalid_policies_are_refused(self):
         with self.assertRaises(TreatmentError):
             EditorialTreatmentPolicy.from_dict({"unknown_field": 1})
