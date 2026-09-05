@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "provider": "nodejs.org",
+  "source_page": "https://nodejs.org/dist/",
+  "purpose": "Runs the local Remotion project that renders the motion-graphics / editorial-typography overlay. Isolated under .local-tools/node, never added to the global PATH.",
+  "version": "v24.20.0",
+  "lts": "Krypton",
+  "architecture": "x86_64",
+  "platform": "win32",
+  "archive_name": "node-v24.20.0-win-x64.zip",
+  "archive_sha256": "6cac9ffbca8f6a47091e4b5c772e0606049c3871cb67d900c0cedde630e545ba",
+  "install_directory": ".local-tools/node/node-v24.20.0-win-x64",
+  "bin": {
+    "node": ".local-tools/node/node-v24.20.0-win-x64/node.exe",
+    "npm": ".local-tools/node/node-v24.20.0-win-x64/npm.cmd",
+    "npx": ".local-tools/node/node-v24.20.0-win-x64/npx.cmd"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "video-generator-motion-graphics",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Remotion motion-graphics / editorial-typography layer for the dark-video pipeline. Python decides moment, text, timing and importance; this project decides layout, hierarchy, composition and motion; FFmpeg composites the resulting alpha overlay.",
+  "license": "SEE LICENSE IN NOTICE.md",
+  "scripts": {
+    "still": "remotion still",
+    "render": "remotion render",
+    "studio": "remotion studio"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.521",
+    "@remotion/renderer": "4.0.521",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "remotion": "4.0.521",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.8",
+    "typescript": "5.8.3"
+  }
+}
