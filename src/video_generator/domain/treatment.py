@@ -90,12 +90,10 @@ TREATMENTS = (
 # Treatments that need more than one editorial state.
 _MULTI_STATE = ("reframe", "detail_reveal", "freeze_emphasis", "two_state_cut", "graphic_interrupt")
 
-# Treatments a still frame can carry but moving footage cannot without fighting
-# the camera that is already in the shot.
-_STILL_ONLY = ("slow_push", "punch_in", "reframe", "detail_reveal", "freeze_emphasis", "split_compare", "graphic_interrupt")
-
 # What a video shot is allowed to do: hold, or cut once between two windows of
-# its own footage. Never a synthetic zoom over a moving picture.
+# its own footage. Never a synthetic zoom over a moving picture — everything
+# else in TREATMENTS is still-only, because it would fight the camera that is
+# already in the shot.
 _VIDEO_TREATMENTS = ("static_hold", "two_state_cut")
 
 # The treatments that are always renderable, in order of preference: the planner
