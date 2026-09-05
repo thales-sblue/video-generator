@@ -455,22 +455,22 @@ _DEFAULT_INTENSITY_WEIGHTS: Mapping[str, Mapping[str, float]] = MappingProxyType
         ),
         "medium": MappingProxyType(
             {
-                "static_hold": 2.2, "slow_push": 3.0, "reframe": 3.0,
-                "detail_reveal": 1.6, "two_state_cut": 1.3, "punch_in": 1.2,
+                "slow_push": 3.0, "reframe": 3.0, "static_hold": 1.6,
+                "detail_reveal": 1.8, "punch_in": 1.6, "two_state_cut": 1.3,
                 "freeze_emphasis": 0.6, "split_compare": 0.4, "graphic_interrupt": 0.2,
             }
         ),
         "high": MappingProxyType(
             {
-                "punch_in": 3.0, "detail_reveal": 3.0, "two_state_cut": 2.6,
-                "reframe": 1.6, "freeze_emphasis": 1.6, "static_hold": 1.1,
-                "slow_push": 1.0, "split_compare": 0.8, "graphic_interrupt": 0.7,
+                "detail_reveal": 3.2, "punch_in": 2.8, "reframe": 2.4,
+                "two_state_cut": 2.0, "freeze_emphasis": 1.6, "static_hold": 0.7,
+                "slow_push": 1.2, "split_compare": 0.8, "graphic_interrupt": 0.7,
             }
         ),
         "peak": MappingProxyType(
             {
-                "two_state_cut": 3.0, "graphic_interrupt": 2.6, "punch_in": 2.4,
-                "detail_reveal": 2.2, "freeze_emphasis": 2.0, "reframe": 1.0,
+                "detail_reveal": 2.6, "two_state_cut": 2.4, "punch_in": 2.4,
+                "graphic_interrupt": 2.4, "freeze_emphasis": 2.0, "reframe": 1.6,
                 "split_compare": 0.9, "static_hold": 0.6, "slow_push": 0.5,
             }
         ),
@@ -482,13 +482,13 @@ _DEFAULT_INTENSITY_WEIGHTS: Mapping[str, Mapping[str, float]] = MappingProxyType
 # decide it.
 _DEFAULT_ROLE_NUDGES: Mapping[str, Mapping[str, float]] = MappingProxyType(
     {
-        "hook": MappingProxyType({"punch_in": 1.5, "detail_reveal": 1.5, "two_state_cut": 1.0}),
-        "open_loop": MappingProxyType({"slow_push": 1.0, "detail_reveal": 0.8}),
-        "claim": MappingProxyType({"punch_in": 1.6, "reframe": 0.8}),
-        "evidence": MappingProxyType({"freeze_emphasis": 1.8, "detail_reveal": 1.4}),
-        "contrast": MappingProxyType({"split_compare": 2.2, "two_state_cut": 1.6}),
-        "consequence": MappingProxyType({"punch_in": 1.2, "two_state_cut": 1.0}),
-        "payoff": MappingProxyType({"two_state_cut": 2.0, "punch_in": 1.4, "graphic_interrupt": 1.0}),
+        "hook": MappingProxyType({"punch_in": 1.4, "detail_reveal": 1.8, "reframe": 1.0}),
+        "open_loop": MappingProxyType({"slow_push": 1.0, "detail_reveal": 1.0, "reframe": 0.8}),
+        "claim": MappingProxyType({"punch_in": 1.6, "reframe": 1.2, "detail_reveal": 1.0}),
+        "evidence": MappingProxyType({"freeze_emphasis": 1.8, "detail_reveal": 1.6}),
+        "contrast": MappingProxyType({"split_compare": 2.2, "two_state_cut": 1.4}),
+        "consequence": MappingProxyType({"punch_in": 1.2, "detail_reveal": 1.0, "two_state_cut": 0.8}),
+        "payoff": MappingProxyType({"two_state_cut": 1.6, "punch_in": 1.6, "detail_reveal": 1.2, "graphic_interrupt": 1.0}),
         "transition": MappingProxyType({"static_hold": 2.5, "slow_push": 1.5}),
         "close": MappingProxyType({"static_hold": 1.5, "slow_push": 1.2, "two_state_cut": 0.8}),
     }
@@ -512,10 +512,10 @@ class EditorialTreatmentPolicy:
     )
     # Below this a shot is one state whatever the draw wanted: a cut inside a
     # window this short reads as a glitch, not an edit.
-    min_multi_state_seconds: float = 3.4
+    min_multi_state_seconds: float = 3.0
     # No editorial state may be shorter than this once the fractions are applied
     # to real seconds.
-    min_state_seconds: float = 1.1
+    min_state_seconds: float = 1.0
     # The very short cut-in of a graphic interruption, as a fraction of the shot.
     interrupt_fraction: float = 0.16
     min_interrupt_seconds: float = 0.32
@@ -526,7 +526,7 @@ class EditorialTreatmentPolicy:
     max_consecutive_cutting: int = 4
     # The share of shots that must stay deliberately calm (held or slow). When
     # the trailing window drops below it, only calm treatments are drawn.
-    min_calm_fraction: float = 0.28
+    min_calm_fraction: float = 0.22
     calm_window: int = 7
     # A shot carrying a large typographic reading moment pulls its motion back:
     # aggressive treatments downgrade unless the beat is a peak.
@@ -914,7 +914,9 @@ def _build_states(
                 rationale="the frame as planned",
             ),
             TreatmentState(
-                composition="fullscreen",
+                # extreme_crop, not fullscreen: a reframe has to be *visible*
+                # on 16:9 material, where a fullscreen crop bias moves nothing
+                composition="extreme_crop",
                 motion="static_hold",
                 scale=_one_step_tighter(base_scale),
                 duration_fraction=second,
@@ -956,7 +958,9 @@ def _build_states(
                 rationale="the approach",
             ),
             TreatmentState(
-                composition="extreme_crop" if base_scale in ("close", "detail") else "fullscreen",
+                # always a small punch as it locks, so the freeze reads as a
+                # decision and not just the push running out
+                composition="extreme_crop",
                 motion="static_hold",
                 scale=_one_step_tighter(base_scale),
                 duration_fraction=second,
@@ -968,30 +972,28 @@ def _build_states(
         )
     if treatment == "two_state_cut":
         first, second = _split_fraction_pair(policy, shot.duration_seconds)
-        wide_first = _SCALE_ORDER[base_scale] >= _SCALE_ORDER["close"]
-        a_scale = _wider(base_scale) if wide_first else base_scale
-        b_scale = _tighter(base_scale) if wide_first else _wider(base_scale)
-        return (
-            TreatmentState(
-                composition="fullscreen" if a_scale in ("wide", "medium") else "extreme_crop",
-                motion="static_hold",
-                scale=a_scale,
-                duration_fraction=first,
-                crop_bias=shot.crop_bias,
-                hold=a_scale in ("close", "detail"),
-                reading=reading,
-                rationale="first framing, held",
-            ),
-            TreatmentState(
-                composition="fullscreen" if b_scale in ("wide", "medium") else "extreme_crop",
-                motion="static_hold",
-                scale=b_scale,
-                duration_fraction=second,
-                crop_bias=_reframe_bias(shot.crop_bias) if b_scale == a_scale else shot.crop_bias,
-                hold=b_scale in ("close", "detail"),
-                rationale="hard internal cut to the opposite scale",
-            ),
+        # one state open, one clearly tight — and the tight one is always an
+        # extreme_crop so the internal cut is visible even on 16:9 material.
+        close_first = _SCALE_ORDER[base_scale] >= _SCALE_ORDER["close"]
+        open_state = TreatmentState(
+            composition="fullscreen",
+            motion="static_hold",
+            scale=_wider(base_scale) if close_first else base_scale,
+            duration_fraction=second if close_first else first,
+            crop_bias=shot.crop_bias,
+            reading=reading,
+            rationale="the open framing, held",
         )
+        tight_state = TreatmentState(
+            composition="extreme_crop",
+            motion="static_hold",
+            scale="detail" if close_first else "close",
+            duration_fraction=first if close_first else second,
+            crop_bias=shot.crop_bias if close_first else _reframe_bias(shot.crop_bias),
+            hold=True,
+            rationale="hard internal cut to a tight framing of the same asset",
+        )
+        return (tight_state, open_state) if close_first else (open_state, tight_state)
     if treatment == "split_compare":
         return (
             TreatmentState(
@@ -1119,6 +1121,22 @@ def plan_editorial_treatment(
         for name in list(weights):
             if name in gates:
                 weights[name] = 0.0
+
+        # recent-use penalty: a treatment seen in the last few shots is not
+        # forbidden, only made less likely, so the cut varies without a rule
+        recent = chosen[-3:]
+        for name in list(weights):
+            if weights[name] <= 0.0:
+                continue
+            if name in _CALM_TREATMENTS:
+                # calm may repeat, but two in a row still gets a light nudge
+                if recent[-2:] == [name, name]:
+                    weights[name] *= 0.7
+                continue
+            if recent and name == recent[-1]:
+                weights[name] *= 0.3
+            elif name in recent:
+                weights[name] *= 0.55
 
         # repetition guard
         run_limited: list[str] = []
