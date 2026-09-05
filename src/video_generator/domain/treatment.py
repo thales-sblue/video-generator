@@ -1239,10 +1239,13 @@ def treatment_segments(
         raise TreatmentError("asset_type must be image or video")
     total = _number(total_seconds, "total_seconds", low=1e-3, high=3600.0)
 
-    # real seconds per state, last state absorbs the rounding remainder
+    # real seconds per state, kept at full float precision so the expanded
+    # segments sum to exactly the shot's window — the type layer and the
+    # manifest both check event end against the summed timeline, and a rounded
+    # split there is how a whole render fails validation on a millisecond.
     fractions = [state.duration_fraction for state in treatment.states]
-    seconds = [round(frac * total, 3) for frac in fractions[:-1]]
-    seconds.append(round(total - sum(seconds), 3))
+    seconds = [frac * total for frac in fractions[:-1]]
+    seconds.append(total - sum(seconds))
 
     out: list[dict[str, Any]] = []
     cursor = window_start
@@ -1262,8 +1265,8 @@ def treatment_segments(
             params["duration_seconds"] = secs
             params["motion"] = motion
         else:
-            params["start_seconds"] = round(cursor, 3)
-            params["end_seconds"] = round(cursor + secs, 3)
+            params["start_seconds"] = cursor
+            params["end_seconds"] = cursor + secs
             cursor += secs
         out.append(params)
     return tuple(out)
