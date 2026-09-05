@@ -206,6 +206,54 @@ humanos), não repetição de asset. São sinal secundário: um motif que volta
 recebe um enquadramento diferente, para que a coesão temática não vire a mesma
 imagem outra vez.
 
+### Edição da imagem (`EditorialTreatmentPolicy`)
+
+A Visual Direction dá a cada shot **um** enquadramento, **um** movimento e
+**uma** grade para toda a sua duração. Isso tira sessenta fotografias do
+território de slideshow, mas um asset parado por cinco ou seis segundos ainda
+precisa merecer esse tempo: texto na tela é legenda sobre slide, não é edição.
+A **Editorial Image Editing v1** é o beat que faltava entre a direção e o
+renderer — decide **como o shot é cortado**.
+
+Um `EditorialTreatment` é um de nove movimentos nomeados, expresso como um a três
+`TreatmentState` — estados editoriais sucessivos do **mesmo** asset — mais o
+tempo que divide a janela do shot entre eles:
+
+- **`static_hold`** — um estado, sem movimento. Estabilidade proposital; o piso
+  que a trava de variedade mantém.
+- **`slow_push`** — um estado, push/pull lento e legível para uma explicação.
+- **`punch_in`** — um estado, crop duro para dentro do quadro: afirmação forte,
+  desconforto.
+- **`reframe`** — dois estados, mesmo asset, enquadramento trocado num corte
+  interno seco.
+- **`detail_reveal`** — dois estados: um plano aberto segurado, depois um corte
+  para o detalhe que empurra.
+- **`freeze_emphasis`** — dois estados: aproximação, depois um quadro mais
+  fechado segurado — um fato, um número — sincronizado com um pico tipográfico.
+- **`two_state_cut`** — dois estados, aberto e fechado (qualquer ordem), corte
+  interno seco, ambos segurados.
+- **`split_compare`** — um estado, duas regiões do quadro seguradas uma contra a
+  outra; só num beat que é comparação.
+- **`graphic_interrupt`** — três estados: normal, um corte curtíssimo para
+  dentro, um retorno reenquadrado — coordenado com a camada de tipografia.
+
+O planejador **sorteia** o tratamento como função determinística da
+**intensidade** editorial do beat (a mesma escala `low`/`medium`/`high`/`peak`
+que a tipografia usa, via `classify_intensity`) e do seu **papel** no argumento,
+com portões antes do sorteio (imagem vs vídeo — material em movimento só *hold*
+ou corte entre janelas do próprio clipe; quadro que não pode ser cortado; shot
+curto demais para um corte interno; momento de leitura puxa o movimento para
+trás) e travas de variedade (nenhum tratamento em sequência mais longa que a
+policy; um piso de shots deliberadamente calmos; nenhum trecho longo só de
+cortes). `peak` **não** significa "mais zoom": significa mudança clara de
+estado.
+
+O renderer não inventa nada disso: `treatment_segments` materializa os estados
+como operações de segmento consecutivas — cada uma com sua composição, crop,
+movimento e grade — e o caminho `video-sequence` existente as renderiza. Um shot
+`static_hold`, e qualquer shot sem tratamento, fica **idêntico** ao que a Visual
+Direction rendeu. A identidade fica em `editorial-treatment-v1.json` no projeto.
+
 ### Ênfase na tela (`TextEvent`)
 
 Legendas transcrevem a voz; a ênfase **argumenta** com ela. As duas camadas são
