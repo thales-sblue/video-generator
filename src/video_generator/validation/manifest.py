@@ -286,6 +286,110 @@ def _motion_typography_match(operation, timeline_duration: float) -> bool:
     return bool(_finite(margin) and 0 <= margin <= 0.2)
 
 
+_MOTION_GRAPHICS_LAYOUTS = frozenset({
+    "dominant-word", "small-plus-massive", "stacked-editorial",
+    "split-contrast", "poster-statement",
+})
+_MOTION_GRAPHICS_IMPORTANCE = frozenset({"dominant", "secondary", "support"})
+_HEX_COLOUR = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def _motion_graphics_match(operation, timeline_duration: float) -> bool:
+    """Whether a ``motion_graphics`` operation carries a well-formed Remotion scene.
+
+    Same job as :func:`_motion_typography_match` for the overlay-composed variant:
+    a plan whose typographic layer is sound in form must not fail validation on
+    form. The operation's parameters are the whole scene document.
+    """
+
+    parameters = dict(operation.parameters)
+    if (
+        operation.source is not None
+        or operation.start_seconds is not None
+        or operation.end_seconds is not None
+        or set(parameters) - {"schema_version", "composition", "theme", "events"}
+    ):
+        return False
+    if parameters.get("schema_version") != 1:
+        return False
+    composition = parameters.get("composition")
+    if not isinstance(composition, Mapping) or set(composition) != {
+        "width", "height", "fps", "durationInSeconds"
+    }:
+        return False
+    for key in ("width", "height", "fps", "durationInSeconds"):
+        value = composition[key]
+        if isinstance(value, bool) or not _finite(value) or value <= 0:
+            return False
+    theme = parameters.get("theme")
+    if not isinstance(theme, Mapping) or set(theme) - {
+        "foreground", "accent", "muted", "background"
+    }:
+        return False
+    for key in ("foreground", "accent", "muted"):
+        if not isinstance(theme.get(key), str) or not _HEX_COLOUR.match(theme[key]):
+            return False
+    background = theme.get("background")
+    if background is not None and (
+        not isinstance(background, str) or not _HEX_COLOUR.match(background)
+    ):
+        return False
+    events = parameters.get("events")
+    if (
+        isinstance(events, (str, bytes))
+        or not isinstance(events, (list, tuple))
+        or not events
+        or len(events) > 60
+    ):
+        return False
+    previous_end = 0.0
+    for event in events:
+        if not isinstance(event, Mapping):
+            return False
+        if {"id", "start", "duration", "role", "layout", "motion", "blocks"} - set(event):
+            return False
+        if set(event) - {
+            "id", "start", "duration", "role", "layout", "variant", "motion", "blocks"
+        }:
+            return False
+        if event["layout"] not in _MOTION_GRAPHICS_LAYOUTS:
+            return False
+        start = event["start"]
+        duration = event["duration"]
+        if (
+            not _finite(start)
+            or not _finite(duration)
+            or start < previous_end - 1e-6
+            or duration < 0.2
+            or start + duration > timeline_duration + 1e-6
+        ):
+            return False
+        previous_end = float(start)
+        blocks = event["blocks"]
+        if (
+            isinstance(blocks, (str, bytes))
+            or not isinstance(blocks, (list, tuple))
+            or not 1 <= len(blocks) <= 3
+        ):
+            return False
+        for block in blocks:
+            if not isinstance(block, Mapping) or set(block) - {
+                "text", "importance", "accent"
+            }:
+                return False
+            text = block.get("text")
+            if (
+                not isinstance(text, str)
+                or not text.strip()
+                or len(text.strip()) > 40
+                or any(ord(ch) < 32 or ch in "<>{}" for ch in text)
+                or block.get("importance") not in _MOTION_GRAPHICS_IMPORTANCE
+                or not isinstance(block.get("accent", False), bool)
+            ):
+                return False
+    return True
+
+
 def _text_events_match(operation, timeline_duration: float) -> bool:
     """Whether a ``text_events`` operation is the shape the workflow accepts.
 
@@ -506,6 +610,10 @@ def _sequence_plan_matches(plan: EditPlan) -> bool:
         if not _motion_typography_match(operations[index], timeline_duration):
             return False
         index += 1
+    if index < len(operations) and operations[index].kind == "motion_graphics":
+        if not _motion_graphics_match(operations[index], timeline_duration):
+            return False
+        index += 1
     if index < len(operations) and operations[index].kind == "fade":
         if not _fade_matches(operations[index], timeline_duration):
             return False
@@ -631,7 +739,7 @@ def validate_render_manifest(
                 "workflow_plan_mismatch",
                 "video-sequence manifest requires at least two timeline segments followed "
                 "by optional visual_direction, captions, text_events, "
-                "motion_typography, fade, "
+                "motion_typography, motion_graphics, fade, "
                 "looped music and matched narration, in that order",
             )
         )
