@@ -426,6 +426,28 @@ class RendererProjectionTests(unittest.TestCase):
         for s in segs:
             self.assertNotIn("motion", s)  # a video window never carries a synthetic move
 
+    def test_a_frame_preserving_base_keeps_its_composition_and_never_letterboxes(self):
+        t = EditorialTreatment(
+            shot_id="scene_01_shot_03",
+            treatment="two_state_cut",
+            intensity="high",
+            states=(
+                TreatmentState("fullscreen", "static_hold", "wide", 0.55),
+                TreatmentState("extreme_crop", "static_hold", "close", 0.45, hold=True),
+            ),
+        )
+        segs = treatment_segments(
+            t, asset_type="image", total_seconds=5.0,
+            base_composition="layered", base_crop_bias="right",
+            base_grade="subtle", base_motion="slow_push_in",
+        )
+        # the internal cut collapses to a single layered segment
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0]["composition"], "layered")
+        self.assertEqual(segs[0]["crop_bias"], "right")
+        self.assertAlmostEqual(segs[0]["duration_seconds"], 5.0, places=3)
+        self.assertIn(segs[0]["motion"], ("slow_push_in", "static_hold"))
+
     def test_a_reading_state_keeps_only_a_gentle_move(self):
         t = EditorialTreatment(
             shot_id="scene_01_shot_09",
@@ -576,10 +598,13 @@ class PlanIntegrationTests(unittest.TestCase):
                 op for op in plan.operations
                 if op.kind in ("image_clip", "sequence_clip")
             ]
-            extra = sum(t.internal_cuts for t in treatments.treatments)
-            # a multi-state treatment adds one segment per internal cut
-            self.assertGreater(extra, 0)
-            self.assertEqual(len(segments) - len(shot_plan.shots), extra)
+            planned = sum(t.internal_cuts for t in treatments.treatments)
+            actual_extra = len(segments) - len(shot_plan.shots)
+            # a multi-state treatment adds one segment per internal cut, except
+            # on a frame-preserving base where the cut collapses to one segment
+            self.assertGreater(planned, 0)
+            self.assertGreater(actual_extra, 0)
+            self.assertLessEqual(actual_extra, planned)
 
     def test_the_expanded_plan_still_passes_the_manifest_grammar(self):
         with tempfile.TemporaryDirectory() as directory:

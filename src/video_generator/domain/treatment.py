@@ -1271,13 +1271,29 @@ def treatment_segments(
     seconds.append(total - sum(seconds))
 
     # Visual Direction reaches for layered / inset only when fullscreen would
-    # letterbox or butcher the asset's aspect. A treatment must not undo that:
-    # on such a shot every state keeps the base composition and stays gentle.
+    # letterbox or butcher the asset's aspect. A treatment must not undo that.
     frame_preserving = base_composition in ("layered", "inset")
+    states = treatment.states
+    if frame_preserving and len(states) > 1:
+        # a treated band cannot cut to a new crop, so an internal cut on one
+        # would render as two identical segments — collapse to a single slow
+        # push over the whole window instead of faking the cut
+        states = (
+            TreatmentState(
+                composition=base_composition,
+                motion="slow_push_in",
+                scale=states[0].scale,
+                duration_fraction=1.0,
+                crop_bias=base_crop_bias,
+                reading=any(s.reading for s in states),
+                rationale="collapsed: a treated band holds its frame",
+            ),
+        )
+        seconds = [total]
 
     out: list[dict[str, Any]] = []
     cursor = window_start
-    for state, secs in zip(treatment.states, seconds):
+    for state, secs in zip(states, seconds):
         composition = _state_composition(
             state, base_composition, asset_type, frame_preserving
         )
