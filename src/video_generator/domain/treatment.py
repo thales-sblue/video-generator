@@ -1270,16 +1270,23 @@ def treatment_segments(
     seconds = [frac * total for frac in fractions[:-1]]
     seconds.append(total - sum(seconds))
 
+    # Visual Direction reaches for layered / inset only when fullscreen would
+    # letterbox or butcher the asset's aspect. A treatment must not undo that:
+    # on such a shot every state keeps the base composition and stays gentle.
+    frame_preserving = base_composition in ("layered", "inset")
+
     out: list[dict[str, Any]] = []
     cursor = window_start
     for state, secs in zip(treatment.states, seconds):
-        composition = _state_composition(state, base_composition, asset_type)
+        composition = _state_composition(
+            state, base_composition, asset_type, frame_preserving
+        )
         params: dict[str, Any] = {
             "composition": composition,
-            "crop_bias": state.crop_bias or base_crop_bias,
+            "crop_bias": base_crop_bias if frame_preserving else (state.crop_bias or base_crop_bias),
             "grade": state.grade or base_grade,
         }
-        motion = _state_motion(state, base_motion, asset_type)
+        motion = _state_motion(state, base_motion, asset_type, frame_preserving)
         if base_text_zone is not None and composition == "text_focus":
             params["text_zone"] = base_text_zone
         if fit is not None:
@@ -1295,7 +1302,12 @@ def treatment_segments(
     return tuple(out)
 
 
-def _state_composition(state: TreatmentState, base: str, asset_type: str) -> str:
+def _state_composition(
+    state: TreatmentState, base: str, asset_type: str, frame_preserving: bool = False
+) -> str:
+    if frame_preserving:
+        # never trade a treated band for a raw letterbox or a crop
+        return base
     if asset_type == "video":
         # a video sub-window keeps the cheap half of the grammar
         if state.composition in ("inset", "layered", "split"):
@@ -1304,9 +1316,14 @@ def _state_composition(state: TreatmentState, base: str, asset_type: str) -> str
     return state.composition
 
 
-def _state_motion(state: TreatmentState, base: str, asset_type: str) -> str | None:
+def _state_motion(
+    state: TreatmentState, base: str, asset_type: str, frame_preserving: bool = False
+) -> str | None:
     if asset_type == "video":
         return None
+    if frame_preserving:
+        # a treated band tolerates a slow push at most, never a detail push
+        return "static_hold" if state.motion == "static_hold" else "slow_push_in"
     if state.reading and state.moves:
         # a reading state keeps only the gentlest move
         return "slow_push_in" if state.motion in ("detail_push", "slow_push_in") else "static_hold"

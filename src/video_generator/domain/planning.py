@@ -2603,6 +2603,11 @@ def treatment_inputs(
         neighbours = roles[max(index - 1, 0) : index + 2]
         direction = directions.get(shot.shot_id)
         scale = shot.scale if shot.scale in _TREATMENT_STATE_SCALES else "medium"
+        # A "contain" fit is genuinely un-croppable (a document, a graphic, a
+        # screen): only a hold or a gentle push. A layered / inset band is
+        # softer — a treatment may still cut inside it, but the projection
+        # keeps that composition rather than trading it for a raw crop.
+        preserve = _fit_for(shot) == "contain"
         out.append(
             TreatmentInput(
                 shot_id=shot.shot_id,
@@ -2625,7 +2630,7 @@ def treatment_inputs(
                 crop_bias=str(shot.framing.get("crop_bias", "center") or "center"),
                 reading_moment=reading.get(shot.shot_id, False),
                 graphic_interruption=interruption.get(shot.shot_id, False),
-                preserve_frame=_fit_for(shot) == "contain",
+                preserve_frame=preserve,
                 contrast_neighbor=("contrast" in [r for r in neighbours if r]),
             )
         )
