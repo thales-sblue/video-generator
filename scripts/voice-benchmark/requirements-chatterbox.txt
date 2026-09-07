@@ -1,0 +1,12 @@
+# Isolated deps for the Chatterbox voice benchmark. Installed ONLY into
+# .local-tools/chatterbox-venv by setup_chatterbox_venv.ps1 -- never into the
+# project .venv. Pins mirror the official chatterbox-tts 0.1.7 pyproject.toml
+# (https://github.com/resemble-ai/chatterbox), which is what actually constrains
+# the transitive versions.
+
+chatterbox-tts==0.1.7
+
+# torch / torchaudio are installed separately from the CUDA index in the setup
+# script (see setup_chatterbox_venv.ps1). Listed here for the record:
+#   torch==2.6.0
+#   torchaudio==2.6.0
