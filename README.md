@@ -100,6 +100,8 @@ python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\
 python -m video_generator plan-scenes --from-text output\preview\roteiro.txt --total-duration 68.347 --target 1920x1080:cover --seed 20260903 --semantic --hook-seconds 40 --text-events output\preview\text-events.json --out-dir output\preview\plan
 python -m video_generator resolve-assets --shot-plan output\shot-plan.json --asset-requirements output\asset-requirements.json --library assets\library --out-dir output\resolved-assets --json
 python -m video_generator resolve-assets --shot-plan output\shot-plan.json --asset-requirements output\asset-requirements.json --library assets\library --out-dir output\resolved-assets --providers local,pexels,pixabay --require-complete --force
+python -m video_generator render-screens --deck projects\canal_dev_01\screens.json --out-dir output\canal-dev-01\screens --layout-only
+python -m video_generator render-screens --deck projects\canal_dev_01\screens.json --out-dir output\canal-dev-01\screens --force --json
 python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 python -m video_generator execute-sequence-plan projects\example\sequence-plan.json --manifest projects\example\sequence-manifest.json --json
 python -m video_generator execute-final-sequence-plan projects\example\final-plan.json --manifest projects\example\final-manifest.json --json
@@ -560,6 +562,35 @@ ffprobe e os códigos de validação. Sem `--manifest`, o destino padrão é
 `editorial_review` como `not_performed`; ele não representa aprovação
 visual/auditiva.
 
+## `render-screens` — o material do developer-video
+
+O workflow `dark-video` responde "que imagem vai aqui?" com um provedor de
+assets. Um vídeo de desenvolvedor sobre um projeto real responde com o próprio
+repositório: uma linha de código, uma sessão de terminal, um fragmento de JSON,
+uma comparação, um número.
+
+`render-screens` consome um **screen deck** (`schemas/screen-deck-v1.schema.json`)
+e renderiza cada card como um still 1920x1080. O layout é puro
+(`domain/screens.py`): ele decide onde cada glifo cai e **recusa** um card que
+não caberia no quadro, em vez de renderizar um quadro truncado. O adapter
+(`adapters/screens.py`) só desenha — cada bloco de texto é escrito em um arquivo
+UTF-8 próprio dentro de um diretório temporário e o FFmpeg roda com esse
+diretório como working directory, de modo que **nenhum texto de card entra no
+filtergraph**.
+
+Oito tipos de card: `code`, `terminal`, `json`, `statement`, `chain`, `compare`,
+`stat` e `list`.
+
+Os PNGs resultantes entram no `EditPlan` como `image_clip` comuns, ao lado de
+`sequence_clip` recortados de renders anteriores. Nenhuma mudança foi
+necessária no renderer: uma timeline sem `narration` e sem `music` já é
+validada como silenciosa (`unexpected_non_video_streams`), então um corte
+visual-only não precisa de WAV silencioso.
+
+O primeiro caso real é `scripts/build-canal-dev-01.py`, que monta o vídeo
+`canal_dev_01` — a história deste repositório contada com material dele mesmo.
+
+
 ## Testes
 
 ```powershell
@@ -575,9 +606,10 @@ A mesma suíte é executada pelo GitHub Actions em pushes e pull requests.
 config/                         configuração segura padrão
 config/ffmpeg-lock.json         proveniência e integridade do FFmpeg local aprovado
 docs/                           visão, arquitetura e linguagem audiovisual
-schemas/                        contratos JSON públicos v1 (request, brief, edit-plan, manifest, narrative-script, scene-plan, shot-plan, asset-requirements)
-src/video_generator/domain/     modelos e invariantes puros; planning.py é o Scene/Shot Planner
-                                e editorial.py a camada semântica (beats, ênfases, identidade)
+schemas/                        contratos JSON públicos v1 (request, brief, edit-plan, manifest, narrative-script, scene-plan, shot-plan, asset-requirements, screen-deck)
+src/video_generator/domain/     modelos e invariantes puros; planning.py é o Scene/Shot Planner,
+                                editorial.py a camada semântica (beats, ênfases, identidade)
+                                e screens.py o layout dos screen cards do developer-video
 src/video_generator/adapters/   integrações locais, incluindo ffprobe e FFmpeg
 src/video_generator/workflows/  recorte e primeira timeline sequencial
 src/video_generator/validation/ preflight, mídia, integridade e rastreabilidade read-only

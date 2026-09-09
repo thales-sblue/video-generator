@@ -356,6 +356,52 @@ sem rastreabilidade. O comando comum recusa o nome reservado `final.mp4`. Essa f
 QA técnico, não aprovação editorial: `editorial_review=not_performed` permanece
 explícito.
 
+## `developer-video` (segundo modo, começando por `canal_dev_01`)
+
+Um segundo modo conceitual, não um segundo motor. Ele reusa integralmente o
+`video-sequence`: mesmo `EditPlan`, mesmo composer, mesma validação técnica. O
+que muda é **de onde vem a imagem**.
+
+| | `dark-video` | `developer-video` |
+| --- | --- | --- |
+| origem da imagem | provedor de assets (Pexels/Pixabay/biblioteca local) | o próprio repositório |
+| unidade visual | shot fotográfico com direção | screen card + recorte de render anterior |
+| texto | legenda alinhada à voz, depois tipografia editorial | só tipografia editorial; sem legenda |
+| áudio | narração + música com ducking | nenhum, até existir gravação humana |
+
+### Screen cards
+
+`domain/screens.py` transforma um `ScreenCard` (o que a tela diz) em um
+`ScreenLayout` (onde cada glifo cai), e recusa o que não couber no quadro.
+`adapters/screens.py` rasteriza. `render-screens` é a linha de comando. O deck
+é um artefato persistido (`schemas/screen-deck-v1.schema.json`).
+
+A regra editorial que importa: **nada em um card pode ser inventado.** Todo
+número, caminho, linha de código e saída de comando tem que existir no
+repositório. Um card com um output falso é pior que nenhum card.
+
+### Corte visual-only
+
+Um `EditPlan` sem operação `narration` e sem `music` produz um MP4 sem stream
+de áudio, e `validate_sequence_artifact` **exige** que seja assim
+(`unexpected_non_video_streams`). Não é preciso fabricar um WAV silencioso para
+render de revisão.
+
+### O ciclo
+
+1. `scripts/build-canal-dev-01.py` — a tabela de blocos (texto a gravar +
+   shots + tipografia) gera `script.md`, `timeline.md`, `screens.json` e
+   `edit-plan.json`. Cada bloco é esticado para o tempo que o seu próprio texto
+   levaria a ser falado; toda duração é arredondada para um número inteiro de
+   frames a 30 fps, para que o plano e o arquivo concordem.
+2. `render-screens` — os stills.
+3. `execute-final-sequence-plan` — o corte, sem áudio.
+4. **Revisão humana com o vídeo na tela.**
+5. Só então: gravar a voz, medir os timings reais contra o WAV, remedir os
+   shots, sincronizar a tipografia e renderizar a versão publicável.
+
+Enquanto o passo 4 não acontecer, `editorial_review` continua `not_performed`.
+
 ## Evolução planejada do `dark-video`
 
 `dark-video` v1 **foi atingido em 2026-08-31**: a produção de referência

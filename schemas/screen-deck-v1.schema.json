@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/thales-sblue/video-generator/schemas/screen-deck-v1.schema.json",
+  "title": "ScreenDeck v1",
+  "description": "An ordered set of full-frame screen cards built from repository material.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "deck_id", "cards"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "deck_id": {"type": "string", "minLength": 1},
+    "theme": {"type": "object"},
+    "cards": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["card_id", "kind"],
+        "properties": {
+          "card_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
+          "kind": {
+            "enum": ["code", "terminal", "json", "statement", "chain", "compare", "stat", "list"]
+          },
+          "title": {"type": "string"},
+          "subtitle": {"type": "string"},
+          "body": {"type": "array", "items": {"type": "string"}},
+          "highlight": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+          "column_titles": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "string"}},
+          "columns": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {"type": "array", "items": {"type": "string"}}
+          },
+          "footer": {"type": "string"}
+        }
+      }
+    }
+  }
+}

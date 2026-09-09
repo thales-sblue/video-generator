@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 import os
@@ -19,11 +20,13 @@ from video_generator.adapters import (
     MediaProbe,
     NarrationArtifact,
     ProbeError,
+    ScreenRenderError,
     SegmentArtifact,
     detect_silences,
     extract_audio,
     extract_segment,
     probe_media,
+    render_screen_card,
     synthesize_narration,
     transcribe_words,
 )
@@ -49,6 +52,11 @@ from video_generator.domain import (
     RenderManifest,
     RhythmPolicy,
     ScenePlan,
+    ScreenCard,
+    ScreenCardError,
+    ScreenTheme,
+    card_from_mapping,
+    layout_card,
     TargetFormat,
     VideoBrief,
     VideoRequest,
@@ -459,6 +467,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resolve_assets_cmd.add_argument("--force", action="store_true", help="overwrite existing artifacts")
     resolve_assets_cmd.add_argument("--json", action="store_true", help="print the summary as JSON")
+    render_screens_cmd = subparsers.add_parser(
+        "render-screens",
+        help="render a screen-card deck of real repository material to 1920x1080 stills",
+    )
+    render_screens_cmd.add_argument("--deck", required=True, help="a persisted screen deck JSON path")
+    render_screens_cmd.add_argument("--out-dir", required=True, help="directory to write the stills into")
+    render_screens_cmd.add_argument(
+        "--manifest-out", help="where to write the deck manifest (default: <out-dir>/screens.json)"
+    )
+    render_screens_cmd.add_argument(
+        "--layout-only", action="store_true", help="lay out every card and report, without rendering"
+    )
+    render_screens_cmd.add_argument("--force", action="store_true", help="replace existing stills")
+    render_screens_cmd.add_argument("--json", action="store_true", help="print the summary as JSON")
     return parser
 
 
@@ -1015,6 +1037,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_plan_scenes(args)
     if args.command == "resolve-assets":
         return _run_resolve_assets(args)
+    if args.command == "render-screens":
+        return _run_render_screens(args)
     return 2
 
 
@@ -1634,4 +1658,125 @@ def _run_resolve_assets(args: argparse.Namespace) -> int:
 
     if args.require_complete and plan.unresolved:
         return 3
+    return 0
+
+
+def _load_screen_deck(path: str) -> tuple[ScreenTheme, tuple[ScreenCard, ...]]:
+    """Read a screen deck: an optional theme override and the ordered cards."""
+
+    try:
+        payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ScreenCardError(f"cannot read screen deck: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ScreenCardError(f"screen deck is not valid JSON: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ScreenCardError("screen deck must be UTF-8") from exc
+    if not isinstance(payload, dict):
+        raise ScreenCardError("a screen deck must be a JSON object")
+    unknown = sorted(set(payload) - {"schema_version", "deck_id", "theme", "cards"})
+    if unknown:
+        raise ScreenCardError("unknown screen deck keys: " + ", ".join(unknown))
+    if payload.get("schema_version") != 1:
+        raise ScreenCardError("screen deck schema_version must be 1")
+    theme_payload = payload.get("theme", {})
+    if not isinstance(theme_payload, dict):
+        raise ScreenCardError("theme must be a JSON object")
+    known_theme = {field.name for field in dataclasses.fields(ScreenTheme)}
+    unknown_theme = sorted(set(theme_payload) - known_theme)
+    if unknown_theme:
+        raise ScreenCardError("unknown theme keys: " + ", ".join(unknown_theme))
+    theme = ScreenTheme(**theme_payload)
+    cards_payload = payload.get("cards")
+    if not isinstance(cards_payload, list) or not cards_payload:
+        raise ScreenCardError("a screen deck requires a non-empty cards array")
+    cards = tuple(card_from_mapping(card) for card in cards_payload)
+    seen: set[str] = set()
+    for card in cards:
+        if card.card_id in seen:
+            raise ScreenCardError(f"duplicate card_id in deck: {card.card_id}")
+        seen.add(card.card_id)
+    return theme, cards
+
+
+def _run_render_screens(args: argparse.Namespace) -> int:
+    try:
+        theme, cards = _load_screen_deck(args.deck)
+    except ScreenCardError as exc:
+        print(f"Screen deck error: {exc}", file=sys.stderr)
+        return 2
+
+    out_dir = Path(args.out_dir).expanduser().resolve()
+    layouts = []
+    try:
+        for card in cards:
+            layouts.append(layout_card(card, theme))
+    except ScreenCardError as exc:
+        print(f"Screen layout error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.layout_only:
+        summary = {
+            "cards": [
+                {"card_id": layout.card_id, "kind": layout.kind,
+                 "boxes": len(layout.boxes), "texts": len(layout.texts)}
+                for layout in layouts
+            ],
+            "rendered": False,
+        }
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"Screen render error: cannot create {out_dir}: {exc}", file=sys.stderr)
+        return 2
+
+    artifacts = []
+    for layout in layouts:
+        target = out_dir / f"{layout.card_id}.png"
+        if target.exists():
+            if not args.force:
+                print(
+                    f"Screen render error: {target} already exists (use --force)",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                target.unlink()
+            except OSError as exc:
+                print(f"Screen render error: cannot replace {target}: {exc}", file=sys.stderr)
+                return 2
+        try:
+            artifacts.append(render_screen_card(layout, target))
+        except ScreenRenderError as exc:
+            print(f"Screen render error: {exc}", file=sys.stderr)
+            return 3
+
+    manifest_path = (
+        Path(args.manifest_out).expanduser().resolve()
+        if args.manifest_out
+        else out_dir / "screens.json"
+    )
+    manifest = {
+        "schema_version": 1,
+        "cards": [artifact.to_dict() for artifact in artifacts],
+    }
+    try:
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(f"Screen render error: cannot write manifest: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        for artifact in artifacts:
+            print(f"{artifact.card_id:28} {artifact.kind:10} {artifact.output_path}")
+        print(f"{len(artifacts)} screen card(s) -> {manifest_path}")
     return 0

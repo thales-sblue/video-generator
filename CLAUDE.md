@@ -63,9 +63,10 @@ CLI disponível hoje: `doctor`, `inspect`, `preflight`, `extract-segment`,
 `extract-audio`, `narrate` (com `--prosody`), `align-captions`, `plan-scenes`
 (com `--semantic`, `--visual-relevance`, `--visual-direction`,
 `--editorial-translation` e `--motion-typography`),
-`resolve-assets`, `execute-segment-plan`, `execute-sequence-plan`,
-`execute-final-sequence-plan`, `validate-segment`, `validate-audio`,
-`validate-manifest`, `validate-project`. Veja `README.md` para exemplos.
+`resolve-assets`, `render-screens`, `execute-segment-plan`,
+`execute-sequence-plan`, `execute-final-sequence-plan`, `validate-segment`,
+`validate-audio`, `validate-manifest`, `validate-project`. Veja `README.md`
+para exemplos.
 
 A mesma suíte roda no GitHub Actions (`.github/workflows/ci.yml`) em `push` para
 `main` e em pull requests, com Python 3.12 e `PYTHONPATH=src`.
