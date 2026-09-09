@@ -10,6 +10,7 @@ import os
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 from video_generator.adapters import (
@@ -31,6 +32,13 @@ from video_generator.adapters import (
     transcribe_words,
 )
 from video_generator.config import ConfigurationError, load_config
+from video_generator.curation import (
+    load_curation_set,
+    lock_from_files,
+    verify_visual_lock,
+    write_review_sheet,
+)
+from video_generator.domain.curation import CurationError
 from video_generator.narration import NarrationError, render_prosodic_narration
 from video_generator.subtitles import (
     SubtitleParseError,
@@ -481,6 +489,47 @@ def build_parser() -> argparse.ArgumentParser:
     )
     render_screens_cmd.add_argument("--force", action="store_true", help="replace existing stills")
     render_screens_cmd.add_argument("--json", action="store_true", help="print the summary as JSON")
+    curate_cmd = subparsers.add_parser(
+        "curate-visuals",
+        help="build the human review sheet for a visual curation set, before any render",
+    )
+    curate_cmd.add_argument(
+        "--set", dest="curation_set", required=True, help="a curation set JSON path"
+    )
+    curate_cmd.add_argument("--review-out", required=True, help="where to write review.html")
+    curate_cmd.add_argument(
+        "--preview-root", help="directory relative previews are resolved against"
+    )
+    curate_cmd.add_argument("--json", action="store_true", help="print the summary as JSON")
+    visual_lock_cmd = subparsers.add_parser(
+        "visual-lock",
+        help="freeze the approved visual choices into a visual-lock.json",
+    )
+    visual_lock_cmd.add_argument(
+        "--set", dest="curation_set", required=True, help="a curation set JSON path"
+    )
+    visual_lock_cmd.add_argument(
+        "--approvals", required=True, help="a text file of answers, one 'SEQ 03 -> B' per line"
+    )
+    visual_lock_cmd.add_argument("--approved-by", required=True, help="who made the decision")
+    visual_lock_cmd.add_argument(
+        "--approved-at", help="ISO-8601 instant of the approval (default: now, UTC)"
+    )
+    visual_lock_cmd.add_argument("--out", required=True, help="where to write visual-lock.json")
+    visual_lock_cmd.add_argument(
+        "--root", help="directory relative asset paths are resolved against"
+    )
+    visual_lock_cmd.add_argument("--force", action="store_true", help="overwrite an existing lock")
+    visual_lock_cmd.add_argument("--json", action="store_true", help="print the lock as JSON")
+    verify_lock_cmd = subparsers.add_parser(
+        "verify-visual-lock",
+        help="check a visual lock against the files on disk, failing closed",
+    )
+    verify_lock_cmd.add_argument("--lock", required=True, help="a visual-lock.json path")
+    verify_lock_cmd.add_argument(
+        "--root", help="directory relative asset paths are resolved against"
+    )
+    verify_lock_cmd.add_argument("--json", action="store_true", help="print the report as JSON")
     return parser
 
 
@@ -1039,6 +1088,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_resolve_assets(args)
     if args.command == "render-screens":
         return _run_render_screens(args)
+    if args.command == "curate-visuals":
+        return _run_curate_visuals(args)
+    if args.command == "visual-lock":
+        return _run_visual_lock(args)
+    if args.command == "verify-visual-lock":
+        return _run_verify_visual_lock(args)
     return 2
 
 
@@ -1780,3 +1835,126 @@ def _run_render_screens(args: argparse.Namespace) -> int:
             print(f"{artifact.card_id:28} {artifact.kind:10} {artifact.output_path}")
         print(f"{len(artifacts)} screen card(s) -> {manifest_path}")
     return 0
+
+
+def _run_curate_visuals(args: argparse.Namespace) -> int:
+    try:
+        curation_set = load_curation_set(Path(args.curation_set).expanduser())
+    except CurationError as exc:
+        print(f"Curation error: {exc}", file=sys.stderr)
+        return 2
+
+    review_path = Path(args.review_out).expanduser()
+    preview_root = (
+        Path(args.preview_root).expanduser()
+        if args.preview_root
+        else review_path.resolve().parent
+    )
+    try:
+        written = write_review_sheet(curation_set, review_path, preview_root=preview_root)
+    except OSError as exc:
+        print(f"Curation error: cannot write the review sheet: {exc}", file=sys.stderr)
+        return 2
+
+    summary = dict(curation_set.summary())
+    summary["review_sheet"] = str(written)
+    summary["pending"] = [
+        decision.sequence_id
+        for decision in curation_set.decisions
+        if decision.needs_approval
+    ]
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        for decision in curation_set.decisions:
+            mark = "DECIDE" if decision.needs_approval else "real  "
+            options = "/".join(option.option_id for option in decision.options)
+            print(
+                f"{decision.sequence_id}  {mark}  {options:7} "
+                f"{decision.seconds:6.2f}s  {decision.title}"
+            )
+        print(
+            f"{summary['sequences']} sequence(s), {summary['needing_approval']} awaiting "
+            f"approval, {summary['real_material_only']} on real material only, "
+            f"{summary['external_assets']} external asset(s)"
+        )
+        print(f"review -> {written}")
+    return 0
+
+
+def _run_visual_lock(args: argparse.Namespace) -> int:
+    out_path = Path(args.out).expanduser()
+    if out_path.exists() and not args.force:
+        print(f"Curation error: {out_path} already exists (use --force)", file=sys.stderr)
+        return 2
+    try:
+        curation_set = load_curation_set(Path(args.curation_set).expanduser())
+        approvals_text = Path(args.approvals).expanduser().read_text(encoding="utf-8")
+    except (CurationError, OSError) as exc:
+        print(f"Curation error: {exc}", file=sys.stderr)
+        return 2
+
+    approved_at = args.approved_at or datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    try:
+        lock = lock_from_files(
+            curation_set,
+            approvals_text,
+            approved_by=args.approved_by,
+            approved_at=approved_at,
+            root=Path(args.root).expanduser() if args.root else None,
+        )
+    except CurationError as exc:
+        print(f"Curation error: {exc}", file=sys.stderr)
+        return 3
+
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(lock, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(f"Curation error: cannot write the lock: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(lock, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        for entry in lock["sequences"]:
+            print(
+                f"{entry['sequence_id']}  {entry['approved_option']}  "
+                f"{entry['material_kind']:20} {len(entry['assets'])} asset(s)"
+            )
+        print(f"{len(lock['sequences'])} sequence(s) locked -> {out_path}")
+    return 0
+
+
+def _run_verify_visual_lock(args: argparse.Namespace) -> int:
+    lock_path = Path(args.lock).expanduser()
+    try:
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Visual lock error: {exc}", file=sys.stderr)
+        return 2
+
+    problems = verify_visual_lock(
+        lock, root=Path(args.root).expanduser() if args.root else None
+    )
+    report = {
+        "lock_id": lock.get("lock_id"),
+        "sequences": len(lock.get("sequences", [])),
+        "valid": not problems,
+        "issues": list(problems),
+    }
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        for problem in problems:
+            print(problem)
+        print(
+            f"{report['sequences']} sequence(s), "
+            + ("lock intact" if report["valid"] else f"{len(problems)} issue(s)")
+        )
+    return 0 if report["valid"] else 1

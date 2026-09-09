@@ -387,6 +387,68 @@ de áudio, e `validate_sequence_artifact` **exige** que seja assim
 (`unexpected_non_video_streams`). Não é preciso fabricar um WAV silencioso para
 render de revisão.
 
+### Curadoria visual (antes do render)
+
+O ciclo antigo era `render -> descobrir escolhas ruins -> refazer`. O render é o
+passo mais caro do pipeline e era também o primeiro lugar onde o autor via o que
+o planner tinha decidido. A etapa `visual-curation` inverte isso:
+
+```
+planejamento -> candidatos visuais -> aprovação humana -> visual lock -> render
+```
+
+**O que exige decisão e o que não exige.** A maior parte de um vídeo de
+desenvolvedor é evidência: código real, terminal real, JSON real, manifest,
+métrica, um frame de um render que este repositório produziu. Evidência não
+precisa de aprovação, precisa de estar correta — ela é usada direto. Só é
+decisão o que é gosto: asset externo, stock, metáfora visual, composição
+gráfica, ou a escolha entre vários frames igualmente plausíveis
+(`needs_human_approval`).
+
+**Prioridade de material** (`MATERIAL_KINDS`, melhor primeiro):
+
+1. material real do projeto;
+2. diagrama baseado no projeto;
+3. motion typography;
+4. composição gráfica;
+5. asset externo — último recurso.
+
+**Gate editorial** (`editorial_gate`). Antes de qualquer asset externo chegar ao
+autor:
+
+- existe material real do projeto que comunica isso melhor? (`real_project_material_covers_this`)
+- a query está em inglês e descreve uma cena, não uma palavra-chave?
+  (`query_not_english`, `query_is_a_keyword_not_a_scene`) — o fluxo é
+  `roteiro PT-BR -> intenção visual -> cena concreta -> descrição em inglês -> query`,
+  nunca a tradução de palavras soltas do roteiro;
+- o candidato veio de metadado técnico virando imagem?
+  (`metadata_as_visual_subject`, `national_symbol_without_narrative_reason`,
+  `national_palette`) — `PT-BR`, `locale`, `idioma`, extensão e nome de arquivo
+  não autorizam bandeira, mapa, verde-e-amarelo ou qualquer símbolo nacional; só
+  a narração daquele bloco autoriza, dizendo a palavra;
+- é um dos fallbacks genéricos proibidos por nome? (`generic_fallback:` — AI
+  robot, glowing brain, hacker, matrix code, futuristic technology, generic
+  programmer, pessoa digitando, server room, stock corporativo).
+
+Regra: **semanticamente relacionado ≠ editorialmente relevante.**
+
+**Interface de revisão.** `curate-visuals` escreve um `review.html` único e
+autossuficiente: uma sequência por bloco, até 3 opções lado a lado com preview,
+fonte/asset, conceito visual, query, justificativa e a recomendação com o
+motivo. O autor responde em uma linha por sequência: `SEQ 03 -> B`,
+`SEQ 07 -> regenerar`.
+
+**Visual lock.** `visual-lock` congela as respostas em
+`schemas/visual-lock-v1.schema.json`: sequência, opção aprovada, assets, origem,
+query, conceito visual, overrides manuais e o SHA-256 de cada arquivo. Depois de
+aprovado, **o render não substitui asset em silêncio**: `verify-visual-lock`
+falha explicitamente (exit 1) se um arquivo sumiu ou mudou.
+
+**O checkpoint não é automatizado.** O sistema pesquisa, gera candidatos,
+analisa, ranqueia e recomenda; `build_visual_lock` recusa produzir um lock para
+qualquer sequência que o humano não tenha respondido, e `regenerar` não é
+aprovação.
+
 ### O ciclo
 
 1. `scripts/build-canal-dev-01.py` — a tabela de blocos (texto a gravar +
@@ -395,12 +457,18 @@ render de revisão.
    levaria a ser falado; toda duração é arredondada para um número inteiro de
    frames a 30 fps, para que o plano e o arquivo concordem.
 2. `render-screens` — os stills.
-3. `execute-final-sequence-plan` — o corte, sem áudio.
-4. **Revisão humana com o vídeo na tela.**
-5. Só então: gravar a voz, medir os timings reais contra o WAV, remedir os
+3. `scripts/build-canal-dev-01-curation.py` — o mapa de sequências, a auditoria
+   do corte anterior, os candidatos e o `review.html`.
+4. **Curadoria humana**: o autor responde `SEQ n -> X` sobre o `review.html`.
+5. `visual-lock` — as decisões viram `visual-lock.json`.
+6. `execute-final-sequence-plan` — o corte, sem áudio.
+7. **Revisão humana com o vídeo na tela.**
+8. Só então: gravar a voz, medir os timings reais contra o WAV, remedir os
    shots, sincronizar a tipografia e renderizar a versão publicável.
 
-Enquanto o passo 4 não acontecer, `editorial_review` continua `not_performed`.
+Enquanto o passo 7 não acontecer, `editorial_review` continua `not_performed`.
+Aprovar a curadoria visual **não** é revisão editorial do vídeo: é aprovação das
+imagens, antes de existir vídeo.
 
 ## Evolução planejada do `dark-video`
 

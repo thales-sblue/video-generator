@@ -63,7 +63,8 @@ CLI disponível hoje: `doctor`, `inspect`, `preflight`, `extract-segment`,
 `extract-audio`, `narrate` (com `--prosody`), `align-captions`, `plan-scenes`
 (com `--semantic`, `--visual-relevance`, `--visual-direction`,
 `--editorial-translation` e `--motion-typography`),
-`resolve-assets`, `render-screens`, `execute-segment-plan`,
+`resolve-assets`, `render-screens`, `curate-visuals`, `visual-lock`,
+`verify-visual-lock`, `execute-segment-plan`,
 `execute-sequence-plan`, `execute-final-sequence-plan`, `validate-segment`,
 `validate-audio`, `validate-manifest`, `validate-project`. Veja `README.md`
 para exemplos.

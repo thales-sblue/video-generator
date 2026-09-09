@@ -19,6 +19,8 @@ class SchemaTests(unittest.TestCase):
             "asset-requirements-v1.schema.json",
             "asset-resolution-plan-v1.schema.json",
             "screen-deck-v1.schema.json",
+            "visual-curation-set-v1.schema.json",
+            "visual-lock-v1.schema.json",
         }
         schema_paths = set((REPOSITORY_ROOT / "schemas").glob("*.schema.json"))
 

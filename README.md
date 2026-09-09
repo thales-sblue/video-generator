@@ -102,6 +102,9 @@ python -m video_generator resolve-assets --shot-plan output\shot-plan.json --ass
 python -m video_generator resolve-assets --shot-plan output\shot-plan.json --asset-requirements output\asset-requirements.json --library assets\library --out-dir output\resolved-assets --providers local,pexels,pixabay --require-complete --force
 python -m video_generator render-screens --deck projects\canal_dev_01\screens.json --out-dir output\canal-dev-01\screens --layout-only
 python -m video_generator render-screens --deck projects\canal_dev_01\screens.json --out-dir output\canal-dev-01\screens --force --json
+python -m video_generator curate-visuals --set projects\canal_dev_01\visual-curation-set.json --review-out output\canal-dev-01\visual-curation\review.html
+python -m video_generator visual-lock --set projects\canal_dev_01\visual-curation-set.json --approvals approvals.txt --approved-by "seu nome" --out projects\canal_dev_01\visual-lock.json
+python -m video_generator verify-visual-lock --lock projects\canal_dev_01\visual-lock.json --json
 python -m video_generator execute-segment-plan projects\example\edit-plan.json --manifest projects\example\render-manifest.json --json
 python -m video_generator execute-sequence-plan projects\example\sequence-plan.json --manifest projects\example\sequence-manifest.json --json
 python -m video_generator execute-final-sequence-plan projects\example\final-plan.json --manifest projects\example\final-manifest.json --json
@@ -590,6 +593,43 @@ visual-only não precisa de WAV silencioso.
 O primeiro caso real é `scripts/build-canal-dev-01.py`, que monta o vídeo
 `canal_dev_01` — a história deste repositório contada com material dele mesmo.
 
+## `curate-visuals` / `visual-lock` — a curadoria antes do render
+
+O ciclo antigo era `render -> descobrir escolhas ruins -> refazer`. A etapa de
+curadoria visual troca isso por
+`planejamento -> candidatos -> aprovação humana -> visual lock -> render`.
+
+`domain/curation.py` (puro, stdlib) responde três perguntas:
+
+1. **quais sequências exigem um humano?** Material real do projeto e diagramas
+   feitos a partir dele são evidência e entram direto. Asset externo, stock,
+   metáfora, composição gráfica e escolha entre frames plausíveis são decisão.
+2. **o candidato é editorialmente relevante ou só semanticamente relacionado?**
+   `editorial_gate` recusa query em português, query que é palavra-chave e não
+   cena, metadado técnico virando imagem (`PT-BR` → bandeira do Brasil) e os
+   fallbacks genéricos proibidos por nome.
+3. **o que o humano aprovou de fato?** `parse_approvals` lê `SEQ 03 -> B` e
+   `build_visual_lock` congela; sequência não respondida ou marcada
+   `regenerar` **impede** o lock.
+
+```powershell
+$env:PYTHONPATH = "src"
+python scripts\build-canal-dev-01-curation.py
+python -m video_generator curate-visuals --set projects\canal_dev_01\visual-curation-set.json --review-out output\canal-dev-01\visual-curation\review.html
+# abrir o review.html, responder uma linha por sequência em approvals.txt
+python -m video_generator visual-lock --set projects\canal_dev_01\visual-curation-set.json --approvals approvals.txt --approved-by "seu nome" --out projects\canal_dev_01\visual-lock.json
+python -m video_generator verify-visual-lock --lock projects\canal_dev_01\visual-lock.json --json
+```
+
+O `review.html` é um arquivo único e autossuficiente (previews embutidos como
+data URI), para não ser preciso abrir dezenas de imagens uma a uma. Os contratos
+públicos são `schemas/visual-curation-set-v1.schema.json` e
+`schemas/visual-lock-v1.schema.json`.
+
+Depois de aprovado, o asset não é substituído em silêncio:
+`verify-visual-lock` compara o SHA-256 de cada arquivo aprovado e sai com 1 se
+algum sumiu ou mudou.
+
 
 ## Testes
 
@@ -606,10 +646,12 @@ A mesma suíte é executada pelo GitHub Actions em pushes e pull requests.
 config/                         configuração segura padrão
 config/ffmpeg-lock.json         proveniência e integridade do FFmpeg local aprovado
 docs/                           visão, arquitetura e linguagem audiovisual
-schemas/                        contratos JSON públicos v1 (request, brief, edit-plan, manifest, narrative-script, scene-plan, shot-plan, asset-requirements, screen-deck)
+schemas/                        contratos JSON públicos v1 (request, brief, edit-plan, manifest, narrative-script,
+                                scene-plan, shot-plan, asset-requirements, screen-deck, visual-curation-set, visual-lock)
 src/video_generator/domain/     modelos e invariantes puros; planning.py é o Scene/Shot Planner,
                                 editorial.py a camada semântica (beats, ênfases, identidade)
-                                e screens.py o layout dos screen cards do developer-video
+                                screens.py o layout dos screen cards do developer-video
+                                e curation.py o checkpoint humano antes do render
 src/video_generator/adapters/   integrações locais, incluindo ffprobe e FFmpeg
 src/video_generator/workflows/  recorte e primeira timeline sequencial
 src/video_generator/validation/ preflight, mídia, integridade e rastreabilidade read-only

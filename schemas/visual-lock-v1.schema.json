@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/thales-sblue/video-generator/schemas/visual-lock-v1.schema.json",
+  "title": "VisualLock v1",
+  "description": "The visual choices a human approved, frozen before the render. Every sequence names the option that was approved, the exact files it locks and the SHA-256 of each of them. A render that cannot reproduce this lock must fail explicitly instead of substituting an asset.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "lock_id",
+    "project_id",
+    "curation_set_id",
+    "approved_by",
+    "approved_at",
+    "sequences"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "lock_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "video_title": {"type": "string"},
+    "curation_set_id": {"type": "string", "minLength": 1},
+    "approved_by": {"type": "string", "minLength": 1},
+    "approved_at": {"type": "string", "minLength": 1},
+    "sequences": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence_id",
+          "block_id",
+          "shot_indexes",
+          "approved_option",
+          "material_kind",
+          "visual_concept",
+          "assets"
+        ],
+        "properties": {
+          "sequence_id": {"type": "string", "pattern": "^seq_[0-9]{2,}$"},
+          "block_id": {"type": "string", "minLength": 1},
+          "title": {"type": "string"},
+          "shot_indexes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "integer", "minimum": 1}
+          },
+          "start_seconds": {"type": "number", "minimum": 0},
+          "seconds": {"type": "number", "exclusiveMinimum": 0},
+          "approved_option": {"type": "string", "pattern": "^[A-Z]$"},
+          "material_kind": {
+            "enum": [
+              "project_material",
+              "project_diagram",
+              "motion_typography",
+              "graphic_composition",
+              "external_asset"
+            ]
+          },
+          "visual_concept": {"type": "string", "minLength": 1},
+          "origin": {"type": "string"},
+          "query": {"type": ["string", "null"]},
+          "followed_recommendation": {"type": ["boolean", "null"]},
+          "manual_overrides": {"type": "array", "items": {"type": "string"}},
+          "assets": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "role", "sha256"],
+              "properties": {
+                "path": {"type": "string", "minLength": 1},
+                "role": {"type": "string", "minLength": 1},
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "start_seconds": {"type": "number", "minimum": 0},
+                "seconds": {"type": "number", "exclusiveMinimum": 0},
+                "origin": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
