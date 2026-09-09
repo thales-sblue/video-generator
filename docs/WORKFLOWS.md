@@ -366,8 +366,18 @@ que muda é **de onde vem a imagem**.
 | --- | --- | --- |
 | origem da imagem | provedor de assets (Pexels/Pixabay/biblioteca local) | o próprio repositório |
 | unidade visual | shot fotográfico com direção | screen card + recorte de render anterior |
-| texto | legenda alinhada à voz, depois tipografia editorial | só tipografia editorial; sem legenda |
+| texto | legenda alinhada à voz, depois tipografia editorial | só tipografia editorial; sem legenda alinhada |
 | áudio | narração + música com ducking | nenhum, até existir gravação humana |
+
+Sem voz, não existe legenda *alinhada* (isso vem de `align-captions` contra um
+WAV real). Um corte silencioso pode, ainda assim, carregar uma **legenda de
+leitura**: o texto do roteiro em si, burned-in via a mesma operação `captions`
+do `video-sequence` (estilo `bottom_box`, itens inline), timed
+proporcionalmente dentro de cada bloco — não para o espectador final, mas para
+o autor saber o que dizer e quando, ao gravar. `canal_dev_01` usa isso
+(`chunk_narration`/`build_captions` em `scripts/build-canal-dev-01.py`). Ela é
+substituída pela legenda alinhada de verdade no passo 8 do ciclo abaixo,
+depois que a voz existir.
 
 ### Screen cards
 

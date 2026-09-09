@@ -18,6 +18,18 @@ Provisional timing: there is no voice yet, so each block is stretched to the
 time its own text would take to speak in Brazilian Portuguese at
 ``WORDS_PER_SECOND``. The authored shot proportions inside a block are kept.
 
+The visual choices came from a human review: ``scripts/build-canal-dev-01-curation.py``
+generated candidates for every subjective sequence, the author answered
+``SEQ n -> X`` on the review sheet, and ``projects/canal_dev_01/visual-lock.json``
+records the approval with a SHA-256 per asset. The shots below reflect that
+lock; each replaced shot carries a ``SEQ n -> X`` comment naming the decision.
+
+There is also no aligned captions pass yet (that needs a real WAV — see
+``align-captions``), but the author still needs to know what to say when: the
+``captions`` operation burns the narration text itself onto the frame, one
+cue per sentence-sized chunk, timed proportionally inside each block, purely
+as a reading aid for the recording session.
+
 Usage (from the repository root, with PYTHONPATH=src):
 
     python scripts/build-canal-dev-01.py
@@ -26,6 +38,7 @@ Usage (from the repository root, with PYTHONPATH=src):
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -705,13 +718,18 @@ BLOCKS = [
             "isso aqui é o mesmo roteiro, seis versões depois."
         ),
         "shots": [
-            clip("v0", 44.0, 3.4),
-            clip("v0", 135.5, 2.8),
-            clip("v0", 158.5, 2.4),
+            # SEQ 01 -> B (visual-lock): as três placas de IA genérica que o v0
+            # escolheu sozinho. Substitui a bandeira do Brasil (44.0s/158.5s),
+            # achada pela curadoria: query em português casada pelo idioma.
+            clip("v0", 139.4, 3.4),
+            clip("v0", 172.2, 2.8),
+            clip("v0", 235.9, 2.4),
             card("hook_execute", 3.0),
             card("hook_tree", 2.6),
-            clip("mt", 68.4, 3.6),
-            clip("mt", 155.4, 3.4),
+            # SEQ 03 -> C (visual-lock): alguém escrevendo num quarto mal
+            # iluminado, depois a conversa noturna sob luz de cidade.
+            clip("mt", 19.3, 3.6),
+            clip("mt", 90.7, 3.4),
         ],
         "type_events": [
             type_event(0, 2.4, "small_plus_massive", "stagger_rise", [
@@ -742,7 +760,9 @@ BLOCKS = [
         ),
         "shots": [
             card("idea_pipeline", 4.6, motion="slow_push_in"),
-            clip("v0", 4.5, 2.8),
+            # SEQ 05 -> A (visual-lock): diagrama à mão no quadro branco, em vez
+            # de folhear um livro sem relação com "regra escrita antes do código".
+            clip("v0", 32.6, 2.8),
             card("idea_layers", 3.4, motion="detail_push"),
             card("idea_rules", 4.0),
             card("idea_doctor", 4.4),
@@ -771,17 +791,21 @@ BLOCKS = [
         "shots": [
             card("worked_tests", 3.4),
             card("worked_suite", 3.4),
-            card("worked_shot", 4.6),
-            clip("mt", 30.0, 2.6),
+            # SEQ 08 -> A (visual-lock): segurar o card em vez de cortar para uma
+            # foto sem relação (stop-motion numa cidade). +2.6s absorvidos aqui.
+            card("worked_shot", 4.6 + 2.6),
             card("worked_manifest", 4.4),
-            card("worked_validate", 3.8, motion="slow_push_in"),
-            clip("mt", 12.0, 3.0),
+            # SEQ 10 -> A (visual-lock): mesmo motivo — o fecho do bloco é o
+            # exit zero deste card, não uma foto de alguém segurando um caderno.
+            # +3.0s absorvidos aqui.
+            card("worked_validate", 3.8 + 3.0, motion="slow_push_in"),
         ],
-        "type_events": [
-            type_event(6, 2.2, "dominant_word", "scale_in", [
-                word("TECNICAMENTE VÁLIDO", "large"),
-            ]),
-        ],
+        # O type_event "TECNICAMENTE VÁLIDO" caiu junto com o shot que ele
+        # ocupava (mt@12.0, removido pela SEQ 10): motion typography só pode
+        # pousar sobre um clipe, nunca sobre um card (build_type_items recusa
+        # a mistura), e o card worked_validate já mostra "exit 0" na tela — a
+        # mesma frase, sem uma segunda camada tipográfica competindo com ela.
+        "type_events": [],
     },
     {
         "id": "04_slideshow",
@@ -798,11 +822,16 @@ BLOCKS = [
             "aquela palavra. Nada disso está quebrado. Tudo isso está errado."
         ),
         "shots": [
+            # A tripla que a narração descreve: o mesmo asset em 133.9s, 178.9s
+            # e 222.5s do v0 — ~45s de distância entre cada ocorrência.
             clip("v0", 135.0, 4.6),
             clip("v0", 180.0, 4.2),
             clip("v0", 223.5, 4.2),
-            clip("v0", 44.0, 2.6),
-            clip("v0", 127.5, 2.6),
+            # SEQ 11 -> A (visual-lock): a segunda reutilização real do v0 — a
+            # lupa sobre papel, em 39.6s e 129.9s — substitui a bandeira do
+            # Brasil, que aparecia aqui duas vezes (44.0s e 127.5s).
+            clip("v0", 39.6, 2.6),
+            clip("v0", 129.9, 2.6),
             card("slideshow_repeat", 4.8),
             card("slideshow_verdict", 3.6, motion="slow_push_in"),
         ],
@@ -833,9 +862,12 @@ BLOCKS = [
         "shots": [
             card("cuts_planner", 4.2),
             card("cuts_count", 3.8, motion="slow_push_in"),
-            clip("v2", 96.0, 2.6),
-            clip("v2", 120.5, 2.4),
-            clip("v2", 173.0, 2.4),
+            # SEQ 15 -> A (visual-lock): três placas genéricas do v2 em corte
+            # rápido — papel, estante, jornais — em vez de formatura e teste de
+            # gravidez, que o espectador tentava interpretar.
+            clip("v2", 27.8, 2.6),
+            clip("v2", 39.9, 2.4),
+            clip("v2", 46.7, 2.4),
             card("cuts_verdict", 3.8, motion="slow_push_in"),
         ],
         "type_events": [
@@ -866,8 +898,11 @@ BLOCKS = [
             card("images_scores", 4.6, motion="slow_push_in"),
             clip("v0", 89.5, 2.8),
             card("images_provenance", 4.2, motion="detail_push"),
-            clip("v0", 202.0, 2.8),
-            clip("v0", 60.5, 2.6),
+            # SEQ 20 -> B (visual-lock): duas placas de IA genérica em
+            # sequência — o defeito duas vezes seguidas: nota alta em tudo,
+            # zero no que importa.
+            clip("v0", 172.2, 2.8),
+            clip("v0", 139.4, 2.6),
             card("images_verdict", 4.6),
         ],
         "type_events": [
@@ -934,7 +969,10 @@ BLOCKS = [
             card("turn_result", 4.6),
             clip("tr", 96.0, 2.6),
             clip("tr", 40.5, 2.4),
-            clip("tr", 120.5, 2.6),
+            # SEQ 27 -> A (visual-lock): alguém lendo um documento enquanto
+            # anda — "ler antes de buscar" — em vez de um prédio de
+            # apartamentos que não dizia nada.
+            clip("tr", 162.2, 2.6),
         ],
         "type_events": [
             type_event(5, 2.2, "contrast_pair", "masked_reveal", [
@@ -1019,9 +1057,12 @@ BLOCKS = [
         "shots": [
             card("open_manifest", 4.6, motion="detail_push"),
             card("open_defects", 4.8),
-            clip("mt", 40.0, 2.8),
-            clip("v0", 246.5, 2.6),
-            clip("v2", 60.0, 2.6),
+            # SEQ 35 -> B (visual-lock): três assets com cara de banco de
+            # imagens que este projeto realmente usou, ditos enquanto a
+            # narração nomeia o defeito, em vez de ilustrar o arrependimento.
+            clip("v0", 139.4, 2.8),
+            clip("v0", 64.6, 2.6),
+            clip("v2", 75.8, 2.6),
             clip("mt", 96.0, 2.6),
             card("open_question", 5.0, motion="slow_push_in"),
         ],
@@ -1048,7 +1089,9 @@ BLOCKS = [
         "shots": [
             card("end_one", 3.4, motion="slow_push_in"),
             card("end_two", 3.6, motion="slow_push_in"),
-            clip("mt", 200.0, 3.0),
+            # SEQ 38 -> A (visual-lock): alguém editando vídeo tarde da
+            # noite, em vez de alguém limpando uma mesa com um lenço.
+            clip("mt", 83.1, 3.0),
             card("end_card", 4.4),
         ],
         "type_events": [],
@@ -1147,6 +1190,84 @@ def build_type_items(timeline):
     return items
 
 
+# There is no voice yet, so this cut has no aligned captions in the usual
+# sense (align-captions needs a real WAV). What it needs instead is a reading
+# aid: the exact narration text, on screen, timed to the block it belongs to,
+# so the author can read along and know what to say when recording the voice
+# later. CAPTION_MAX_CHARS keeps every cue well under the schema's 160-char
+# cap; chunk_narration splits on sentence boundaries first, and only breaks a
+# sentence mid-way when it would not fit on its own.
+CAPTION_MAX_CHARS = 84
+
+
+def chunk_narration(text, max_chars=CAPTION_MAX_CHARS):
+    """Greedily wrap ``text`` into lines close to ``max_chars``, word by word.
+
+    Wrapping runs across the whole block rather than sentence by sentence:
+    wrapping one sentence at a time leaves a one- or two-word remainder on
+    its own line whenever a sentence's length isn't a clean multiple of the
+    line width (e.g. "bom." on its own), and that remainder then gets a
+    caption duration proportional to its own handful of characters — a
+    fraction of a second that flashes and vanishes before it can be read.
+    Wrapping continuously carries a short remainder into the next sentence's
+    line instead, so only the very last line of the block can ever be short.
+    """
+
+    lines = []
+    current = ""
+    for word in text.split():
+        candidate = f"{current} {word}".strip()
+        if not current or len(candidate) <= max_chars:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def build_captions(timeline, total_seconds):
+    """One cue per narration chunk, timed proportionally within its block.
+
+    Cues are contiguous (no gap) inside a block and across block boundaries,
+    which satisfies video-sequence's ordered/non-overlapping rule (touching is
+    allowed, only going backwards is not) while never leaving a silent gap in
+    the reading aid. Block boundaries are read straight off ``entry["start"]``
+    of the *next* block (or ``total_seconds`` for the last one) rather than
+    re-derived as ``start + seconds`` — each block's own start/seconds are
+    independently rounded to 3 decimals when the timeline is built, and
+    re-adding them drifts by a fraction of a millisecond from the boundary the
+    next block actually starts at, which is enough for the ordering check to
+    reject a caption that lands exactly on the cut.
+    """
+
+    frame = 1 / TIMELINE_FPS
+    items = []
+    for index, entry in enumerate(timeline):
+        chunks = chunk_narration(entry["block"]["narration"])
+        if not chunks:
+            continue
+        weights = [len(chunk) for chunk in chunks]
+        total_weight = sum(weights)
+        block_start = entry["start"]
+        block_end = (
+            timeline[index + 1]["start"] if index + 1 < len(timeline) else snap(total_seconds)
+        )
+        span = block_end - block_start
+        cursor = block_start
+        for chunk_index, (chunk, weight) in enumerate(zip(chunks, weights)):
+            if chunk_index == len(chunks) - 1:
+                end = block_end
+            else:
+                end = snap(cursor + span * (weight / total_weight))
+            if end <= cursor:
+                end = snap(cursor + frame)
+            items.append({"text": chunk, "start_seconds": cursor, "end_seconds": end})
+            cursor = end
+    return items
+
+
 def build_edit_plan(timeline, total_seconds):
     sources = []
     operations = []
@@ -1194,6 +1315,23 @@ def build_edit_plan(timeline, total_seconds):
             "start_seconds": None,
             "end_seconds": None,
             "parameters": VISUAL_DIRECTION,
+        }
+    )
+    # video-sequence's canonical operation order is timeline segments, then
+    # visual_direction, captions, text_events, motion_typography, fade, music,
+    # narration (validate-manifest enforces exactly this) — captions before
+    # motion_typography, not after.
+    operations.append(
+        {
+            "operation_id": "captions",
+            "kind": "captions",
+            "source": None,
+            "start_seconds": None,
+            "end_seconds": None,
+            "parameters": {
+                "style": "bottom_box",
+                "items": build_captions(timeline, total_seconds),
+            },
         }
     )
     operations.append(
@@ -1396,10 +1534,12 @@ def main() -> int:
     write_script(timeline, total)
     write_timeline(timeline, total)
 
+    by_id = {op["operation_id"]: op for op in plan["operations"]}
     print(f"blocks     {len(timeline)}")
     print(f"shots      {sum(len(entry['shots']) for entry in timeline)}")
     print(f"cards      {len(CARDS)}")
-    print(f"type       {len(plan['operations'][-2]['parameters']['items'])} events")
+    print(f"type       {len(by_id['motion_typography']['parameters']['items'])} events")
+    print(f"captions   {len(by_id['captions']['parameters']['items'])} cues")
     print(f"duration   {total:.2f} s")
     print(f"plan       {PROJECT_DIR / 'edit-plan.json'}")
     return 0
