@@ -61,8 +61,10 @@ $env:PYTHONPATH = "src"; .\.venv\Scripts\python.exe -m unittest discover -s test
 
 CLI disponível hoje: `doctor`, `inspect`, `preflight`, `extract-segment`,
 `extract-audio`, `narrate` (com `--prosody`), `align-captions`, `review-cuts`
-(análise assistida de vídeo gravado: transcrição + silêncios → sugestões
-`KEEP`/`REVIEW`/`CUT` revisáveis, sem render), `plan-scenes`
+(análise editorial de vídeo gravado: transcrição inteira + silêncios → trechos
+`KEEP`/`REVIEW`/`CUT` com categoria semântica, blocos removíveis e resumo de
+edição; `provenance` `heuristic`|`agent`; `--from-review` regenera o `.md`; sem
+render), `plan-scenes`
 (com `--semantic`, `--visual-relevance`, `--visual-direction`,
 `--editorial-translation` e `--motion-typography`),
 `resolve-assets`, `render-screens`, `curate-visuals`, `visual-lock`,

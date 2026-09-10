@@ -195,19 +195,35 @@ o ritmo — lê o ritmo do áudio.
 você**: recebe um vídeo (ou áudio) bruto, extrai o WAV (`extract-audio`),
 transcreve a fala em frases com timestamps pelo Whisper local
 (`transcribe_segments`, mesmo modelo travado do `align-captions`, offline) e mede
-os silêncios (`silencedetect`). O `domain/takes.py` — puro, sem I/O — lê essas
-medições e marca cada trecho `KEEP`, `REVIEW` ou `CUT` com motivo legível e
-confiança em `0..1`. Heurísticas v1: pausa longa (vira uma linha `CUT` própria),
-frase repetida logo em seguida (corta a tentativa anterior), recomeço de
-explicação ("na verdade…", "deixa eu…"), frase iniciada e abandonada, e vício de
-linguagem em excesso (só `REVIEW`). **Nada é removido e nenhum render acontece**:
-`CUT` é sugestão, a decisão é sua. A saída vai para `projects/<slug>/` com
-`--project` (ou `--out-dir <dir>`): `cut-review.json` (contrato publicado
-`schemas/cut-review-v1.schema.json`), `cut-review.md` (uma folha legível, um bloco
-por trecho) e `source-audio.wav`. Recusa sobrescrever qualquer um dos três.
-`--language` (padrão `pt`), `--model` e `--long-silence` (padrão 1,5 s) ajustam a
-passada. Cortes, zoom, B-roll, legendas e motion typography sobre a sua gravação
-são camadas futuras.
+os silêncios (`silencedetect`). O `domain/takes.py` — puro, sem I/O — lê a
+transcrição **inteira**, compara cada trecho com o que veio antes e depois, e
+marca `KEEP`, `REVIEW` ou `CUT` com uma **categoria semântica**, motivo legível e
+confiança em `0..1`. Categorias: `REPETITION` (regravação quase igual → corta a
+anterior; ou reafirmação de algo já dito → `REVIEW`), `TANGENT` (desvio que o
+próprio apresentador anuncia — "a gente consegue deixar mais complexo…", "você
+não precisa entender isso agora…"), `SELF_COMMENTARY` (aparte sobre a própria
+fala: "está uma bagunça", "já tô entrando em detalhe que eu não ia entrar"),
+`FILLER` (muleta de linguagem por janela de tempo, só `REVIEW`), `FAILED_TAKE`
+(recomeço / frase abandonada), `REDUNDANT_EXAMPLE`, `LONG_PAUSE`, `OFF_TOPIC`.
+Trechos flagrados adjacentes viram `blocks` (blocos removíveis) e um `summary`
+reporta duração original, duração estimada após cortes (REVIEW conta como meio
+corte), principais trechos removíveis e uma nota de ritmo. **Nada é removido e
+nenhum render acontece**: `CUT` é sugestão, a decisão é sua.
+
+As heurísticas são deterministas e propõem candidatos; **elas não julgam se uma
+frase carrega personalidade ou humor** — isso fica com o editor. O contrato tem
+`provenance`: `heuristic` (a passada da CLI) ou `agent` (uma revisão
+autoral/curada pelo agente). `review-cuts --from-review <cut-review.json>` pula
+transcrição/análise, revalida um JSON (autoral ou editado à mão) e regenera o
+`cut-review.md` a partir dele.
+
+Saída em `projects/<slug>/` com `--project` (ou `--out-dir <dir>`):
+`cut-review.json` (contrato `schemas/cut-review-v1.schema.json`), `cut-review.md`
+(folha legível: resumo, blocos, trecho a trecho), `transcript.json` (saída crua
+do Whisper, para re-analisar sem re-transcrever) e `source-audio.wav`. Recusa
+sobrescrever. `--language` (padrão `pt`), `--model` e `--long-silence` (padrão
+1,5 s) ajustam a passada. Aplicar os cortes, zoom, B-roll, legendas e motion
+typography sobre a sua gravação são camadas futuras.
 
 `plan-scenes` transforma um roteiro narrado em um plano visual denso **antes** do
 `EditPlan`, de forma pura e determinística (sem FFmpeg, sem download de asset, sem
@@ -671,7 +687,8 @@ schemas/                        contratos JSON públicos v1 (request, brief, edi
 src/video_generator/domain/     modelos e invariantes puros; planning.py é o Scene/Shot Planner,
                                 editorial.py a camada semântica (beats, ênfases, identidade)
                                 screens.py o layout dos screen cards do developer-video,
-                                takes.py as sugestões de corte para vídeo gravado
+                                takes.py a análise editorial de vídeo gravado
+                                (takes_lexicon.py só os léxicos pt-BR)
                                 e curation.py o checkpoint humano antes do render
 src/video_generator/adapters/   integrações locais, incluindo ffprobe e FFmpeg
 src/video_generator/workflows/  recorte e primeira timeline sequencial

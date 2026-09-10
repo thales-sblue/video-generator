@@ -35,6 +35,8 @@ from video_generator.domain.prosody import (
 )
 from video_generator.domain.takes import (
     CutReview,
+    EditSummary,
+    RemovableBlock,
     ReviewedSegment,
     SilenceSpan,
     TakesError,
@@ -209,6 +211,15 @@ __all__ = [
     "VisualStyle",
     "plan_text_events",
     "read_beats",
+    "CutReview",
+    "EditSummary",
+    "RemovableBlock",
+    "ReviewedSegment",
+    "SilenceSpan",
+    "TakesError",
+    "TranscriptSegment",
+    "analyze_take",
+    "render_review_markdown",
 ]
 # NOTE: implementation lands contract-by-contract via TDD; planning.py defines
 # placeholders for the not-yet-built names so this import stays resolvable.

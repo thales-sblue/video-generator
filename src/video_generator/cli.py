@@ -81,6 +81,7 @@ from video_generator.domain import (
     visual_direction_operation,
 )
 from video_generator.domain.takes import (
+    CutReview,
     SilenceSpan,
     TakesError,
     TranscriptSegment,
@@ -452,7 +453,11 @@ def build_parser() -> argparse.ArgumentParser:
         "review-cuts",
         help="transcribe a recorded take and suggest (never make) cut points",
     )
-    review_cuts_cmd.add_argument("video", help="the raw recorded video (or audio) file to review")
+    review_cuts_cmd.add_argument(
+        "video",
+        nargs="?",
+        help="the raw recorded video (or audio) file to review (omit with --from-review)",
+    )
     review_cuts_dest = review_cuts_cmd.add_mutually_exclusive_group(required=True)
     review_cuts_dest.add_argument(
         "--project", help="project slug; writes under projects/<slug>/"
@@ -471,6 +476,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.5,
         help="a pause at least this many seconds long is flagged (default: 1.5)",
+    )
+    review_cuts_cmd.add_argument(
+        "--from-review",
+        help="skip transcription/analysis: re-validate this cut-review.json and "
+        "re-render cut-review.md from it (for an agent-authored or hand-edited review)",
     )
     review_cuts_cmd.add_argument(
         "--json", action="store_true", help="print the summary as JSON"
@@ -1240,30 +1250,120 @@ def _run_align_captions(args: argparse.Namespace) -> int:
     return 0
 
 
+def _review_out_dir(args: argparse.Namespace) -> "Path | None":
+    if args.project is not None:
+        slug = args.project
+        if not slug or "/" in slug or "\\" in slug or slug in (".", ".."):
+            print(f"Review error: invalid project slug: {slug!r}", file=sys.stderr)
+            return None
+        return (Path("projects") / slug).expanduser().resolve()
+    return Path(args.out_dir).expanduser().resolve()
+
+
+def _emit_review_summary(
+    args: argparse.Namespace,
+    review: CutReview,
+    *,
+    json_path: Path,
+    markdown_path: Path,
+    extra: dict[str, object],
+) -> None:
+    tally = review.counts()
+    payload = review.to_dict()
+    summary = {
+        "review_path": str(json_path.resolve()),
+        "markdown_path": str(markdown_path.resolve()),
+        "provenance": review.provenance,
+        "duration": payload["duration"],
+        "estimated_duration_after_cuts": payload["summary"][
+            "estimated_duration_after_cuts"
+        ],
+        "segments": len(review.segments),
+        "blocks": len(review.blocks),
+        "keep": tally["KEEP"],
+        "review": tally["REVIEW"],
+        "cut": tally["CUT"],
+        **extra,
+    }
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(f"Review: {summary['review_path']}")
+        print(f"Readable: {summary['markdown_path']}")
+        print(
+            f"{summary['segments']} segment(s) over {summary['duration']}: "
+            f"{summary['keep']} KEEP / {summary['review']} REVIEW / {summary['cut']} CUT"
+            f"; {summary['blocks']} removable block(s); "
+            f"est. {summary['estimated_duration_after_cuts']} after cuts"
+        )
+        print("CUT and REVIEW are suggestions; the cut decision is yours.")
+
+
 def _run_review_cuts(args: argparse.Namespace) -> int:
+    out_dir = _review_out_dir(args)
+    if out_dir is None:
+        return 2
+    json_path = out_dir / "cut-review.json"
+    markdown_path = out_dir / "cut-review.md"
+
+    if args.from_review is not None:
+        source_json = Path(args.from_review).expanduser()
+        try:
+            payload = json.loads(source_json.read_text(encoding="utf-8"))
+        except OSError as exc:
+            print(f"Review error: cannot read {source_json}: {exc}", file=sys.stderr)
+            return 2
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            print(f"Review error: {source_json} is not valid UTF-8 JSON: {exc}", file=sys.stderr)
+            return 2
+        try:
+            review = CutReview.from_dict(payload)
+        except TakesError as exc:
+            print(f"Review error: {exc}", file=sys.stderr)
+            return 2
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            # the JSON is the source of truth here; (re)write a normalised copy
+            # only when it is not the very file we were handed
+            if os.path.normcase(str(source_json.resolve())) != os.path.normcase(
+                str(json_path.resolve())
+            ):
+                if json_path.exists():
+                    print(f"Review error: output already exists: {json_path}", file=sys.stderr)
+                    return 2
+                json_path.write_text(
+                    json.dumps(review.to_dict(), ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            markdown_path.write_text(render_review_markdown(review), encoding="utf-8")
+        except OSError as exc:
+            print(f"Review error: cannot write output: {exc}", file=sys.stderr)
+            return 2
+        _emit_review_summary(
+            args,
+            review,
+            json_path=json_path if json_path.exists() else source_json,
+            markdown_path=markdown_path,
+            extra={"mode": "from-review"},
+        )
+        return 0
+
+    if args.video is None:
+        print("Review error: a video is required unless --from-review is given", file=sys.stderr)
+        return 2
     source = Path(args.video).expanduser()
     if not source.is_file():
         print(f"Review error: video does not exist: {source}", file=sys.stderr)
         return 2
     source = source.resolve()
 
-    if args.project is not None:
-        slug = args.project
-        if not slug or "/" in slug or "\\" in slug or slug in (".", ".."):
-            print(f"Review error: invalid project slug: {slug!r}", file=sys.stderr)
-            return 2
-        out_dir = (Path("projects") / slug).expanduser().resolve()
-    else:
-        out_dir = Path(args.out_dir).expanduser().resolve()
-
     if os.path.normcase(str(out_dir)) == os.path.normcase(str(source.parent)):
         print("Review error: output directory must not be the source's own folder", file=sys.stderr)
         return 2
 
     audio_path = out_dir / "source-audio.wav"
-    json_path = out_dir / "cut-review.json"
-    markdown_path = out_dir / "cut-review.md"
-    for existing in (audio_path, json_path, markdown_path):
+    transcript_path = out_dir / "transcript.json"
+    for existing in (audio_path, transcript_path, json_path, markdown_path):
         if existing.exists():
             print(f"Review error: output already exists: {existing}", file=sys.stderr)
             return 2
@@ -1328,6 +1428,20 @@ def _run_review_cuts(args: argparse.Namespace) -> int:
         return 2
 
     try:
+        transcript_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source_path": str(source),
+                    "language": args.language,
+                    "segments": [item.to_dict() for item in spoken],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         json_path.write_text(
             json.dumps(review.to_dict(), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
@@ -1337,27 +1451,16 @@ def _run_review_cuts(args: argparse.Namespace) -> int:
         print(f"Review error: cannot write output: {exc}", file=sys.stderr)
         return 2
 
-    tally = review.counts()
-    summary = {
-        "review_path": str(json_path.resolve()),
-        "markdown_path": str(markdown_path.resolve()),
-        "audio_path": str(audio_path.resolve()),
-        "duration": review.to_dict()["duration"],
-        "segments": len(review.segments),
-        "keep": tally["KEEP"],
-        "review": tally["REVIEW"],
-        "cut": tally["CUT"],
-    }
-    if args.json:
-        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
-    else:
-        print(f"Review: {summary['review_path']}")
-        print(f"Readable: {summary['markdown_path']}")
-        print(
-            f"{summary['segments']} segment(s) over {summary['duration']}: "
-            f"{summary['keep']} KEEP / {summary['review']} REVIEW / {summary['cut']} CUT"
-        )
-        print("CUT and REVIEW are suggestions; the cut decision is yours.")
+    _emit_review_summary(
+        args,
+        review,
+        json_path=json_path,
+        markdown_path=markdown_path,
+        extra={
+            "audio_path": str(audio_path.resolve()),
+            "transcript_path": str(transcript_path.resolve()),
+        },
+    )
     return 0
 
 

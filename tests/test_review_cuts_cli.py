@@ -133,6 +133,49 @@ class ReviewCutsCliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("invalid project slug", stderr.getvalue())
 
+    def test_also_writes_the_raw_transcript(self):
+        with tempfile.TemporaryDirectory() as directory:
+            code, output = self._run(directory)
+            self.assertEqual(code, 0)
+            transcript = json.loads(
+                (Path(directory) / "transcript.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(transcript["schema_version"], 1)
+            self.assertEqual(len(transcript["segments"]), 4)
+
+    def test_from_review_re_renders_markdown_without_transcribing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._run(directory)  # produce a real cut-review.json first
+            source_json = Path(directory) / "cut-review.json"
+            target = Path(directory) / "regen"
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main(
+                    [
+                        "review-cuts",
+                        "--from-review",
+                        str(source_json),
+                        "--out-dir",
+                        str(target),
+                        "--json",
+                    ]
+                )
+            self.assertEqual(code, 0)
+            summary = json.loads(stdout.getvalue())
+            self.assertEqual(summary["mode"], "from-review")
+            self.assertTrue((target / "cut-review.md").exists())
+
+    def test_from_review_rejects_a_malformed_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bad = Path(directory) / "bad.json"
+            bad.write_text('{"schema_version": 2}', encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = main(
+                    ["review-cuts", "--from-review", str(bad), "--out-dir", str(directory)]
+                )
+            self.assertEqual(code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,12 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/thales-sblue/video-generator/schemas/cut-review-v1.schema.json",
   "title": "CutReview v1",
-  "description": "A reviewable, non-destructive analysis of a recorded take. Every transcript segment is listed in time order with a suggested action (KEEP, REVIEW, CUT), a human-readable reason and a confidence. CUT is only a suggestion; the cut decision stays human. Produced by the `review-cuts` CLI from a local transcription plus silence detection; no media is removed and no render is performed at this stage.",
+  "description": "A reviewable, non-destructive editorial analysis of a recorded take. Every transcript segment is listed in time order with a suggested action (KEEP, REVIEW, CUT), a semantic category, a human-readable reason and a confidence. Adjacent flagged rows are grouped into removable blocks, and a summary reports the original vs estimated duration and a plain-language pacing note. CUT is only a suggestion; the cut decision stays human. `provenance` is `heuristic` when produced by the `review-cuts` heuristics, or `agent` when authored/curated by the orchestrating agent. No media is removed and no render is performed at this stage.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "source_path", "language", "duration", "segments"],
+  "required": ["schema_version", "provenance", "source_path", "language", "duration", "segments", "blocks", "summary"],
   "properties": {
     "schema_version": {"const": 1},
+    "provenance": {"enum": ["heuristic", "agent"]},
     "source_path": {"type": "string", "minLength": 1},
     "language": {"type": "string", "minLength": 1},
     "duration": {
@@ -18,26 +19,75 @@
     "segments": {
       "type": "array",
       "minItems": 1,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["start", "end", "text", "suggestion", "reason", "confidence"],
-        "properties": {
-          "start": {"type": "string", "pattern": "^[0-9]{2,}:[0-5][0-9]\\.[0-9]{3}$"},
-          "end": {"type": "string", "pattern": "^[0-9]{2,}:[0-5][0-9]\\.[0-9]{3}$"},
-          "text": {"type": "string", "minLength": 1},
-          "suggestion": {"enum": ["KEEP", "REVIEW", "CUT"]},
-          "reason": {
-            "type": "string",
-            "description": "Why the segment is flagged; empty string for KEEP."
-          },
-          "confidence": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "description": "Strength of the cut signal; 0 for KEEP."
-          }
-        }
+      "items": {"$ref": "#/$defs/reviewed_segment"}
+    },
+    "blocks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/removable_block"}
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "original_duration",
+        "estimated_duration_after_cuts",
+        "removed_seconds_estimate",
+        "top_removable",
+        "rhythm_note"
+      ],
+      "properties": {
+        "original_duration": {"type": "string", "pattern": "^[0-9]{2,}:[0-5][0-9]$"},
+        "estimated_duration_after_cuts": {"type": "string", "pattern": "^[0-9]{2,}:[0-5][0-9]$"},
+        "removed_seconds_estimate": {"type": "number", "minimum": 0},
+        "top_removable": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {"$ref": "#/$defs/removable_block"}
+        },
+        "rhythm_note": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "$defs": {
+    "category": {
+      "enum": [
+        "REPETITION",
+        "TANGENT",
+        "FILLER",
+        "SELF_COMMENTARY",
+        "OFF_TOPIC",
+        "FAILED_TAKE",
+        "REDUNDANT_EXAMPLE",
+        "LONG_PAUSE",
+        "NONE"
+      ]
+    },
+    "reviewed_segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "text", "suggestion", "category", "reason", "confidence"],
+      "properties": {
+        "start": {"type": "string", "pattern": "^[0-9]{2,}:[0-5][0-9]\\.[0-9]{3}$"},
+        "end": {"type": "string", "pattern": "^[0-9]{2,}:[0-5][0-9]\\.[0-9]{3}$"},
+        "text": {"type": "string", "minLength": 1},
+        "suggestion": {"enum": ["KEEP", "REVIEW", "CUT"]},
+        "category": {"$ref": "#/$defs/category"},
+        "reason": {"type": "string", "description": "Why the segment is flagged; empty string for KEEP."},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1, "description": "Strength of the cut signal; 0 for KEEP."}
+      }
+    },
+    "removable_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "seconds", "suggestion", "category", "reason", "confidence"],
+      "properties": {
+        "start": {"type": "string", "pattern": "^[0-9]{2,}:[0-5][0-9]\\.[0-9]{3}$"},
+        "end": {"type": "string", "pattern": "^[0-9]{2,}:[0-5][0-9]\\.[0-9]{3}$"},
+        "seconds": {"type": "number", "minimum": 0},
+        "suggestion": {"enum": ["REVIEW", "CUT"]},
+        "category": {"$ref": "#/$defs/category"},
+        "reason": {"type": "string", "minLength": 1},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
       }
     }
   }
