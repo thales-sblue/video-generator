@@ -480,6 +480,21 @@ Enquanto o passo 7 não acontecer, `editorial_review` continua `not_performed`.
 Aprovar a curadoria visual **não** é revisão editorial do vídeo: é aprovação das
 imagens, antes de existir vídeo.
 
+### Dublagem placeholder (opcional, entre os passos 7 e 8)
+
+Antes de gravar a voz real, o autor pode pedir uma **prévia com dublagem**
+para ouvir o ritmo em vez de imaginá-lo: `scripts/build-canal-dev-01-dub-preview.py`
+sintetiza o roteiro inteiro com Kokoro local (a configuração que
+`scripts/voice-benchmark/` já validou — `pm_alex`/`pt-br`/prosódia
+unidade-por-unidade), remede cada bloco contra a duração **real** medida
+(não a estimativa de palavras por segundo) e reconstrói as legendas a partir
+das mesmas unidades reais em vez de um chute proporcional. O script importa
+`BLOCKS` de `build-canal-dev-01.py` em vez de duplicá-lo, então nenhuma
+decisão visual precisa ser reescrita — só a duração muda. Os artefatos vão
+para `output/canal-dev-01-dub-preview/` e
+`projects/canal_dev_01/edit-plan-dub-preview.json`, em paralelo ao corte
+silencioso, sem substituí-lo. Não é publicável — é só para ouvir.
+
 ## Evolução planejada do `dark-video`
 
 `dark-video` v1 **foi atingido em 2026-08-31**: a produção de referência

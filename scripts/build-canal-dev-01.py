@@ -1126,14 +1126,36 @@ def speech_seconds(text: str) -> float:
     return len(text.split()) / WORDS_PER_SECOND + BLOCK_BREATH_SECONDS
 
 
-def build_timeline():
-    """Scale every block to its own speech estimate and lay the shots end to end."""
+def prepare_blocks() -> None:
+    """Stamp every clip shot's in-source start point, once, in place.
+
+    Clip in-points are authored against the source; the timeline scale only
+    ever moves the out-point, never the in-point. Idempotent, so a second
+    call (e.g. from a script that imports this module rather than running its
+    ``main``) is harmless.
+    """
+
+    for block in BLOCKS:
+        for shot in block["shots"]:
+            if shot["kind"] == "clip":
+                shot["start_in_source"] = shot["start"]
+
+
+def build_timeline(block_targets=None):
+    """Scale every block to its own speech estimate and lay the shots end to end.
+
+    ``block_targets`` (``{block_id: real_seconds}``), given, replaces the
+    word-count speech estimate with a real measured duration for that block —
+    used once a narration WAV exists (see ``build-canal-dev-01-dub-preview.py``).
+    A block missing from the mapping still falls back to the estimate, so a
+    partial override never breaks the build.
+    """
 
     timeline = []
     clock = 0.0
     for block in BLOCKS:
         authored = sum(shot["seconds"] for shot in block["shots"])
-        target = speech_seconds(block["narration"])
+        target = (block_targets or {}).get(block["id"], speech_seconds(block["narration"]))
         scale = target / authored
         block_start = clock
         placed = []
@@ -1268,7 +1290,20 @@ def build_captions(timeline, total_seconds):
     return items
 
 
-def build_edit_plan(timeline, total_seconds):
+def build_edit_plan(
+    timeline,
+    total_seconds,
+    *,
+    narration_source=None,
+    output_path=None,
+    plan_id="canal-dev-01-edit-plan",
+):
+    """Build the EditPlan. ``narration_source``, given, appends a final
+    ``narration`` operation pointing at a pre-synthesised WAV
+    (``duration_policy=match_timeline``) — used by the dub-preview cycle,
+    never by the silent default build.
+    """
+
     sources = []
     operations = []
     for entry in timeline:
@@ -1357,12 +1392,27 @@ def build_edit_plan(timeline, total_seconds):
             "parameters": {"from_black_seconds": 0.4, "to_black_seconds": 1.2},
         }
     )
+    if narration_source is not None:
+        # "narration must be the final operation" (video-sequence) and a
+        # source-mode narration accepts only duration_policy=match_timeline —
+        # the WAV was already synthesised to this exact video's real length.
+        sources.append(str(narration_source))
+        operations.append(
+            {
+                "operation_id": "narration",
+                "kind": "narration",
+                "source": str(narration_source),
+                "start_seconds": None,
+                "end_seconds": None,
+                "parameters": {"duration_policy": "match_timeline"},
+            }
+        )
     return {
         "schema_version": 1,
-        "plan_id": "canal-dev-01-edit-plan",
+        "plan_id": plan_id,
         "brief_id": "canal-dev-01-brief",
         "sources": sources,
-        "output_path": str(OUTPUT_PATH),
+        "output_path": str(output_path or OUTPUT_PATH),
         "target_format": {"width": 1920, "height": 1080, "fit": "cover"},
         "operations": operations,
     }
@@ -1507,12 +1557,7 @@ def main() -> int:
         if not (REPOSITORY_ROOT / relative).is_file():
             raise SystemExit(f"missing source for {key}: {relative}")
 
-    # Clip in-points are authored against the source; the timeline scale only
-    # moves the out-point, never the in-point.
-    for block in BLOCKS:
-        for shot in block["shots"]:
-            if shot["kind"] == "clip":
-                shot["start_in_source"] = shot["start"]
+    prepare_blocks()
 
     timeline, total = build_timeline()
     deck = {
