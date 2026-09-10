@@ -29,6 +29,7 @@ from video_generator.adapters import (
     probe_media,
     render_screen_card,
     synthesize_narration,
+    transcribe_segments,
     transcribe_words,
 )
 from video_generator.config import ConfigurationError, load_config
@@ -78,6 +79,13 @@ from video_generator.domain import (
     shot_plan_to_edit_plan,
     text_events_operation,
     visual_direction_operation,
+)
+from video_generator.domain.takes import (
+    SilenceSpan,
+    TakesError,
+    TranscriptSegment,
+    analyze_take,
+    render_review_markdown,
 )
 from video_generator.domain.typography import (
     DEFAULT_TYPOGRAPHY_POLICY,
@@ -439,6 +447,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--words-out", help="also write the raw measured word timings as JSON here"
     )
     align_captions_cmd.add_argument("--json", action="store_true", help="print the summary as JSON")
+
+    review_cuts_cmd = subparsers.add_parser(
+        "review-cuts",
+        help="transcribe a recorded take and suggest (never make) cut points",
+    )
+    review_cuts_cmd.add_argument("video", help="the raw recorded video (or audio) file to review")
+    review_cuts_dest = review_cuts_cmd.add_mutually_exclusive_group(required=True)
+    review_cuts_dest.add_argument(
+        "--project", help="project slug; writes under projects/<slug>/"
+    )
+    review_cuts_dest.add_argument(
+        "--out-dir", help="explicit output directory for the review artifacts"
+    )
+    review_cuts_cmd.add_argument(
+        "--language", default="pt", help="spoken language code (default: pt)"
+    )
+    review_cuts_cmd.add_argument(
+        "--model", help="Whisper model directory name under .local-tools/whisper"
+    )
+    review_cuts_cmd.add_argument(
+        "--long-silence",
+        type=float,
+        default=1.5,
+        help="a pause at least this many seconds long is flagged (default: 1.5)",
+    )
+    review_cuts_cmd.add_argument(
+        "--json", action="store_true", help="print the summary as JSON"
+    )
 
     resolve_assets_cmd = subparsers.add_parser(
         "resolve-assets",
@@ -1082,6 +1118,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if report.technically_ready else 1
     if args.command == "align-captions":
         return _run_align_captions(args)
+    if args.command == "review-cuts":
+        return _run_review_cuts(args)
     if args.command == "plan-scenes":
         return _run_plan_scenes(args)
     if args.command == "resolve-assets":
@@ -1199,6 +1237,127 @@ def _run_align_captions(args: argparse.Namespace) -> int:
             f"Span: {summary['first_cue_start_seconds']:.3f} s -> "
             f"{summary['last_cue_end_seconds']:.3f} s of {summary['audio_seconds']:.3f} s"
         )
+    return 0
+
+
+def _run_review_cuts(args: argparse.Namespace) -> int:
+    source = Path(args.video).expanduser()
+    if not source.is_file():
+        print(f"Review error: video does not exist: {source}", file=sys.stderr)
+        return 2
+    source = source.resolve()
+
+    if args.project is not None:
+        slug = args.project
+        if not slug or "/" in slug or "\\" in slug or slug in (".", ".."):
+            print(f"Review error: invalid project slug: {slug!r}", file=sys.stderr)
+            return 2
+        out_dir = (Path("projects") / slug).expanduser().resolve()
+    else:
+        out_dir = Path(args.out_dir).expanduser().resolve()
+
+    if os.path.normcase(str(out_dir)) == os.path.normcase(str(source.parent)):
+        print("Review error: output directory must not be the source's own folder", file=sys.stderr)
+        return 2
+
+    audio_path = out_dir / "source-audio.wav"
+    json_path = out_dir / "cut-review.json"
+    markdown_path = out_dir / "cut-review.md"
+    for existing in (audio_path, json_path, markdown_path):
+        if existing.exists():
+            print(f"Review error: output already exists: {existing}", file=sys.stderr)
+            return 2
+
+    try:
+        probe = probe_media(source)
+    except ProbeError as exc:
+        print(f"Review error: cannot inspect the video: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"Review error: cannot create {out_dir}: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        extract_audio(source, audio_path)
+    except FFmpegError as exc:
+        print(f"Review error: cannot extract audio: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        spoken = transcribe_segments(
+            audio_path, language=args.language, model_name=args.model
+        )
+    except AlignerError as exc:
+        print(f"Review error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        silences = tuple(
+            SilenceSpan(start_seconds=start, end_seconds=end)
+            for start, end in detect_silences(audio_path)
+        )
+    except FFmpegError:
+        silences = ()
+
+    segments = tuple(
+        TranscriptSegment(
+            text=item.text,
+            start_seconds=item.start_seconds,
+            end_seconds=item.end_seconds,
+        )
+        for item in spoken
+    )
+    duration_seconds = segments[-1].end_seconds
+    if probe.duration_seconds is not None and probe.duration_seconds > duration_seconds:
+        duration_seconds = float(probe.duration_seconds)
+
+    try:
+        review = analyze_take(
+            segments,
+            silences,
+            source_path=str(source),
+            language=args.language,
+            duration_seconds=duration_seconds,
+            long_silence_seconds=args.long_silence,
+        )
+    except TakesError as exc:
+        print(f"Review error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        json_path.write_text(
+            json.dumps(review.to_dict(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        markdown_path.write_text(render_review_markdown(review), encoding="utf-8")
+    except OSError as exc:
+        print(f"Review error: cannot write output: {exc}", file=sys.stderr)
+        return 2
+
+    tally = review.counts()
+    summary = {
+        "review_path": str(json_path.resolve()),
+        "markdown_path": str(markdown_path.resolve()),
+        "audio_path": str(audio_path.resolve()),
+        "duration": review.to_dict()["duration"],
+        "segments": len(review.segments),
+        "keep": tally["KEEP"],
+        "review": tally["REVIEW"],
+        "cut": tally["CUT"],
+    }
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(f"Review: {summary['review_path']}")
+        print(f"Readable: {summary['markdown_path']}")
+        print(
+            f"{summary['segments']} segment(s) over {summary['duration']}: "
+            f"{summary['keep']} KEEP / {summary['review']} REVIEW / {summary['cut']} CUT"
+        )
+        print("CUT and REVIEW are suggestions; the cut decision is yours.")
     return 0
 
 

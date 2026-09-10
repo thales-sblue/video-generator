@@ -33,6 +33,15 @@ from video_generator.domain.prosody import (
     ProsodyError,
     plan_narration_units,
 )
+from video_generator.domain.takes import (
+    CutReview,
+    ReviewedSegment,
+    SilenceSpan,
+    TakesError,
+    TranscriptSegment,
+    analyze_take,
+    render_review_markdown,
+)
 from video_generator.domain.direction import (
     DEFAULT_DIRECTION_POLICY,
     DirectionError,

@@ -95,6 +95,7 @@ python -m video_generator narrate output\narration.wav --text "Primeira linha do
 python -m video_generator narrate output\narration.wav --text-file inputs\script.txt --lang pt-br --json
 python -m video_generator narrate output\narration.wav --text-file inputs\script.txt --lang pt-br --voice pm_alex --prosody --lead-in-seconds 0.6 --units-out output\narration-units.json --json
 python -m video_generator align-captions output\narration.wav --text-file inputs\script.txt --out output\captions.srt --language pt --words-out output\narration-words.json --json
+python -m video_generator review-cuts videos\2026-09-10.mp4 --project canal_dev_01 --language pt --json
 python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\roteiro_narracao.txt --total-duration 270 --target 1920x1080:cover --seed 20260902 --out-dir output
 python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\roteiro_narracao.txt --total-duration 270 --target 1920x1080:cover --seed 20260902 --overrides projects\desumanizando_01\shot-overrides.json --out-dir output --force
 python -m video_generator plan-scenes --from-text output\preview\roteiro.txt --total-duration 68.347 --target 1920x1080:cover --seed 20260903 --semantic --hook-seconds 40 --text-events output\preview\text-events.json --out-dir output\preview\plan
@@ -189,6 +190,24 @@ decoder costuma reportar a primeira palavra em 0,0 mesmo quando a gravação abr
 em silêncio, o comando mede o silêncio inicial com `silencedetect` e nunca põe a
 primeira legenda antes da voz. Diferente de `captions_from_text`, isto não modela
 o ritmo — lê o ritmo do áudio.
+
+`review-cuts` é a primeira camada da **edição assistida de vídeos gravados por
+você**: recebe um vídeo (ou áudio) bruto, extrai o WAV (`extract-audio`),
+transcreve a fala em frases com timestamps pelo Whisper local
+(`transcribe_segments`, mesmo modelo travado do `align-captions`, offline) e mede
+os silêncios (`silencedetect`). O `domain/takes.py` — puro, sem I/O — lê essas
+medições e marca cada trecho `KEEP`, `REVIEW` ou `CUT` com motivo legível e
+confiança em `0..1`. Heurísticas v1: pausa longa (vira uma linha `CUT` própria),
+frase repetida logo em seguida (corta a tentativa anterior), recomeço de
+explicação ("na verdade…", "deixa eu…"), frase iniciada e abandonada, e vício de
+linguagem em excesso (só `REVIEW`). **Nada é removido e nenhum render acontece**:
+`CUT` é sugestão, a decisão é sua. A saída vai para `projects/<slug>/` com
+`--project` (ou `--out-dir <dir>`): `cut-review.json` (contrato publicado
+`schemas/cut-review-v1.schema.json`), `cut-review.md` (uma folha legível, um bloco
+por trecho) e `source-audio.wav`. Recusa sobrescrever qualquer um dos três.
+`--language` (padrão `pt`), `--model` e `--long-silence` (padrão 1,5 s) ajustam a
+passada. Cortes, zoom, B-roll, legendas e motion typography sobre a sua gravação
+são camadas futuras.
 
 `plan-scenes` transforma um roteiro narrado em um plano visual denso **antes** do
 `EditPlan`, de forma pura e determinística (sem FFmpeg, sem download de asset, sem
@@ -647,10 +666,12 @@ config/                         configuração segura padrão
 config/ffmpeg-lock.json         proveniência e integridade do FFmpeg local aprovado
 docs/                           visão, arquitetura e linguagem audiovisual
 schemas/                        contratos JSON públicos v1 (request, brief, edit-plan, manifest, narrative-script,
-                                scene-plan, shot-plan, asset-requirements, screen-deck, visual-curation-set, visual-lock)
+                                scene-plan, shot-plan, asset-requirements, screen-deck, visual-curation-set, visual-lock,
+                                cut-review)
 src/video_generator/domain/     modelos e invariantes puros; planning.py é o Scene/Shot Planner,
                                 editorial.py a camada semântica (beats, ênfases, identidade)
-                                screens.py o layout dos screen cards do developer-video
+                                screens.py o layout dos screen cards do developer-video,
+                                takes.py as sugestões de corte para vídeo gravado
                                 e curation.py o checkpoint humano antes do render
 src/video_generator/adapters/   integrações locais, incluindo ffprobe e FFmpeg
 src/video_generator/workflows/  recorte e primeira timeline sequencial

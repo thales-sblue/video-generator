@@ -3,7 +3,13 @@
 import unittest
 from unittest import mock
 
-from video_generator.adapters.aligner import AlignerError, WordTiming, transcribe_words
+from video_generator.adapters.aligner import (
+    AlignerError,
+    TranscribedSegment,
+    WordTiming,
+    transcribe_segments,
+    transcribe_words,
+)
 from video_generator.subtitles import (
     CAPTION_HOLD_SECONDS,
     SubtitleParseError,
@@ -175,6 +181,43 @@ class TranscribeWordsTests(unittest.TestCase):
             words = transcribe_words(__file__)
         self.assertEqual([word.text for word in words], ["alfa", "bravo"])
         self.assertEqual(words[1].start_seconds, 1.0)
+
+
+class TranscribeSegmentsTests(unittest.TestCase):
+    def test_fails_closed_when_the_model_is_not_installed(self):
+        with mock.patch(
+            "video_generator.adapters.aligner.resolve_whisper_model", return_value=None
+        ):
+            with self.assertRaises(AlignerError):
+                transcribe_segments(__file__)
+
+    def test_keeps_phrase_text_and_clamps_to_a_monotonic_clock(self):
+        class _Segment:
+            def __init__(self, text, start, end):
+                self.text = text
+                self.start = start
+                self.end = end
+
+        fake_model = mock.MagicMock()
+        fake_model.transcribe.return_value = (
+            [
+                _Segment(" primeira frase ", 0.0, 2.0),
+                _Segment("", 2.0, 2.0),  # dropped
+                _Segment("segunda frase", 1.5, 3.4),  # starts before previous end
+            ],
+            None,
+        )
+        with mock.patch(
+            "video_generator.adapters.aligner.resolve_whisper_model",
+            return_value="model-dir",
+        ), mock.patch(
+            "video_generator.adapters.aligner._load_whisper",
+            return_value=lambda *a, **k: fake_model,
+        ):
+            segments = transcribe_segments(__file__)
+        self.assertEqual([s.text for s in segments], ["primeira frase", "segunda frase"])
+        self.assertTrue(all(isinstance(s, TranscribedSegment) for s in segments))
+        self.assertGreaterEqual(segments[1].start_seconds, segments[0].end_seconds)
 
 
 if __name__ == "__main__":

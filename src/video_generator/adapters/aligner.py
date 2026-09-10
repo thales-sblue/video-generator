@@ -58,6 +58,36 @@ class WordTiming:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class TranscribedSegment:
+    """One phrase the decoder returned, and the span of audio it covers."""
+
+    text: str
+    start_seconds: float
+    end_seconds: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str) or not self.text.strip():
+            raise AlignerError("segment text must be a non-empty string")
+        for value, name in ((self.start_seconds, "start"), (self.end_seconds, "end")):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise AlignerError(f"segment {name} must be a finite, non-negative number")
+        if self.end_seconds < self.start_seconds:
+            raise AlignerError("segment end must not precede its start")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "text": self.text,
+            "start_seconds": round(float(self.start_seconds), 3),
+            "end_seconds": round(float(self.end_seconds), 3),
+        }
+
+
 def _load_whisper():
     try:
         from faster_whisper import WhisperModel  # type: ignore import-not-found
@@ -153,4 +183,92 @@ def transcribe_words(
         end = max(word.end_seconds, start)
         previous_end = end
         fixed.append(WordTiming(text=word.text, start_seconds=start, end_seconds=end))
+    return tuple(fixed)
+
+
+def transcribe_segments(
+    audio_path: str | Path,
+    *,
+    language: str = DEFAULT_LANGUAGE,
+    model_name: str | None = None,
+    beam_size: int = DEFAULT_BEAM_SIZE,
+    compute_type: str = DEFAULT_COMPUTE_TYPE,
+) -> tuple[TranscribedSegment, ...]:
+    """Return the ordered phrase-level transcript measured in ``audio_path``.
+
+    Same local, offline, fail-closed model as :func:`transcribe_words`, but it
+    keeps each decoder segment's own text and span instead of exploding it into
+    words. The take-review layer reads phrases, not words. Segments are clamped
+    to a monotonic clock; empty ones are dropped.
+    """
+
+    source = Path(audio_path).expanduser().resolve()
+    if not source.is_file():
+        raise AlignerError(f"audio source does not exist: {source}")
+    if not isinstance(language, str) or not language.strip():
+        raise AlignerError("language must be a non-empty string")
+    if isinstance(beam_size, bool) or not isinstance(beam_size, int) or beam_size < 1:
+        raise AlignerError("beam_size must be a positive integer")
+    if not isinstance(compute_type, str) or not compute_type.strip():
+        raise AlignerError("compute_type must be a non-empty string")
+
+    try:
+        model_dir = resolve_whisper_model(model_name)
+    except ToolResolutionError as exc:
+        raise AlignerError(f"local Whisper model rejected: {exc}") from exc
+    if model_dir is None:
+        raise AlignerError(
+            "Whisper model files not found under .local-tools/whisper/ (or WHISPER_HOME)"
+        )
+
+    WhisperModel = _load_whisper()
+    try:
+        model = WhisperModel(
+            model_dir,
+            device="cpu",
+            compute_type=compute_type,
+            local_files_only=True,
+        )
+        segments, _info = model.transcribe(
+            str(source),
+            language=language,
+            beam_size=beam_size,
+            word_timestamps=False,
+            vad_filter=False,
+            condition_on_previous_text=False,
+        )
+        collected: list[TranscribedSegment] = []
+        for segment in segments:
+            text = str(getattr(segment, "text", "")).strip()
+            start = getattr(segment, "start", None)
+            end = getattr(segment, "end", None)
+            if not text or start is None or end is None:
+                continue
+            collected.append(
+                TranscribedSegment(
+                    text=text,
+                    start_seconds=max(0.0, float(start)),
+                    end_seconds=max(0.0, float(end)),
+                )
+            )
+            if len(collected) > MAX_WORDS:
+                raise AlignerError(f"transcript exceeds {MAX_WORDS} segments")
+    except AlignerError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - third-party failure surface is broad
+        raise AlignerError(
+            f"Whisper transcription failed: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    if not collected:
+        raise AlignerError("Whisper produced no transcript segments for this audio")
+    fixed: list[TranscribedSegment] = []
+    previous_end = 0.0
+    for segment in collected:
+        start = max(segment.start_seconds, previous_end)
+        end = max(segment.end_seconds, start + 1e-3)
+        previous_end = end
+        fixed.append(
+            TranscribedSegment(text=segment.text, start_seconds=start, end_seconds=end)
+        )
     return tuple(fixed)

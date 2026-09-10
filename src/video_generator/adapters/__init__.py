@@ -2,7 +2,9 @@
 
 from video_generator.adapters.aligner import (
     AlignerError,
+    TranscribedSegment,
     WordTiming,
+    transcribe_segments,
     transcribe_words,
 )
 from video_generator.adapters.kokoro import (
@@ -74,9 +76,11 @@ __all__ = [
     "SequenceClip",
     "SequenceImage",
     "StreamProbe",
+    "TranscribedSegment",
     "WordTiming",
     "extract_audio",
     "extract_segment",
+    "transcribe_segments",
     "TEXT_EVENT_ANIMATIONS",
     "TEXT_EVENT_POSITIONS",
     "TextEventCue",
