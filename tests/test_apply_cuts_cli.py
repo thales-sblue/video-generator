@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from video_generator.adapters import CutPreviewArtifact, MediaProbe
+from video_generator.adapters import CutPreviewArtifact, CutSegment, MediaProbe
 from video_generator.cli import main
 
 
@@ -32,6 +32,7 @@ class ApplyCutsCliTests(unittest.TestCase):
             recorded["output"] = str(output)
             recorded["keeps"] = list(keeps)
             Path(output).write_bytes(b"fake mp4")
+            asides = sum(1 for item in keeps if isinstance(item, CutSegment) and item.grayscale)
             return CutPreviewArtifact(
                 source_path=str(source),
                 output_path=str(output),
@@ -39,6 +40,7 @@ class ApplyCutsCliTests(unittest.TestCase):
                 kept_seconds=final_seconds,
                 file_size_bytes=8,
                 frame_rate="30000/1001",
+                aside_count=asides,
             )
 
         def fake_probe(path, **kwargs):
@@ -143,6 +145,68 @@ class ApplyCutsCliTests(unittest.TestCase):
             self.assertEqual(summary["cuts_applied"], 2)  # the two CUT rows, not the REVIEW
             # keeps: 0-10, 20-60, 62.7-288  -> 3 segments
             self.assertEqual(len(calls["keeps"]), 3)
+
+    def test_asides_are_kept_marked_and_never_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            video = self._video(directory)
+            cuts = Path(directory) / "approved.json"
+            cuts.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "cuts": [{"start": "00:10", "end": "00:20"}],
+                        "asides": [
+                            {"start": "01:00", "end": "01:30", "label": "desvio rápido"},
+                            {"start": "02:00", "end": "02:10", "speed": 1.5},
+                        ],
+                        "cut_padding_before_ms": 0,
+                        "cut_padding_after_ms": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calls = {}
+            code, output, err = self._run(
+                ["apply-cuts", str(video), "--cuts", str(cuts),
+                 "--out-dir", str(Path(directory) / "o"), "--json"],
+                capture_calls=calls,
+            )
+            self.assertEqual(code, 0, err)
+            summary = json.loads(output)
+            self.assertEqual(summary["asides_applied"], 2)
+            keeps = calls["keeps"]
+            aside_segments = [s for s in keeps if getattr(s, "grayscale", False)]
+            self.assertEqual(len(aside_segments), 2)
+            labelled = next(s for s in aside_segments if s.label is not None)
+            self.assertEqual(labelled.label, "desvio rápido")
+            sped = next(s for s in aside_segments if s.speed == 1.5)
+            self.assertEqual(sped.label, "desvio rápido")  # default label applied
+            plan = json.loads((Path(directory) / "o" / "edit-preview.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(plan["asides"]), 2)
+            self.assertIn("aside", [t["kind"] for t in plan["timeline"]])
+
+    def test_an_aside_overlapping_a_cut_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            video = self._video(directory)
+            cuts = Path(directory) / "approved.json"
+            cuts.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "cuts": [{"start": "00:10", "end": "00:20"}],
+                        "asides": [{"start": "00:15", "end": "00:30"}],
+                        "cut_padding_before_ms": 0,
+                        "cut_padding_after_ms": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code, _out, err = self._run(
+                ["apply-cuts", str(video), "--cuts", str(cuts),
+                 "--out-dir", str(Path(directory) / "o")]
+            )
+            self.assertEqual(code, 2)
+            self.assertIn("overlaps an approved cut", err)
 
     def test_empty_cut_list_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from video_generator.adapters import FFmpegError, render_cut_preview
+from video_generator.adapters import CutSegment, FFmpegError, render_cut_preview
 
 
 def _succeed(command, **kwargs):
@@ -98,6 +98,83 @@ class RenderCutPreviewTests(unittest.TestCase):
                 with self.assertRaises(FFmpegError):
                     render_cut_preview(
                         source, Path(directory) / "o.mp4", [(0.0, 10.0), (5.0, 15.0)]
+                    )
+
+    def test_aside_gets_grayscale_speed_and_a_labelled_hard_cut(self):
+        cap = {}
+        artifact = self._render(
+            [
+                (0.0, 10.0),
+                CutSegment(10.0, 20.0, speed=1.17, grayscale=True, label="desvio rápido"),
+                (20.0, 30.0),
+            ],
+            cap,
+        )
+        graph = cap["command"][cap["command"].index("-filter_complex") + 1]
+        pieces = graph.split(";")
+        aside_video = next(p for p in pieces if "[v1]" in p)
+        self.assertIn("setpts=(PTS-STARTPTS)/1.17", aside_video)
+        self.assertIn("hue=s=0", aside_video)
+        self.assertIn("drawtext=", aside_video)
+        self.assertIn("textfile=aside001.txt", aside_video)
+        # no video fade, no grayscale/speed bleeding into the plain keeps
+        plain_video = next(p for p in pieces if "[v0]" in p)
+        self.assertNotIn("hue=s=0", plain_video)
+        self.assertNotIn("setpts=(PTS-STARTPTS)/", plain_video)
+        aside_audio = next(p for p in pieces if "[a1]" in p)
+        self.assertIn("atempo=1.17", aside_audio)
+        self.assertEqual(artifact.aside_count, 1)
+        self.assertEqual(artifact.segment_count, 3)
+
+    def test_the_label_text_reaches_ffmpeg_only_as_a_file_never_inline(self):
+        seen = {}
+
+        def fake_run(command, **kwargs):
+            workspace = Path(kwargs["cwd"])
+            seen["files"] = {p.name: p.read_text(encoding="utf-8") for p in workspace.iterdir()}
+            seen["graph"] = command[command.index("-filter_complex") + 1]
+            Path(command[-1]).write_bytes(b"fake")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "s.mp4"
+            source.write_bytes(b"x")
+            output = Path(directory) / "o.mp4"
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ), patch(
+                "video_generator.adapters.ffmpeg._probe_frame_rate", return_value="30/1"
+            ), patch(
+                "video_generator.adapters.ffmpeg._probe_video_height", return_value=1080
+            ), patch(
+                "video_generator.adapters.ffmpeg.subprocess.run", side_effect=fake_run
+            ):
+                render_cut_preview(
+                    source,
+                    output,
+                    [CutSegment(0.0, 5.0, label="fugi do assunto: 100% zoeira")],
+                )
+        self.assertEqual(seen["files"], {"aside000.txt": "fugi do assunto: 100% zoeira"})
+        # the risky characters live only in the file, never in the graph string
+        self.assertNotIn("fugi do assunto", seen["graph"])
+        self.assertIn("textfile=aside000.txt", seen["graph"])
+
+    def test_rejects_a_bad_speed_or_a_multiline_label(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "s.mp4"
+            source.write_bytes(b"x")
+            with patch(
+                "video_generator.adapters.ffmpeg.resolve_media_tool", return_value="ffmpeg"
+            ):
+                with self.assertRaises(FFmpegError):
+                    render_cut_preview(
+                        source, Path(directory) / "o.mp4",
+                        [CutSegment(0.0, 5.0, speed=0.0)],
+                    )
+                with self.assertRaises(FFmpegError):
+                    render_cut_preview(
+                        source, Path(directory) / "o2.mp4",
+                        [CutSegment(0.0, 5.0, label="linha um\nlinha dois")],
                     )
 
     def test_refuses_an_existing_output(self):

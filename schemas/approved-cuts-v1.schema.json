@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/thales-sblue/video-generator/schemas/approved-cuts-v1.schema.json",
   "title": "ApprovedCuts v1",
-  "description": "A human-approved list of time ranges to remove from one recorded video, consumed by the `apply-cuts` CLI. Only explicitly approved CUT ranges belong here; REVIEW ranges and un-approved silences must not be included. A conservative safety margin shrinks every cut inward so a dry cut never clips a word. `apply-cuts` also accepts a `cut-review.json` directly (it takes the segments whose suggestion is CUT), so this file is optional.",
+  "description": "A human-approved edit list for one recorded video, consumed by the `apply-cuts` CLI. `cuts` are ranges to remove -- only explicitly approved CUT ranges belong here; REVIEW ranges and un-approved silences must not be included. A conservative safety margin shrinks every cut inward so a dry cut never clips a word. `asides` are ranges to keep but mark as a deliberate digression: sped up, desaturated, with a short on-screen label, then a hard cut straight back to normal; asides get no safety margin (their boundaries are an editorial choice, not a speech-safety guess) and must not overlap a cut or each other. `apply-cuts` also accepts a `cut-review.json` directly for `cuts` (it takes the segments whose suggestion is CUT); `asides` are only ever read from this shape.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "cuts"],
@@ -18,11 +18,31 @@
         "additionalProperties": false,
         "required": ["start", "end"],
         "properties": {
-          "start": {"type": "string", "pattern": "^(?:[0-9]+:)?[0-5]?[0-9]:[0-5]?[0-9](?:\\.[0-9]{1,3})?$"},
-          "end": {"type": "string", "pattern": "^(?:[0-9]+:)?[0-5]?[0-9]:[0-5]?[0-9](?:\\.[0-9]{1,3})?$"},
+          "start": {"$ref": "#/$defs/clock"},
+          "end": {"$ref": "#/$defs/clock"},
           "reason": {"type": "string"}
         }
       }
+    },
+    "asides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start", "end"],
+        "properties": {
+          "start": {"$ref": "#/$defs/clock"},
+          "end": {"$ref": "#/$defs/clock"},
+          "speed": {"type": "number", "exclusiveMinimum": 0, "maximum": 4},
+          "label": {"type": "string", "minLength": 1, "maxLength": 40}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "clock": {
+      "type": "string",
+      "pattern": "^(?:[0-9]+:)?[0-5]?[0-9]:[0-5]?[0-9](?:\\.[0-9]{1,3})?$"
     }
   }
 }

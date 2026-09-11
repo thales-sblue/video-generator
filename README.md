@@ -243,10 +243,23 @@ junções internas (nunca fade visual), `concat`, e re-encode `libopenh264` no F
 original + `aac` — cortes frame-accurate, A/V em sync, sem tela preta nem frame
 perdido. Saída em `projects/<slug>/` (ou `--out-dir`):
 `<stem>_edited_preview.mp4` + `edit-preview.json` (cortes consolidados, trechos
-mantidos, margens, duração original/removida/final). Ao fim: duração original,
-removida, final, nº de cortes e o arquivo; avisa se o preview medido destoar
-mais de 0,5 s do esperado. Aplicar o corte é só isto — nada de zoom, B-roll,
-typography, legenda, música, efeito ou cor ainda.
+mantidos, `asides`, `timeline`, margens, duração original/removida/final). Ao
+fim: duração original, removida, final, nº de cortes, de asides e o arquivo;
+avisa se o preview medido destoar mais de 0,5 s do esperado.
+
+Além de remover, `approved-cuts.json` aceita **`asides`**: trechos que ficam no
+vídeo, mas marcados como um desvio deliberado — "eu saí do assunto, mas a
+informação ainda é útil" — em vez de cortados. `{"start", "end", "speed"?,
+"label"?}`; sem margem de segurança (a fronteira é escolha editorial, não
+estimativa de fala) e não pode se sobrepor a um corte nem a outro aside (erro
+explícito, nunca resolvido em silêncio). No mesmo passe FFmpeg, um aside ganha
+`setpts`/`atempo` (padrão 1.17×, vídeo e áudio juntos, pitch preservado),
+`hue=s=0` (preto e branco) e um `drawtext` discreto com o texto do `label`
+(padrão "desvio rápido") — texto vai para um arquivo UTF-8 num diretório
+temporário próprio, nunca para dentro do filter graph (mesma técnica de
+`adapters/screens.py`). Entra e sai do aside em corte seco, sem fade visual e
+sem mudar cor/velocidade fora dele. Zoom, B-roll, legenda, música e efeito
+seguem fora de escopo.
 
 `plan-scenes` transforma um roteiro narrado em um plano visual denso **antes** do
 `EditPlan`, de forma pura e determinística (sem FFmpeg, sem download de asset, sem
@@ -712,7 +725,7 @@ src/video_generator/domain/     modelos e invariantes puros; planning.py é o Sc
                                 screens.py o layout dos screen cards do developer-video,
                                 takes.py a análise editorial de vídeo gravado
                                 (takes_lexicon.py só os léxicos pt-BR),
-                                cuts.py a aritmética de intervalos de corte
+                                cuts.py a aritmética de cortes e asides
                                 e curation.py o checkpoint humano antes do render
 src/video_generator/adapters/   integrações locais, incluindo ffprobe e FFmpeg
 src/video_generator/workflows/  recorte e primeira timeline sequencial

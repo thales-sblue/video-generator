@@ -26,6 +26,15 @@ MIN_KEEP_SECONDS = 0.04
 MIN_CUT_SECONDS = 0.02
 DEFAULT_PAD_MS = 50
 
+# An "aside" is a kept span the presenter wants to *signal* as a digression
+# instead of removing: it stays in the timeline, mildly sped up, in black and
+# white, with a small on-screen marker. Unlike a cut, it gets no safety margin
+# -- its boundaries are an editorial choice, not a speech-safety guess -- and
+# two asides must not overlap each other or an approved cut.
+DEFAULT_ASIDE_SPEED = 1.17
+DEFAULT_ASIDE_LABEL = "desvio rápido"
+MAX_ASIDE_LABEL_CHARS = 40
+
 _CLOCK_RE = re.compile(r"^(?:(?P<h>\d+):)?(?P<m>\d{1,2}):(?P<s>\d{1,2})(?:\.(?P<ms>\d{1,3}))?$")
 
 
@@ -94,6 +103,211 @@ class Interval:
             "end": _clock(self.end_seconds),
             "seconds": round(self.duration_seconds, 3),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class Aside:
+    """A kept span presented as a deliberate, marked digression.
+
+    Not a cut: nothing here is removed. ``speed`` re-times the span (>1.0
+    speeds it up); ``label`` is a short marker burned on screen for its
+    duration. Boundaries are exact -- no safety margin is applied, since they
+    are an editorial choice about *where the digression is*, not a guess about
+    where a word might get clipped.
+    """
+
+    start_seconds: float
+    end_seconds: float
+    speed: float = DEFAULT_ASIDE_SPEED
+    label: str | None = DEFAULT_ASIDE_LABEL
+
+    def __post_init__(self) -> None:
+        _finite_nonneg(self.start_seconds, "aside start")
+        _finite_nonneg(self.end_seconds, "aside end")
+        if self.end_seconds <= self.start_seconds:
+            raise CutsError("aside end must be after its start")
+        if (
+            isinstance(self.speed, bool)
+            or not isinstance(self.speed, (int, float))
+            or not math.isfinite(self.speed)
+            or self.speed <= 0
+        ):
+            raise CutsError("aside speed must be a finite positive number")
+        if self.label is not None:
+            if not isinstance(self.label, str) or not self.label.strip():
+                raise CutsError("aside label must be a non-empty string or None")
+            if "\n" in self.label or "\r" in self.label:
+                raise CutsError("aside label must be a single line")
+            if len(self.label) > MAX_ASIDE_LABEL_CHARS:
+                raise CutsError(
+                    f"aside label must be at most {MAX_ASIDE_LABEL_CHARS} characters"
+                )
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.end_seconds - self.start_seconds
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "start": _clock(self.start_seconds),
+            "end": _clock(self.end_seconds),
+            "seconds": round(self.duration_seconds, 3),
+            "speed": round(float(self.speed), 3),
+            "label": self.label,
+        }
+
+
+TIMELINE_KINDS = ("keep", "aside")
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineSegment:
+    """One ordered piece of the rendered timeline: a plain keep, or an aside."""
+
+    start_seconds: float
+    end_seconds: float
+    kind: str
+    speed: float = 1.0
+    label: str | None = None
+
+    def __post_init__(self) -> None:
+        _finite_nonneg(self.start_seconds, "segment start")
+        _finite_nonneg(self.end_seconds, "segment end")
+        if self.end_seconds <= self.start_seconds:
+            raise CutsError("segment end must be after its start")
+        if self.kind not in TIMELINE_KINDS:
+            raise CutsError(f"segment kind must be one of {TIMELINE_KINDS}")
+        if self.kind == "keep" and (self.speed != 1.0 or self.label is not None):
+            raise CutsError("a plain keep segment carries no speed change or label")
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.end_seconds - self.start_seconds
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "start": _clock(self.start_seconds),
+            "end": _clock(self.end_seconds),
+            "seconds": round(self.duration_seconds, 3),
+            "kind": self.kind,
+            "speed": round(float(self.speed), 3),
+            "label": self.label,
+        }
+
+
+def _raw_aside(entry: object) -> Aside:
+    if isinstance(entry, Aside):
+        return entry
+    if not isinstance(entry, dict) or "start" not in entry or "end" not in entry:
+        raise CutsError("each aside needs a 'start' and an 'end'")
+    kwargs: dict[str, object] = {
+        "start_seconds": parse_clock(entry["start"]),
+        "end_seconds": parse_clock(entry["end"]),
+    }
+    if "speed" in entry:
+        kwargs["speed"] = entry["speed"]
+    if "label" in entry:
+        kwargs["label"] = entry["label"]
+    return Aside(**kwargs)
+
+
+def consolidate_asides(
+    raw_asides: object,
+    *,
+    duration_seconds: float,
+    default_speed: float = DEFAULT_ASIDE_SPEED,
+    default_label: str | None = DEFAULT_ASIDE_LABEL,
+) -> tuple[Aside, ...]:
+    """Normalise an asides list into ordered, non-overlapping :class:`Aside` values.
+
+    Every entry is parsed (``speed``/``label`` default when absent), clamped to
+    ``[0, duration_seconds]``, and sorted. Unlike cuts, asides are never
+    merged: two that genuinely overlap raise :class:`CutsError` so the
+    conflict is visible rather than silently resolved -- each one carries its
+    own label and speed, and guessing which wins would hide the mistake. Two
+    asides that only touch (one ends exactly where the next starts) are fine
+    and stay separate, each keeping its own treatment.
+    """
+
+    duration = _finite_nonneg(duration_seconds, "duration_seconds")
+    if duration == 0:
+        raise CutsError("duration_seconds must be greater than zero")
+
+    if raw_asides is None:
+        entries: list[object] = []
+    elif isinstance(raw_asides, (str, bytes)):
+        raise CutsError("raw_asides must be a list of asides, not a string")
+    else:
+        try:
+            entries = list(raw_asides)
+        except TypeError as exc:
+            raise CutsError("raw_asides must be iterable") from exc
+
+    asides: list[Aside] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            entry = dict(entry)
+            entry.setdefault("speed", default_speed)
+            entry.setdefault("label", default_label)
+        aside = _raw_aside(entry)
+        start = min(max(aside.start_seconds, 0.0), duration)
+        end = min(max(aside.end_seconds, 0.0), duration)
+        if end - start < MIN_CUT_SECONDS:
+            raise CutsError("an aside must not fall entirely outside the video")
+        asides.append(Aside(start, end, aside.speed, aside.label))
+
+    asides.sort(key=lambda aside: aside.start_seconds)
+    for previous, current in zip(asides, asides[1:]):
+        if current.start_seconds < previous.end_seconds - 1e-9:
+            raise CutsError("asides must not overlap one another")
+    return tuple(asides)
+
+
+def build_timeline(
+    keeps: "tuple[Interval, ...]", asides: "tuple[Aside, ...]"
+) -> tuple[TimelineSegment, ...]:
+    """Slice ``keeps`` at every aside boundary, tagging each resulting piece.
+
+    ``keeps`` is the complement of the approved cuts (:func:`keep_intervals`).
+    Every aside must lie entirely within one keep interval; one that overlaps
+    an approved cut, or straddles a cut boundary, raises :class:`CutsError`
+    instead of being silently trimmed or dropped -- that conflict is the
+    person's to resolve, not the tool's to guess at.
+    """
+
+    if not isinstance(keeps, tuple) or not all(isinstance(k, Interval) for k in keeps):
+        raise CutsError("keeps must be a tuple of Interval values")
+    if not isinstance(asides, tuple) or not all(isinstance(a, Aside) for a in asides):
+        raise CutsError("asides must be a tuple of Aside values")
+
+    segments: list[TimelineSegment] = []
+    matched = 0
+    for keep in keeps:
+        local = [
+            aside
+            for aside in asides
+            if aside.start_seconds >= keep.start_seconds - 1e-9
+            and aside.end_seconds <= keep.end_seconds + 1e-9
+        ]
+        cursor = keep.start_seconds
+        for aside in local:
+            if aside.start_seconds > cursor + 1e-9:
+                segments.append(TimelineSegment(cursor, aside.start_seconds, "keep"))
+            segments.append(
+                TimelineSegment(
+                    aside.start_seconds, aside.end_seconds, "aside", aside.speed, aside.label
+                )
+            )
+            cursor = aside.end_seconds
+            matched += 1
+        if keep.end_seconds > cursor + 1e-9:
+            segments.append(TimelineSegment(cursor, keep.end_seconds, "keep"))
+
+    if matched != len(asides):
+        raise CutsError(
+            "an aside overlaps an approved cut or crosses a cut boundary"
+        )
+    return tuple(segments)
 
 
 @dataclass(frozen=True, slots=True)

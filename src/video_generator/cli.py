@@ -16,6 +16,7 @@ from pathlib import Path
 from video_generator.adapters import (
     AlignerError,
     AudioArtifact,
+    CutSegment,
     FFmpegError,
     KokoroError,
     MediaProbe,
@@ -89,7 +90,12 @@ from video_generator.domain.takes import (
     analyze_take,
     render_review_markdown,
 )
-from video_generator.domain.cuts import CutsError, plan_cuts
+from video_generator.domain.cuts import (
+    CutsError,
+    build_timeline,
+    consolidate_asides,
+    plan_cuts,
+)
 from video_generator.domain.typography import (
     DEFAULT_TYPOGRAPHY_POLICY,
     MotionTypographyPolicy,
@@ -496,7 +502,11 @@ def build_parser() -> argparse.ArgumentParser:
     apply_cuts_cmd.add_argument(
         "--cuts",
         required=True,
-        help="a cut-review.json (its CUT segments are used) or an approved-cuts.json",
+        help=(
+            "a cut-review.json (its CUT segments are used) or an "
+            "approved-cuts.json ({cuts, asides}); asides are kept, marked "
+            "digressions, only read from the approved-cuts.json shape"
+        ),
     )
     apply_cuts_dest = apply_cuts_cmd.add_mutually_exclusive_group(required=True)
     apply_cuts_dest.add_argument(
@@ -1503,13 +1513,43 @@ def _run_review_cuts(args: argparse.Namespace) -> int:
     return 0
 
 
-def _approved_cuts_from_file(payload: object) -> tuple[list[dict[str, str]], dict[str, float]]:
-    """Return ``(raw_cuts, padding_overrides)`` from a cuts file payload.
+def _asides_from_file(payload: dict) -> list[dict[str, object]]:
+    """The ``asides`` list from a cuts file payload, if any.
+
+    An aside is a manual, deliberate editorial choice -- kept and marked, not
+    derived automatically from a ``cut-review.json`` category. Only an
+    ``approved-cuts.json``-shaped ``asides`` array is read.
+    """
+
+    if "asides" not in payload:
+        return []
+    asides = payload["asides"]
+    if not isinstance(asides, list):
+        raise CutsError("'asides' must be a list")
+    raw: list[dict[str, object]] = []
+    for entry in asides:
+        if not isinstance(entry, dict) or "start" not in entry or "end" not in entry:
+            raise CutsError("each aside needs a 'start' and an 'end'")
+        item: dict[str, object] = {"start": entry["start"], "end": entry["end"]}
+        if "speed" in entry:
+            item["speed"] = entry["speed"]
+        if "label" in entry:
+            item["label"] = entry["label"]
+        raw.append(item)
+    return raw
+
+
+def _approved_cuts_from_file(
+    payload: object,
+) -> tuple[list[dict[str, str]], list[dict[str, object]], dict[str, float]]:
+    """Return ``(raw_cuts, raw_asides, padding_overrides)`` from a cuts file.
 
     Accepts a ``cut-review.json`` (every segment whose ``suggestion`` is
     ``CUT`` -- including approved ``LONG_PAUSE`` rows -- is taken) or an
-    ``approved-cuts.json`` (``{"cuts": [{"start", "end"}], ...}``). ``REVIEW``
-    rows are never taken.
+    ``approved-cuts.json`` (``{"cuts": [{"start", "end"}], "asides": [...]}``).
+    ``REVIEW`` rows are never taken. ``asides`` (kept, but re-timed/marked
+    instead of removed) is only ever read from the ``approved-cuts.json``
+    shape -- see :func:`_asides_from_file`.
     """
 
     if not isinstance(payload, dict):
@@ -1524,6 +1564,7 @@ def _approved_cuts_from_file(payload: object) -> tuple[list[dict[str, str]], dic
             if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
                 raise CutsError(f"{key} must be a non-negative number")
             padding[name] = float(value) / 1000
+    asides = _asides_from_file(payload)
 
     if "segments" in payload and "cuts" not in payload:
         raw = [
@@ -1531,7 +1572,7 @@ def _approved_cuts_from_file(payload: object) -> tuple[list[dict[str, str]], dic
             for seg in payload.get("segments", [])
             if isinstance(seg, dict) and seg.get("suggestion") == "CUT"
         ]
-        return raw, padding
+        return raw, asides, padding
     if "cuts" in payload:
         cuts = payload["cuts"]
         if not isinstance(cuts, list):
@@ -1541,7 +1582,7 @@ def _approved_cuts_from_file(payload: object) -> tuple[list[dict[str, str]], dic
             if not isinstance(entry, dict) or "start" not in entry or "end" not in entry:
                 raise CutsError("each cut needs a 'start' and an 'end'")
             raw.append({"start": entry["start"], "end": entry["end"]})
-        return raw, padding
+        return raw, asides, padding
     raise CutsError("the cuts file has neither 'cuts' nor 'segments'")
 
 
@@ -1585,7 +1626,7 @@ def _run_apply_cuts(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        raw_cuts, padding = _approved_cuts_from_file(payload)
+        raw_cuts, raw_asides, padding = _approved_cuts_from_file(payload)
     except CutsError as exc:
         print(f"Apply-cuts error: {exc}", file=sys.stderr)
         return 2
@@ -1631,12 +1672,26 @@ def _run_apply_cuts(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        artifact = render_cut_preview(
-            source,
-            preview_path,
-            [(interval.start_seconds, interval.end_seconds) for interval in keeps],
+        asides = consolidate_asides(raw_asides, duration_seconds=float(probe.duration_seconds))
+        timeline = build_timeline(keeps, asides)
+    except CutsError as exc:
+        print(f"Apply-cuts error: {exc}", file=sys.stderr)
+        return 2
+
+    render_segments = [
+        CutSegment(
+            segment.start_seconds,
+            segment.end_seconds,
+            speed=segment.speed,
+            grayscale=(segment.kind == "aside"),
+            label=segment.label,
         )
+        for segment in timeline
+    ]
+
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        artifact = render_cut_preview(source, preview_path, render_segments)
     except FFmpegError as exc:
         print(f"Apply-cuts error: {exc}", file=sys.stderr)
         return 2
@@ -1647,6 +1702,13 @@ def _run_apply_cuts(args: argparse.Namespace) -> int:
         measured_seconds = measured.duration_seconds
     except ProbeError:
         pass
+
+    # outcome.final_seconds is the plain keep/cut split (asides counted at
+    # 1x); the rendered file is shorter whenever an aside speeds things up, so
+    # the drift check compares against this speed-adjusted expectation instead.
+    expected_rendered_seconds = sum(
+        segment.duration_seconds / segment.speed for segment in timeline
+    )
 
     plan = {
         "schema_version": 1,
@@ -1659,7 +1721,10 @@ def _run_apply_cuts(args: argparse.Namespace) -> int:
         },
         "cuts": [interval.to_dict() for interval in cuts],
         "keep": [interval.to_dict() for interval in keeps],
+        "asides": [aside.to_dict() for aside in asides],
+        "timeline": [segment.to_dict() for segment in timeline],
         **outcome.to_dict(),
+        "expected_rendered_seconds": round(expected_rendered_seconds, 3),
     }
     if measured_seconds is not None:
         plan["measured_final_seconds"] = round(float(measured_seconds), 3)
@@ -1672,7 +1737,7 @@ def _run_apply_cuts(args: argparse.Namespace) -> int:
         return 2
 
     drift = (
-        abs(measured_seconds - outcome.final_seconds)
+        abs(measured_seconds - expected_rendered_seconds)
         if measured_seconds is not None
         else None
     )
@@ -1681,7 +1746,9 @@ def _run_apply_cuts(args: argparse.Namespace) -> int:
         "plan_path": str(plan_path.resolve()),
         **outcome.to_dict(),
         "segments_kept": artifact.segment_count,
+        "asides_applied": artifact.aside_count,
         "frame_rate": artifact.frame_rate,
+        "expected_rendered_seconds": round(expected_rendered_seconds, 3),
         "measured_final_seconds": (
             round(float(measured_seconds), 3) if measured_seconds is not None else None
         ),
@@ -1694,12 +1761,18 @@ def _run_apply_cuts(args: argparse.Namespace) -> int:
         print(
             f"Original {summary['original_duration']} - removed "
             f"{summary['removed_duration']} = final {summary['final_duration']} "
-            f"({summary['cuts_applied']} cut(s), {summary['segments_kept']} kept segment(s))"
+            f"({summary['cuts_applied']} cut(s), {summary['segments_kept']} kept segment(s), "
+            f"{summary['asides_applied']} aside(s))"
         )
+        if summary["asides_applied"]:
+            print(
+                f"Asides speed up the rendered file further: expect "
+                f"~{expected_rendered_seconds:.2f} s, not {outcome.final_seconds:.2f} s"
+            )
         if drift is not None and drift > 0.5:
             print(
                 f"Warning: rendered preview is {measured_seconds:.2f} s, "
-                f"{drift:.2f} s off the expected {outcome.final_seconds:.2f} s"
+                f"{drift:.2f} s off the expected {expected_rendered_seconds:.2f} s"
             )
     return 0
 

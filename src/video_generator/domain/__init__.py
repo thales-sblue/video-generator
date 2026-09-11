@@ -45,9 +45,13 @@ from video_generator.domain.takes import (
     render_review_markdown,
 )
 from video_generator.domain.cuts import (
+    Aside,
     CutOutcome,
     CutsError,
     Interval,
+    TimelineSegment,
+    build_timeline,
+    consolidate_asides,
     consolidate_cuts,
     keep_intervals,
     parse_clock,
@@ -236,6 +240,10 @@ __all__ = [
     "keep_intervals",
     "parse_clock",
     "plan_cuts",
+    "Aside",
+    "TimelineSegment",
+    "build_timeline",
+    "consolidate_asides",
 ]
 # NOTE: implementation lands contract-by-contract via TDD; planning.py defines
 # placeholders for the not-yet-built names so this import stays resolvable.

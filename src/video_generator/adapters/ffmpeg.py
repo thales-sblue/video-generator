@@ -279,6 +279,26 @@ class CutPreviewArtifact:
     kept_seconds: float
     file_size_bytes: int
     frame_rate: str | None = None
+    aside_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class CutSegment:
+    """One piece of the rendered timeline: a plain keep, or a marked aside.
+
+    A plain ``(start, end)`` tuple is accepted wherever :class:`CutSegment` is
+    expected -- it means a keep at 1x, no treatment. ``speed`` re-times the
+    segment (video and audio together, in sync); ``grayscale`` desaturates it;
+    ``label`` burns a short, single-line marker on screen for its duration. All
+    three are ``render_cut_preview``'s only visual/audio departure from a plain
+    cut-and-concat -- there is no fade, no music and no transition here.
+    """
+
+    start_seconds: float
+    end_seconds: float
+    speed: float = 1.0
+    grayscale: bool = False
+    label: str | None = None
 
 
 IMAGE_TIMELINE_FPS = 30
@@ -2387,6 +2407,56 @@ def compose_video_sequence(
 # short enough to be inaudible. No video fade -- the picture cut is hard.
 _CUT_JOIN_FADE_SECONDS = 0.010
 
+# The aside marker: a small, single-line, deliberately informal tag -- not a
+# caption. A real system font (not fontconfig-dependent) keeps this working on
+# the same Windows box every other drawtext call in this project already runs
+# on (see adapters/screens.py).
+_ASIDE_FONT = "Comic Sans MS"
+_ASIDE_FONT_HEIGHT_FRACTION = 0.028
+_ASIDE_FONT_SIZE_FALLBACK = 28
+_ASIDE_LABEL_MARGIN = 24
+
+
+def _probe_video_height(source: Path, executable_lookup=shutil.which) -> int | None:
+    """The source's video height in pixels, or ``None``. See :func:`_probe_frame_rate`."""
+
+    try:
+        probe = resolve_media_tool("ffprobe", path_lookup=executable_lookup)
+    except ToolResolutionError:
+        return None
+    if probe is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                probe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=height",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(source),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            shell=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if completed.returncode != 0:
+        return None
+    value = (completed.stdout or "").strip().splitlines()[0:1]
+    try:
+        height = int(value[0]) if value else 0
+    except ValueError:
+        return None
+    return height if height > 0 else None
+
 
 def _probe_frame_rate(source: Path, executable_lookup=shutil.which) -> str | None:
     """The source's ``r_frame_rate`` (e.g. ``30000/1001``), or ``None``.
@@ -2435,7 +2505,7 @@ def _probe_frame_rate(source: Path, executable_lookup=shutil.which) -> str | Non
 def render_cut_preview(
     source_path: str | Path,
     output_path: str | Path,
-    keep_intervals: Sequence[tuple[float, float]],
+    keep_intervals: "Sequence[tuple[float, float] | CutSegment]",
     *,
     video_bitrate: str = "5M",
     audio_bitrate: str = "192k",
@@ -2443,16 +2513,26 @@ def render_cut_preview(
 ) -> CutPreviewArtifact:
     """Concatenate the kept time ranges of one video into a new preview file.
 
-    ``keep_intervals`` is an ordered, non-overlapping sequence of
-    ``(start_seconds, end_seconds)`` pairs to keep -- the complement of the
-    approved cuts, as computed by :func:`video_generator.domain.cuts.keep_intervals`.
+    ``keep_intervals`` is an ordered, non-overlapping sequence of segments to
+    keep, in source time -- the complement of the approved cuts (see
+    :func:`video_generator.domain.cuts.keep_intervals` /
+    :func:`~video_generator.domain.cuts.build_timeline`). Each item is either a
+    plain ``(start_seconds, end_seconds)`` pair or a :class:`CutSegment` that
+    additionally re-times the span, desaturates it, and/or burns a short label
+    on it -- an "aside" the presenter chose to mark and keep rather than cut.
 
     One FFmpeg pass with a ``filter_complex``: each range is ``trim``/``atrim``
-    with its PTS reset, a 10 ms audio fade is laid on both sides of every
-    internal join (never on the outer edges, never on the picture), and the
-    ranges are ``concat``-ed. Video is re-encoded with ``libopenh264`` at the
-    source frame rate and audio to AAC, so the cuts are frame-accurate and the
-    A/V stays in sync with no black frames or dropped frames between segments.
+    with its PTS reset (and re-timed together with ``atempo`` when an aside
+    changes speed, so video and audio stay the same length), a 10 ms audio fade
+    is laid on both sides of every internal join (never on the outer edges,
+    never on the picture -- an aside starts and ends on a hard cut, not a
+    dissolve), and the ranges are ``concat``-ed. Video is re-encoded with
+    ``libopenh264`` at the source frame rate and audio to AAC, so the cuts are
+    frame-accurate and the A/V stays in sync with no black frames or dropped
+    frames between segments. A label never enters the filter graph as text: it
+    is written to its own UTF-8 file in a private temporary directory (the
+    process runs with that directory as its cwd), the same way
+    :mod:`video_generator.adapters.screens` keeps card text out of the graph.
     The source is never modified and an existing ``output_path`` is refused.
     """
 
@@ -2470,23 +2550,40 @@ def render_cut_preview(
     if output.suffix.lower() != ".mp4":
         raise FFmpegError("cut preview requires an .mp4 output_path")
 
-    ranges: list[tuple[float, float]] = []
+    segments: list[CutSegment] = []
     previous_end = 0.0
-    for pair in keep_intervals:
-        if (
-            not isinstance(pair, (tuple, list))
-            or len(pair) != 2
-        ):
-            raise FFmpegError("each keep interval must be a (start, end) pair")
-        start = _time(pair[0], "keep start")
-        end = _time(pair[1], "keep end")
+    for item in keep_intervals:
+        if isinstance(item, CutSegment):
+            segment = item
+        elif isinstance(item, (tuple, list)) and len(item) == 2:
+            segment = CutSegment(item[0], item[1])
+        else:
+            raise FFmpegError(
+                "each keep interval must be a (start, end) pair or a CutSegment"
+            )
+        start = _time(segment.start_seconds, "keep start")
+        end = _time(segment.end_seconds, "keep end")
         if end <= start:
             raise FFmpegError("keep interval end must be after its start")
         if start + 1e-9 < previous_end:
             raise FFmpegError("keep intervals must be ordered and non-overlapping")
+        if (
+            isinstance(segment.speed, bool)
+            or not isinstance(segment.speed, (int, float))
+            or not math.isfinite(segment.speed)
+            or segment.speed <= 0
+        ):
+            raise FFmpegError("segment speed must be a finite positive number")
+        if segment.label is not None and (
+            not isinstance(segment.label, str)
+            or not segment.label.strip()
+            or "\n" in segment.label
+            or "\r" in segment.label
+        ):
+            raise FFmpegError("segment label must be a single non-empty line")
         previous_end = end
-        ranges.append((start, end))
-    if not ranges:
+        segments.append(segment)
+    if not segments:
         raise FFmpegError("at least one keep interval is required")
 
     try:
@@ -2498,32 +2595,59 @@ def render_cut_preview(
 
     frame_rate = _probe_frame_rate(source)
     fps_step = f"fps={frame_rate}," if frame_rate else ""
+    labelled = [segment for segment in segments if segment.label is not None]
+    font_size = _ASIDE_FONT_SIZE_FALLBACK
+    if labelled:
+        height = _probe_video_height(source)
+        if height:
+            font_size = max(16, round(height * _ASIDE_FONT_HEIGHT_FRACTION))
 
     filters: list[str] = []
-    labels: list[str] = []
-    last = len(ranges) - 1
-    for index, (start, end) in enumerate(ranges):
+    concat_labels: list[str] = []
+    label_files: dict[int, str] = {}
+    last = len(segments) - 1
+    for index, segment in enumerate(segments):
+        start, end = segment.start_seconds, segment.end_seconds
         s = _fmt(start)
         e = _fmt(end)
-        filters.append(
-            f"[0:v]trim=start={s}:end={e},setpts=PTS-STARTPTS,{fps_step}"
-            f"setsar=1[v{index}]"
-        )
         span = end - start
-        afades = ""
-        if index != 0 and span > 2 * _CUT_JOIN_FADE_SECONDS:
-            afades += f",afade=t=in:st=0:d={_fmt(_CUT_JOIN_FADE_SECONDS)}"
-        if index != last and span > 2 * _CUT_JOIN_FADE_SECONDS:
-            afades += (
-                f",afade=t=out:st={_fmt(span - _CUT_JOIN_FADE_SECONDS)}"
+        speed = float(segment.speed)
+        effective_span = span / speed
+
+        video_steps = [f"trim=start={s}:end={e}"]
+        if speed != 1.0:
+            video_steps.append(f"setpts=(PTS-STARTPTS)/{_fmt(speed)}")
+        else:
+            video_steps.append("setpts=PTS-STARTPTS")
+        if segment.grayscale:
+            video_steps.append("hue=s=0")
+        if segment.label is not None:
+            name = f"aside{index:03d}.txt"
+            label_files[index] = name
+            video_steps.append(
+                "drawtext="
+                f"font={_ASIDE_FONT}:textfile={name}:"
+                f"fontcolor=white:fontsize={font_size}:"
+                f"x={_ASIDE_LABEL_MARGIN}:y=h-th-{_ASIDE_LABEL_MARGIN}:"
+                "box=1:boxcolor=black@0.55:boxborderw=10"
+            )
+        video_steps.append(f"{fps_step}setsar=1" if fps_step else "setsar=1")
+        filters.append(f"[0:v]{','.join(video_steps)}[v{index}]")
+
+        audio_steps = [f"atrim=start={s}:end={e}", "asetpts=PTS-STARTPTS"]
+        if speed != 1.0:
+            audio_steps.append(f"atempo={_fmt(speed)}")
+        if index != 0 and effective_span > 2 * _CUT_JOIN_FADE_SECONDS:
+            audio_steps.append(f"afade=t=in:st=0:d={_fmt(_CUT_JOIN_FADE_SECONDS)}")
+        if index != last and effective_span > 2 * _CUT_JOIN_FADE_SECONDS:
+            audio_steps.append(
+                f"afade=t=out:st={_fmt(effective_span - _CUT_JOIN_FADE_SECONDS)}"
                 f":d={_fmt(_CUT_JOIN_FADE_SECONDS)}"
             )
-        filters.append(
-            f"[0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS{afades}[a{index}]"
-        )
-        labels.append(f"[v{index}][a{index}]")
+        filters.append(f"[0:a]{','.join(audio_steps)}[a{index}]")
+        concat_labels.append(f"[v{index}][a{index}]")
     filters.append(
-        f"{''.join(labels)}concat=n={len(ranges)}:v=1:a=1[outv][outa]"
+        f"{''.join(concat_labels)}concat=n={len(segments)}:v=1:a=1[outv][outa]"
     )
     filter_graph = ";".join(filters)
 
@@ -2541,6 +2665,16 @@ def render_cut_preview(
 
     command = [executable, "-v", "error", "-nostdin", "-y", "-i", str(source)]
     filter_file: Path | None = None
+    workspace_dir = tempfile.TemporaryDirectory(prefix=f".{output.stem}-labels-")
+    try:
+        for index, name in label_files.items():
+            (Path(workspace_dir.name) / name).write_text(
+                segments[index].label, encoding="utf-8"
+            )
+    except OSError as exc:
+        workspace_dir.cleanup()
+        _cleanup(temporary)
+        raise FFmpegError(f"could not write an aside label beside: {output}") from exc
     if len(filter_graph) > _FILTER_GRAPH_INLINE_LIMIT:
         try:
             with tempfile.NamedTemporaryFile(
@@ -2554,6 +2688,7 @@ def render_cut_preview(
                 filter_file = Path(handle.name)
                 handle.write(filter_graph)
         except OSError as exc:
+            workspace_dir.cleanup()
             _cleanup(temporary)
             raise FFmpegError(f"could not write the filter graph beside: {output}") from exc
         command.extend(["-filter_complex_script", str(filter_file)])
@@ -2583,37 +2718,41 @@ def render_cut_preview(
     )
 
     try:
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            shell=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        _cleanup(temporary)
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                shell=False,
+                cwd=workspace_dir.name,
+            )
+        except subprocess.TimeoutExpired as exc:
+            _cleanup(temporary)
+            if filter_file is not None:
+                _cleanup(filter_file)
+            raise FFmpegError("ffmpeg timed out while rendering the cut preview") from exc
+        except OSError as exc:
+            _cleanup(temporary)
+            if filter_file is not None:
+                _cleanup(filter_file)
+            raise FFmpegError(
+                f"ffmpeg could not render the cut preview: {type(exc).__name__}"
+            ) from exc
         if filter_file is not None:
             _cleanup(filter_file)
-        raise FFmpegError("ffmpeg timed out while rendering the cut preview") from exc
-    except OSError as exc:
-        _cleanup(temporary)
-        if filter_file is not None:
-            _cleanup(filter_file)
-        raise FFmpegError(
-            f"ffmpeg could not render the cut preview: {type(exc).__name__}"
-        ) from exc
-    if filter_file is not None:
-        _cleanup(filter_file)
 
-    if completed.returncode != 0:
-        _cleanup(temporary)
-        detail = (completed.stderr or completed.stdout).strip()
-        suffix = f": {detail}" if detail else ""
-        raise FFmpegError(f"ffmpeg exited with {completed.returncode}{suffix}")
-    if not temporary.is_file() or temporary.stat().st_size == 0:
-        _cleanup(temporary)
-        raise FFmpegError("ffmpeg reported success without creating a non-empty preview")
+        if completed.returncode != 0:
+            _cleanup(temporary)
+            detail = (completed.stderr or completed.stdout).strip()
+            suffix = f": {detail}" if detail else ""
+            raise FFmpegError(f"ffmpeg exited with {completed.returncode}{suffix}")
+        if not temporary.is_file() or temporary.stat().st_size == 0:
+            _cleanup(temporary)
+            raise FFmpegError("ffmpeg reported success without creating a non-empty preview")
+    finally:
+        workspace_dir.cleanup()
     try:
         os.link(temporary, output)
     except OSError as exc:
@@ -2627,8 +2766,9 @@ def render_cut_preview(
     return CutPreviewArtifact(
         source_path=str(source),
         output_path=str(output),
-        segment_count=len(ranges),
-        kept_seconds=sum(end - start for start, end in ranges),
+        segment_count=len(segments),
+        kept_seconds=sum(segment.end_seconds - segment.start_seconds for segment in segments),
         file_size_bytes=size,
         frame_rate=frame_rate,
+        aside_count=len(labelled),
     )

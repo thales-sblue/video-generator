@@ -3,9 +3,13 @@
 import unittest
 
 from video_generator.domain.cuts import (
+    Aside,
     CutOutcome,
     CutsError,
     Interval,
+    TimelineSegment,
+    build_timeline,
+    consolidate_asides,
     consolidate_cuts,
     keep_intervals,
     parse_clock,
@@ -183,6 +187,121 @@ class PlanCutsTests(unittest.TestCase):
                 "cuts_applied": 2,
             },
         )
+
+
+class AsideContractTests(unittest.TestCase):
+    def test_defaults_and_rejects_bad_values(self):
+        aside = Aside(10.0, 20.0)
+        self.assertEqual(aside.speed, 1.17)
+        self.assertEqual(aside.label, "desvio rápido")
+        for kwargs in (
+            {"start_seconds": 20.0, "end_seconds": 10.0},
+            {"start_seconds": 0.0, "end_seconds": 1.0, "speed": 0},
+            {"start_seconds": 0.0, "end_seconds": 1.0, "speed": -1.0},
+            {"start_seconds": 0.0, "end_seconds": 1.0, "label": "  "},
+            {"start_seconds": 0.0, "end_seconds": 1.0, "label": "linha um\nlinha dois"},
+            {"start_seconds": 0.0, "end_seconds": 1.0, "label": "x" * 41},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(CutsError):
+                    Aside(**kwargs)
+
+    def test_label_may_be_none(self):
+        aside = Aside(0.0, 1.0, label=None)
+        self.assertIsNone(aside.label)
+
+
+class ConsolidateAsidesTests(unittest.TestCase):
+    def test_parses_defaults_speed_and_label(self):
+        asides = consolidate_asides(
+            [{"start": "02:37.840", "end": "03:21.160"}], duration_seconds=300
+        )
+        self.assertEqual(len(asides), 1)
+        self.assertAlmostEqual(asides[0].start_seconds, 157.84)
+        self.assertEqual(asides[0].speed, 1.17)
+        self.assertEqual(asides[0].label, "desvio rápido")
+
+    def test_honours_a_per_aside_override(self):
+        asides = consolidate_asides(
+            [{"start": "00:10", "end": "00:20", "speed": 1.5, "label": "voltando já"}],
+            duration_seconds=60,
+        )
+        self.assertEqual(asides[0].speed, 1.5)
+        self.assertEqual(asides[0].label, "voltando já")
+
+    def test_two_non_overlapping_asides_sort_by_start(self):
+        asides = consolidate_asides(
+            [{"start": "00:40", "end": "00:50"}, {"start": "00:10", "end": "00:20"}],
+            duration_seconds=60,
+        )
+        self.assertEqual(
+            [(a.start_seconds, a.end_seconds) for a in asides],
+            [(10.0, 20.0), (40.0, 50.0)],
+        )
+
+    def test_overlapping_asides_are_rejected(self):
+        with self.assertRaises(CutsError):
+            consolidate_asides(
+                [{"start": 10.0, "end": 20.0}, {"start": 15.0, "end": 30.0}],
+                duration_seconds=60,
+            )
+
+    def test_asides_that_only_touch_are_allowed(self):
+        asides = consolidate_asides(
+            [{"start": 10.0, "end": 20.0}, {"start": 20.0, "end": 30.0}],
+            duration_seconds=60,
+        )
+        self.assertEqual(len(asides), 2)
+
+    def test_empty_list_yields_no_asides(self):
+        self.assertEqual(consolidate_asides([], duration_seconds=60), ())
+
+    def test_rejects_an_aside_entirely_outside_the_video(self):
+        with self.assertRaises(CutsError):
+            consolidate_asides([{"start": 100, "end": 110}], duration_seconds=60)
+
+
+class BuildTimelineTests(unittest.TestCase):
+    def test_slices_a_keep_interval_around_two_asides(self):
+        keeps = (Interval(0.0, 300.0),)
+        asides = consolidate_asides(
+            [
+                {"start": "02:37.840", "end": "03:21.160"},
+                {"start": "03:42.120", "end": "04:28.200"},
+            ],
+            duration_seconds=300,
+        )
+        timeline = build_timeline(keeps, asides)
+        kinds = [segment.kind for segment in timeline]
+        self.assertEqual(kinds, ["keep", "aside", "keep", "aside", "keep"])
+        self.assertAlmostEqual(timeline[0].end_seconds, 157.84)
+        self.assertEqual(timeline[1].speed, 1.17)
+        self.assertEqual(timeline[3].label, "desvio rápido")
+
+    def test_no_asides_returns_the_keeps_unchanged(self):
+        keeps = (Interval(0.0, 10.0), Interval(20.0, 30.0))
+        timeline = build_timeline(keeps, ())
+        self.assertEqual([(s.start_seconds, s.end_seconds, s.kind) for s in timeline],
+                         [(0.0, 10.0, "keep"), (20.0, 30.0, "keep")])
+
+    def test_aside_overlapping_a_cut_gap_is_rejected(self):
+        # a cut removed [10, 20); an aside that reaches into it is ambiguous
+        keeps = (Interval(0.0, 10.0), Interval(20.0, 60.0))
+        asides = (Aside(5.0, 25.0),)
+        with self.assertRaises(CutsError):
+            build_timeline(keeps, asides)
+
+    def test_aside_fully_inside_a_cut_gap_is_rejected(self):
+        keeps = (Interval(0.0, 10.0), Interval(20.0, 60.0))
+        asides = (Aside(12.0, 18.0),)
+        with self.assertRaises(CutsError):
+            build_timeline(keeps, asides)
+
+    def test_timeline_segment_rejects_speed_or_label_on_a_plain_keep(self):
+        with self.assertRaises(CutsError):
+            TimelineSegment(0.0, 1.0, "keep", speed=1.5)
+        with self.assertRaises(CutsError):
+            TimelineSegment(0.0, 1.0, "keep", label="x")
 
 
 if __name__ == "__main__":
