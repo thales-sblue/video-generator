@@ -1644,6 +1644,7 @@ def compose_video_sequence(
     captions: Sequence[CaptionCue] = (),
     text_events: Sequence[TextEventCue] = (),
     motion_text: "Sequence[MotionTextCue]" = (),
+    motion_overlay: "str | Path | None" = None,
     text_style: "TextStyleSpec | None" = None,
     direction: "DirectionSpec | None" = None,
     music_path: str | Path | None = None,
@@ -1899,6 +1900,25 @@ def compose_video_sequence(
         raise FFmpegError("video sequence accepts at most 60 motion text events")
     if not all(isinstance(cue, MotionTextCue) for cue in normalized_motion):
         raise FFmpegError("motion_text must contain only MotionTextCue values")
+    overlay_path: Path | None = None
+    if motion_overlay is not None:
+        if normalized_motion:
+            raise FFmpegError(
+                "motion_overlay and motion_text are mutually exclusive: the "
+                "typographic layer is either composed by Remotion or drawn by libass"
+            )
+        overlay_path = Path(motion_overlay).expanduser().resolve()
+        if not overlay_path.is_file():
+            raise FFmpegError(f"motion_overlay file not found: {overlay_path}")
+        if overlay_path.suffix.lower() not in (".mov", ".webm", ".mkv", ".mp4"):
+            raise FFmpegError(
+                "motion_overlay must be a .mov/.webm/.mkv/.mp4 clip with an alpha channel"
+            )
+        if canvas_size is None:
+            raise FFmpegError(
+                "motion_overlay requires a (width, height) canvas so the overlay "
+                "can be pinned to the delivery resolution"
+            )
     resolved_motion: list[tuple[MotionTextCue, float, float]] = []
     for cue in normalized_motion:
         if cue.layout not in MOTION_TEXT_LAYOUTS:
@@ -2101,6 +2121,16 @@ def compose_video_sequence(
         command.extend(["-i", str(narration)])
     if music is not None:
         command.extend(["-stream_loop", "-1", "-i", str(music)])
+    overlay_index = (
+        len(resolved_clips)
+        + (1 if narration is not None else 0)
+        + (1 if music is not None else 0)
+        if overlay_path is not None
+        else None
+    )
+    if overlay_path is not None:
+        # last input, so the narration/music stream indices below are unaffected
+        command.extend(["-i", str(overlay_path)])
     filters = []
     labels = []
     for index, (kind, _, start, end) in enumerate(resolved_clips):
@@ -2209,23 +2239,53 @@ def compose_video_sequence(
             filters.append(f"{chain}[{label}]")
         labels.append(f"[{label}]")
     has_video_fades = video_fade_in > 0 or video_fade_out > 0
-    concat_label = "basev" if (caption_file is not None or has_video_fades) else "outv"
+    # The picture passes through up to three optional stages after the concat —
+    # libass text, the Remotion motion-graphics overlay, then the black fades —
+    # and whichever one runs last must be the node named [outv].
+    stages_remaining = (
+        (1 if caption_file is not None else 0)
+        + (1 if overlay_index is not None else 0)
+        + (1 if has_video_fades else 0)
+    )
+    concat_label = "outv" if stages_remaining == 0 else "basev"
     filters.append(
         f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[{concat_label}]"
     )
     current_video = concat_label
+    stage = 0
+
+    def _next_label(preferred: str) -> str:
+        nonlocal stage
+        stage += 1
+        return "outv" if stage == stages_remaining else preferred
+
     if caption_file is not None:
         caption_path = _escape_filter_path(caption_file)
-        caption_label = "capv" if has_video_fades else "outv"
         # The .ass script already carries the style and a frame-matched PlayRes,
         # so libass lays the text out in real pixels with no force_style guesswork.
+        nxt = _next_label("capv")
         filters.append(
-            f"[{current_video}]subtitles=filename='{caption_path}'[{caption_label}]"
+            f"[{current_video}]subtitles=filename='{caption_path}'[{nxt}]"
         )
-        current_video = caption_label
+        current_video = nxt
+    if overlay_index is not None:
+        # The typographic layer, composed by Remotion as a transparent clip the
+        # size of the canvas. It is pinned to the delivery resolution and to the
+        # timeline fps first; ``format=auto`` then keeps the overlay's own alpha,
+        # so the base picture is untouched wherever the overlay is clear.
+        ov_w, ov_h = canvas_size  # type: ignore[misc]
+        filters.append(
+            f"[{overlay_index}:v:0]scale={ov_w}:{ov_h},setsar=1,"
+            f"fps={IMAGE_TIMELINE_FPS},format=yuva420p[ovl]"
+        )
+        nxt = _next_label("mgv")
+        filters.append(
+            f"[{current_video}][ovl]overlay=format=auto:eof_action=pass[{nxt}]"
+        )
+        current_video = nxt
     if has_video_fades:
         # A gentle open from black and close to black over the whole picture,
-        # captions included. loudnorm already gives the audio its own fades.
+        # text included. loudnorm already gives the audio its own fades.
         fade_parts = []
         if video_fade_in > 0:
             fade_parts.append(f"fade=t=in:st=0:d={format(video_fade_in, '.15g')}")
@@ -2234,7 +2294,9 @@ def compose_video_sequence(
                 f"fade=t=out:st={format(duration - video_fade_out, '.15g')}:"
                 f"d={format(video_fade_out, '.15g')}"
             )
-        filters.append(f"[{current_video}]{','.join(fade_parts)}[outv]")
+        nxt = _next_label("fadev")
+        filters.append(f"[{current_video}]{','.join(fade_parts)}[{nxt}]")
+        current_video = nxt
     narration_index = len(resolved_clips) if narration is not None else None
     music_index = len(resolved_clips) + (1 if narration is not None else 0) if music is not None else None
     if narration_index is not None:

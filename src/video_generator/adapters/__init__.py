@@ -51,6 +51,12 @@ from video_generator.adapters.screens import (
     ScreenRenderError,
     render_screen_card,
 )
+from video_generator.adapters.remotion import (
+    RemotionError,
+    RemotionOverlay,
+    remotion_available,
+    render_motion_overlay,
+)
 
 __all__ = [
     "AlignerError",
@@ -74,6 +80,10 @@ __all__ = [
     "ProbeError",
     "ScreenArtifact",
     "ScreenRenderError",
+    "RemotionError",
+    "RemotionOverlay",
+    "remotion_available",
+    "render_motion_overlay",
     "SegmentArtifact",
     "SequenceArtifact",
     "SequenceClip",

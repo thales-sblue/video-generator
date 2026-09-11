@@ -52,7 +52,10 @@ class DoctorTests(unittest.TestCase):
         self.assertFalse(report.external_services_allowed)
         self.assertEqual(
             {tool.name for tool in report.tools},
-            {"Python", "Node", "FFmpeg", "ffprobe", "Git", "HyperFrames", "Kokoro", "Aligner"},
+            {
+                "Python", "Node", "FFmpeg", "ffprobe", "Git",
+                "HyperFrames", "Remotion", "Kokoro", "Aligner",
+            },
         )
         self.assertTrue(next(tool for tool in report.tools if tool.name == "Python").available)
         self.assertIn("Local-only: enabled", format_report(report))

@@ -33,6 +33,7 @@ from video_generator.domain.direction import (
 )
 from video_generator.domain.editorial import (
     DEFAULT_EDITORIAL_POLICY,
+    DEFAULT_HOOK_POLICY,
     EditorialPolicy,
     HookPolicy,
     NarrationBeat,
@@ -47,9 +48,19 @@ from video_generator.domain.typography import (
     DEFAULT_TYPOGRAPHY_POLICY,
     MotionTextEvent,
     MotionTypographyPolicy,
+    classify_intensity,
     motion_typography_operation,
     plan_motion_typography,
     spoken_words,
+)
+from video_generator.domain.treatment import (
+    DEFAULT_TREATMENT_POLICY,
+    EditorialTreatment,
+    EditorialTreatmentPlan,
+    EditorialTreatmentPolicy,
+    TreatmentInput,
+    plan_editorial_treatment,
+    treatment_segments,
 )
 
 SCHEMA_VERSION = 1
@@ -2500,6 +2511,169 @@ _COVER_SCALES = ("close", "detail")
 _CONTAIN_SHOT_TYPES = ("on_screen_text", "document", "simple_graphic")
 
 
+# --------------------------------------------------------------------------- #
+# 6c. Editorial Image Editing — how each shot is cut, not only framed
+# --------------------------------------------------------------------------- #
+_READING_MOTION_INTENSITIES = ("high", "peak")
+_TREATMENT_STATE_SCALES = ("wide", "medium", "close", "detail")
+
+
+def _shot_reading_and_interruption(
+    shot_plan: "ShotPlan",
+    motion_events: "Sequence[MotionTextEvent]",
+) -> "tuple[dict[str, bool], dict[str, bool]]":
+    """``shot_id -> has a large reading block`` and ``-> a graphic interruption``.
+
+    A reading moment is a typographic event the eye has to *read* — a built
+    statement, a definition, a question, or any ``high``/``peak`` event: the
+    treatment layer pulls the picture's own movement back under it. A graphic
+    interruption is the type layer's ``visual_interruption`` intent, which the
+    treatment layer answers with a hard cut-in.
+    """
+
+    timeline = shot_timeline(shot_plan)
+    reading: dict[str, bool] = {}
+    interruption: dict[str, bool] = {}
+    for event in motion_events:
+        for shot_id, (start, end) in timeline.items():
+            if start - 1e-9 <= event.start_seconds < end:
+                heavy = (
+                    getattr(event, "intensity", "medium") in _READING_MOTION_INTENSITIES
+                    or getattr(event, "intent", "") in ("statement_build", "definition", "question")
+                    or any(getattr(b, "weight", "") == "massive" for b in event.blocks)
+                )
+                if heavy:
+                    reading[shot_id] = True
+                if getattr(event, "intent", "") == "visual_interruption":
+                    interruption[shot_id] = True
+                break
+    return reading, interruption
+
+
+def treatment_inputs(
+    scene_plan: "ScenePlan",
+    shot_plan: "ShotPlan",
+    *,
+    directions: "Mapping[str, VisualDirection] | None" = None,
+    motion_events: "Sequence[MotionTextEvent]" = (),
+    editorial_policy: "EditorialPolicy | None" = None,
+    hook_policy: "HookPolicy | None" = None,
+) -> "tuple[TreatmentInput, ...]":
+    """Reduce a planned video to exactly what the treatment planner may read.
+
+    The seam is deliberate: :mod:`video_generator.domain.treatment` never
+    imports this module, so its decisions replay from a table in a test rather
+    than from a whole plan. Intensity is scored with the *same*
+    :func:`~video_generator.domain.typography.classify_intensity` the type layer
+    uses, so the two layers agree on which beats are loud.
+    """
+
+    if not isinstance(scene_plan, ScenePlan) or not isinstance(shot_plan, ShotPlan):
+        raise PlanningError("treatment_inputs needs a ScenePlan and a ShotPlan")
+    editorial_policy = editorial_policy or DEFAULT_EDITORIAL_POLICY
+    hook_policy = hook_policy or DEFAULT_HOOK_POLICY
+    directions = dict(directions or {})
+    beats = {
+        beat.beat_id: beat
+        for beat in read_beats(
+            narration_slices(scene_plan, shot_plan), policy=editorial_policy
+        )
+    }
+    timeline = shot_timeline(shot_plan)
+    reading, interruption = _shot_reading_and_interruption(shot_plan, motion_events)
+
+    roles = [
+        (beats[s.shot_id].editorial_role if s.shot_id in beats else None)
+        for s in shot_plan.shots
+    ]
+
+    out: list[TreatmentInput] = []
+    for index, shot in enumerate(shot_plan.shots):
+        beat = beats.get(shot.shot_id)
+        start = timeline[shot.shot_id][0]
+        in_hook = hook_policy.covers(start)
+        if beat is not None:
+            intensity = classify_intensity(
+                beat.narration, beat.importance, in_hook=in_hook
+            )
+            role = beat.editorial_role
+        else:
+            intensity = "high" if in_hook else "medium"
+            role = None
+        neighbours = roles[max(index - 1, 0) : index + 2]
+        direction = directions.get(shot.shot_id)
+        scale = shot.scale if shot.scale in _TREATMENT_STATE_SCALES else "medium"
+        # A "contain" fit is genuinely un-croppable (a document, a graphic, a
+        # screen): only a hold or a gentle push. A layered / inset band is
+        # softer — a treatment may still cut inside it, but the projection
+        # keeps that composition rather than trading it for a raw crop.
+        preserve = _fit_for(shot) == "contain"
+        out.append(
+            TreatmentInput(
+                shot_id=shot.shot_id,
+                duration_seconds=shot.duration_seconds,
+                asset_type=shot.asset_type,
+                scale=scale,
+                intensity=intensity,
+                editorial_role=role,
+                visual_role=shot.visual_role,
+                visual_intent_class=shot.visual_intent_class,
+                base_composition=direction.composition if direction else "fullscreen",
+                base_motion=(
+                    direction.motion
+                    if direction
+                    else (shot.framing.get("motion") if shot.framing.get("motion") in IMAGE_MOTIONS else "static_hold")
+                    if shot.asset_type == "image"
+                    else "static_hold"
+                ),
+                base_grade=direction.grade if direction else "standard",
+                crop_bias=str(shot.framing.get("crop_bias", "center") or "center"),
+                reading_moment=reading.get(shot.shot_id, False),
+                graphic_interruption=interruption.get(shot.shot_id, False),
+                preserve_frame=preserve,
+                contrast_neighbor=("contrast" in [r for r in neighbours if r]),
+            )
+        )
+    return tuple(out)
+
+
+def plan_shot_editorial_treatment(
+    scene_plan: "ScenePlan",
+    shot_plan: "ShotPlan",
+    *,
+    directions: "Mapping[str, VisualDirection] | None" = None,
+    motion_events: "Sequence[MotionTextEvent]" = (),
+    policy: "EditorialTreatmentPolicy | None" = None,
+    seed: int | None = None,
+    editorial_policy: "EditorialPolicy | None" = None,
+    hook_policy: "HookPolicy | None" = None,
+) -> "EditorialTreatmentPlan":
+    """The whole editorial-treatment plan for a planned video, in one call."""
+
+    return plan_editorial_treatment(
+        treatment_inputs(
+            scene_plan,
+            shot_plan,
+            directions=directions,
+            motion_events=motion_events,
+            editorial_policy=editorial_policy,
+            hook_policy=hook_policy,
+        ),
+        policy=policy or DEFAULT_TREATMENT_POLICY,
+        seed=shot_plan.seed if seed is None else seed,
+        plan_id=f"{shot_plan.script_id}-editorial-treatment",
+        shot_plan_id=shot_plan.plan_id,
+        script_id=shot_plan.script_id,
+    )
+
+
+def _base_motion_for(shot: "Shot", direction: "VisualDirection | None") -> str:
+    if direction is not None:
+        return direction.motion
+    motion = shot.framing.get("motion")
+    return motion if motion in IMAGE_MOTIONS else "static_hold"
+
+
 def _direction_parameters(
     direction: "VisualDirection | None",
 ) -> "dict[str, Any]":
@@ -2535,6 +2709,7 @@ def shot_plan_to_edit_plan(
     target_format: TargetFormat,
     extra_operations: tuple[EditOperation, ...] = (),
     directions: "Mapping[str, VisualDirection] | None" = None,
+    treatments: "Mapping[str, EditorialTreatment] | None" = None,
 ) -> EditPlan:
     """Translate a resolved shot plan into a valid ``EditPlan`` for the
     ``video-sequence`` renderer.
@@ -2547,6 +2722,13 @@ def shot_plan_to_edit_plan(
     ``directions`` attaches a Visual Direction to each segment — the framing,
     the editorial move and the grade intensity. Without it the operations are
     byte-identical to what this produced before the layer existed.
+
+    ``treatments`` attaches an Editorial Treatment: a shot with a non-static
+    treatment is *expanded* into the two or three consecutive segment
+    operations its states describe — an internal cut from a wide plate to a
+    detail, a reframe, a freeze — so the renderer executes a planned cut rather
+    than a single held frame. A ``static_hold`` treatment, and any shot without
+    one, is left exactly as Visual Direction rendered it.
     """
 
     if not isinstance(shot_plan, ShotPlan):
@@ -2559,6 +2741,7 @@ def shot_plan_to_edit_plan(
         raise PlanningError(f"asset_bindings is missing: {', '.join(sorted(missing))}")
 
     directions = dict(directions or {})
+    treatments = dict(treatments or {})
     cursor: dict[str, float] = {}
     sources: list[str] = []
     operations: list[EditOperation] = []
@@ -2570,6 +2753,59 @@ def shot_plan_to_edit_plan(
         direction = directions.get(shot.shot_id)
         if direction is not None and not isinstance(direction, VisualDirection):
             raise PlanningError("directions must contain VisualDirection values")
+        treatment = treatments.get(shot.shot_id)
+        if treatment is not None and not isinstance(treatment, EditorialTreatment):
+            raise PlanningError("treatments must contain EditorialTreatment values")
+
+        clip_start = cursor.get(path, 0.0) if shot.asset_type == "video" else 0.0
+        if shot.asset_type == "video":
+            cursor[path] = clip_start + shot.duration_seconds
+
+        expand = treatment is not None and treatment.treatment != "static_hold"
+        if expand:
+            state_params = treatment_segments(
+                treatment,
+                asset_type=shot.asset_type,
+                total_seconds=shot.duration_seconds,
+                base_composition=direction.composition if direction else "fullscreen",
+                base_crop_bias=(
+                    direction.crop_bias
+                    if direction
+                    else str(shot.framing.get("crop_bias", "center") or "center")
+                ),
+                base_grade=direction.grade if direction else "standard",
+                base_motion=_base_motion_for(shot, direction),
+                base_text_zone=direction.text_zone if direction else None,
+                fit=fit,
+                window_start=clip_start,
+            )
+            for index, params in enumerate(state_params, start=1):
+                op_id = f"{shot.shot_id}__t{index:02d}"
+                if shot.asset_type == "image":
+                    operations.append(
+                        EditOperation(
+                            operation_id=op_id,
+                            kind="image_clip",
+                            source=path,
+                            parameters=params,
+                        )
+                    )
+                else:
+                    params = dict(params)
+                    start = params.pop("start_seconds")
+                    end = params.pop("end_seconds")
+                    operations.append(
+                        EditOperation(
+                            operation_id=op_id,
+                            kind="sequence_clip",
+                            source=path,
+                            start_seconds=start,
+                            end_seconds=end,
+                            parameters=params,
+                        )
+                    )
+            continue
+
         if shot.asset_type == "image":
             params: dict[str, Any] = {"duration_seconds": shot.duration_seconds}
             if fit is not None:
@@ -2588,9 +2824,8 @@ def shot_plan_to_edit_plan(
                 )
             )
         else:
-            start = cursor.get(path, 0.0)
+            start = clip_start
             end = start + shot.duration_seconds
-            cursor[path] = end
             params = {}
             if fit is not None:
                 params["fit"] = fit

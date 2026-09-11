@@ -222,10 +222,59 @@ class PlannedLayerTests(unittest.TestCase):
         )
         cls.events = plan_shot_motion_typography(cls.scene_plan, cls.shot_plan)
 
-    def test_the_layer_is_sparse_rather_than_a_caption_track(self):
-        self.assertGreaterEqual(len(self.events), 8)
+    def test_the_layer_is_a_dense_edit_but_not_a_caption_track(self):
+        # the editorial-density contract: many interventions, packed unevenly,
+        # but still bounded and still not one graphic per spoken word
+        self.assertGreaterEqual(len(self.events), 20)
         self.assertLessEqual(len(self.events), DEFAULT_TYPOGRAPHY_POLICY.max_events)
-        self.assertLess(len(self.events), len(self.shot_plan.shots) / 2)
+        spoken = sum(
+            len(row[1].split())
+            for row in __import__(
+                "video_generator.domain.planning", fromlist=["narration_slices"]
+            ).narration_slices(self.scene_plan, self.shot_plan)
+        )
+        # a caption track would have one cue every two or three words
+        self.assertLess(len(self.events), spoken / 6)
+
+    def test_intensity_is_spent_unevenly(self):
+        levels = {e.intensity for e in self.events}
+        # a real edit leans harder on some beats than others
+        self.assertGreater(len(levels), 1)
+        for event in self.events:
+            self.assertIn(event.intensity, ("low", "medium", "high", "peak"))
+            self.assertIn(event.intent, __import__(
+                "video_generator.domain.typography", fromlist=["EDITORIAL_INTENTS"]
+            ).EDITORIAL_INTENTS)
+            self.assertIn(event.surface, ("bare", "scrim", "card"))
+
+    def test_a_built_statement_arrives_in_ordered_touching_fragments(self):
+        chains: dict[str, list] = {}
+        for event in self.events:
+            if event.chain_id is not None:
+                chains.setdefault(event.chain_id, []).append(event)
+        # if the script offers no chainable sentence that is allowed; but when
+        # a chain exists it must be whole, ordered and contiguous
+        for chain_id, parts in chains.items():
+            parts.sort(key=lambda e: e.start_seconds)
+            self.assertGreaterEqual(len(parts), 2, chain_id)
+            self.assertEqual(
+                [p.chain_position for p in parts], list(range(len(parts))), chain_id
+            )
+            self.assertTrue(all(p.chain_length == len(parts) for p in parts), chain_id)
+            for earlier, later in zip(parts, parts[1:]):
+                self.assertLessEqual(earlier.start_seconds, later.start_seconds)
+
+    def test_no_stretch_stays_dark_for_long(self):
+        end = max(e.end_seconds for e in self.events)
+        covered = sorted((e.start_seconds, e.end_seconds) for e in self.events)
+        cursor = 0.0
+        longest = 0.0
+        for start, finish in covered:
+            longest = max(longest, start - cursor)
+            cursor = max(cursor, finish)
+        longest = max(longest, end - cursor)
+        # the coverage pass keeps the frame from going quiet for a whole shot
+        self.assertLess(longest, DEFAULT_TYPOGRAPHY_POLICY.max_dark_seconds + 3.0)
 
     def test_events_are_ordered_and_never_overlap(self):
         for earlier, later in zip(self.events, self.events[1:]):
@@ -241,10 +290,16 @@ class PlannedLayerTests(unittest.TestCase):
         }
         for event in self.events:
             source = event.rationale.split("from: ")[-1]
-            self.assertTrue(
-                _is_derived([block.text for block in event.blocks], source),
-                f"{event.text!r} copies {source!r}",
-            )
+            # a built statement, a parallel run and a lifted quote are *meant*
+            # to reproduce the sentence in stages; every other event is still a
+            # reading of it, never a crop
+            if event.intent not in (
+                "statement_build", "sequence", "quote_fragment"
+            ):
+                self.assertTrue(
+                    _is_derived([block.text for block in event.blocks], source),
+                    f"{event.text!r} copies {source!r}",
+                )
             self.assertIn(event.beat_id, beats)
 
     def test_every_multi_block_event_carries_a_hierarchy(self):
@@ -259,7 +314,11 @@ class PlannedLayerTests(unittest.TestCase):
             self.assertIn(event.motion, TEXT_MOTIONS)
 
     def test_the_same_layout_never_runs_twice_back_to_back(self):
+        # a recessive margin label is always edge-aligned and exempt; the main
+        # editorial compositions never repeat
         for earlier, later in zip(self.events, self.events[1:]):
+            if "annotation" in (earlier.intent, later.intent):
+                continue
             self.assertNotEqual(earlier.layout, later.layout)
 
     def test_the_accent_is_never_spent_on_two_events_running(self):
