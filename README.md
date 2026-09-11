@@ -96,6 +96,7 @@ python -m video_generator narrate output\narration.wav --text-file inputs\script
 python -m video_generator narrate output\narration.wav --text-file inputs\script.txt --lang pt-br --voice pm_alex --prosody --lead-in-seconds 0.6 --units-out output\narration-units.json --json
 python -m video_generator align-captions output\narration.wav --text-file inputs\script.txt --out output\captions.srt --language pt --words-out output\narration-words.json --json
 python -m video_generator review-cuts videos\2026-09-10.mp4 --project canal_dev_01 --language pt --json
+python -m video_generator apply-cuts videos\2026-09-10.mp4 --cuts projects\canal_dev_01\cut-review.json --project canal_dev_01 --json
 python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\roteiro_narracao.txt --total-duration 270 --target 1920x1080:cover --seed 20260902 --out-dir output
 python -m video_generator plan-scenes --from-text assets\desumanizando\video_01\roteiro_narracao.txt --total-duration 270 --target 1920x1080:cover --seed 20260902 --overrides projects\desumanizando_01\shot-overrides.json --out-dir output --force
 python -m video_generator plan-scenes --from-text output\preview\roteiro.txt --total-duration 68.347 --target 1920x1080:cover --seed 20260903 --semantic --hook-seconds 40 --text-events output\preview\text-events.json --out-dir output\preview\plan
@@ -222,8 +223,30 @@ Saída em `projects/<slug>/` com `--project` (ou `--out-dir <dir>`):
 (folha legível: resumo, blocos, trecho a trecho), `transcript.json` (saída crua
 do Whisper, para re-analisar sem re-transcrever) e `source-audio.wav`. Recusa
 sobrescrever. `--language` (padrão `pt`), `--model` e `--long-silence` (padrão
-1,5 s) ajustam a passada. Aplicar os cortes, zoom, B-roll, legendas e motion
-typography sobre a sua gravação são camadas futuras.
+1,5 s) ajustam a passada. Zoom, B-roll, legendas e motion typography sobre a sua
+gravação são camadas futuras.
+
+`apply-cuts` é a etapa seguinte: pega **cortes aprovados** e produz um preview
+limpo, sem tocar no original. `--cuts` aceita um `cut-review.json` (usa os
+segmentos com `suggestion == "CUT"`, incluindo silêncios aprovados; **`REVIEW`
+nunca é aplicado**) ou um `approved-cuts.json`
+(`schemas/approved-cuts-v1.schema.json`: `{"cuts": [{"start", "end"}],
+"cut_padding_before_ms", "cut_padding_after_ms"}`). O `domain/cuts.py` — puro —
+consolida os intervalos (ordena, une sobrepostos/encostados, clampa à duração,
+descarta inválidos), aplica uma **margem de segurança conservadora que encolhe
+cada corte para dentro** (padrão 50 ms de cada lado; `--pad-before-ms` /
+`--pad-after-ms` ou os campos do arquivo) — se a margem esvaziar um corte, ele é
+descartado (preferir preservar áudio) — e calcula os trechos a manter. O
+`render_cut_preview` (adapter) monta tudo em **um passe FFmpeg** com
+`filter_complex`: `trim`/`atrim` por trecho, microfade de áudio de 10 ms só nas
+junções internas (nunca fade visual), `concat`, e re-encode `libopenh264` no FPS
+original + `aac` — cortes frame-accurate, A/V em sync, sem tela preta nem frame
+perdido. Saída em `projects/<slug>/` (ou `--out-dir`):
+`<stem>_edited_preview.mp4` + `edit-preview.json` (cortes consolidados, trechos
+mantidos, margens, duração original/removida/final). Ao fim: duração original,
+removida, final, nº de cortes e o arquivo; avisa se o preview medido destoar
+mais de 0,5 s do esperado. Aplicar o corte é só isto — nada de zoom, B-roll,
+typography, legenda, música, efeito ou cor ainda.
 
 `plan-scenes` transforma um roteiro narrado em um plano visual denso **antes** do
 `EditPlan`, de forma pura e determinística (sem FFmpeg, sem download de asset, sem
@@ -683,12 +706,13 @@ config/ffmpeg-lock.json         proveniência e integridade do FFmpeg local apro
 docs/                           visão, arquitetura e linguagem audiovisual
 schemas/                        contratos JSON públicos v1 (request, brief, edit-plan, manifest, narrative-script,
                                 scene-plan, shot-plan, asset-requirements, screen-deck, visual-curation-set, visual-lock,
-                                cut-review)
+                                cut-review, approved-cuts)
 src/video_generator/domain/     modelos e invariantes puros; planning.py é o Scene/Shot Planner,
                                 editorial.py a camada semântica (beats, ênfases, identidade)
                                 screens.py o layout dos screen cards do developer-video,
                                 takes.py a análise editorial de vídeo gravado
-                                (takes_lexicon.py só os léxicos pt-BR)
+                                (takes_lexicon.py só os léxicos pt-BR),
+                                cuts.py a aritmética de intervalos de corte
                                 e curation.py o checkpoint humano antes do render
 src/video_generator/adapters/   integrações locais, incluindo ffprobe e FFmpeg
 src/video_generator/workflows/  recorte e primeira timeline sequencial

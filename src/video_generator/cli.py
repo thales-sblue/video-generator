@@ -27,6 +27,7 @@ from video_generator.adapters import (
     extract_audio,
     extract_segment,
     probe_media,
+    render_cut_preview,
     render_screen_card,
     synthesize_narration,
     transcribe_segments,
@@ -88,6 +89,7 @@ from video_generator.domain.takes import (
     analyze_take,
     render_review_markdown,
 )
+from video_generator.domain.cuts import CutsError, plan_cuts
 from video_generator.domain.typography import (
     DEFAULT_TYPOGRAPHY_POLICY,
     MotionTypographyPolicy,
@@ -483,6 +485,41 @@ def build_parser() -> argparse.ArgumentParser:
         "re-render cut-review.md from it (for an agent-authored or hand-edited review)",
     )
     review_cuts_cmd.add_argument(
+        "--json", action="store_true", help="print the summary as JSON"
+    )
+
+    apply_cuts_cmd = subparsers.add_parser(
+        "apply-cuts",
+        help="cut a real video down to its approved KEEP ranges and render a preview",
+    )
+    apply_cuts_cmd.add_argument("video", help="the original recorded video")
+    apply_cuts_cmd.add_argument(
+        "--cuts",
+        required=True,
+        help="a cut-review.json (its CUT segments are used) or an approved-cuts.json",
+    )
+    apply_cuts_dest = apply_cuts_cmd.add_mutually_exclusive_group(required=True)
+    apply_cuts_dest.add_argument(
+        "--project", help="project slug; writes under projects/<slug>/"
+    )
+    apply_cuts_dest.add_argument(
+        "--out-dir", help="explicit output directory for the preview"
+    )
+    apply_cuts_cmd.add_argument(
+        "--out-name",
+        help="preview file name (default: <video-stem>_edited_preview.mp4)",
+    )
+    apply_cuts_cmd.add_argument(
+        "--pad-before-ms",
+        type=float,
+        help="safety margin kept before each cut (default: file value or 50)",
+    )
+    apply_cuts_cmd.add_argument(
+        "--pad-after-ms",
+        type=float,
+        help="safety margin kept after each cut (default: file value or 50)",
+    )
+    apply_cuts_cmd.add_argument(
         "--json", action="store_true", help="print the summary as JSON"
     )
 
@@ -1130,6 +1167,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_align_captions(args)
     if args.command == "review-cuts":
         return _run_review_cuts(args)
+    if args.command == "apply-cuts":
+        return _run_apply_cuts(args)
     if args.command == "plan-scenes":
         return _run_plan_scenes(args)
     if args.command == "resolve-assets":
@@ -1461,6 +1500,207 @@ def _run_review_cuts(args: argparse.Namespace) -> int:
             "transcript_path": str(transcript_path.resolve()),
         },
     )
+    return 0
+
+
+def _approved_cuts_from_file(payload: object) -> tuple[list[dict[str, str]], dict[str, float]]:
+    """Return ``(raw_cuts, padding_overrides)`` from a cuts file payload.
+
+    Accepts a ``cut-review.json`` (every segment whose ``suggestion`` is
+    ``CUT`` -- including approved ``LONG_PAUSE`` rows -- is taken) or an
+    ``approved-cuts.json`` (``{"cuts": [{"start", "end"}], ...}``). ``REVIEW``
+    rows are never taken.
+    """
+
+    if not isinstance(payload, dict):
+        raise CutsError("the cuts file must contain a JSON object")
+    padding: dict[str, float] = {}
+    for key, name in (
+        ("cut_padding_before_ms", "pad_before_seconds"),
+        ("cut_padding_after_ms", "pad_after_seconds"),
+    ):
+        if key in payload:
+            value = payload[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise CutsError(f"{key} must be a non-negative number")
+            padding[name] = float(value) / 1000
+
+    if "segments" in payload and "cuts" not in payload:
+        raw = [
+            {"start": seg["start"], "end": seg["end"]}
+            for seg in payload.get("segments", [])
+            if isinstance(seg, dict) and seg.get("suggestion") == "CUT"
+        ]
+        return raw, padding
+    if "cuts" in payload:
+        cuts = payload["cuts"]
+        if not isinstance(cuts, list):
+            raise CutsError("'cuts' must be a list")
+        raw = []
+        for entry in cuts:
+            if not isinstance(entry, dict) or "start" not in entry or "end" not in entry:
+                raise CutsError("each cut needs a 'start' and an 'end'")
+            raw.append({"start": entry["start"], "end": entry["end"]})
+        return raw, padding
+    raise CutsError("the cuts file has neither 'cuts' nor 'segments'")
+
+
+def _run_apply_cuts(args: argparse.Namespace) -> int:
+    source = Path(args.video).expanduser()
+    if not source.is_file():
+        print(f"Apply-cuts error: video does not exist: {source}", file=sys.stderr)
+        return 2
+    source = source.resolve()
+
+    out_dir = _review_out_dir(args)
+    if out_dir is None:
+        return 2
+    if os.path.normcase(str(out_dir)) == os.path.normcase(str(source.parent)):
+        print(
+            "Apply-cuts error: output directory must not be the source's own folder",
+            file=sys.stderr,
+        )
+        return 2
+
+    stem = source.stem
+    out_name = args.out_name or f"{stem}_edited_preview.mp4"
+    if not out_name.lower().endswith(".mp4") or "/" in out_name or "\\" in out_name:
+        print("Apply-cuts error: --out-name must be a bare .mp4 file name", file=sys.stderr)
+        return 2
+    preview_path = out_dir / out_name
+    plan_path = out_dir / "edit-preview.json"
+    for existing in (preview_path, plan_path):
+        if existing.exists():
+            print(f"Apply-cuts error: output already exists: {existing}", file=sys.stderr)
+            return 2
+
+    cuts_file = Path(args.cuts).expanduser()
+    try:
+        payload = json.loads(cuts_file.read_text(encoding="utf-8"))
+    except OSError as exc:
+        print(f"Apply-cuts error: cannot read {cuts_file}: {exc}", file=sys.stderr)
+        return 2
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(f"Apply-cuts error: {cuts_file} is not valid UTF-8 JSON: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        raw_cuts, padding = _approved_cuts_from_file(payload)
+    except CutsError as exc:
+        print(f"Apply-cuts error: {exc}", file=sys.stderr)
+        return 2
+    if args.pad_before_ms is not None:
+        if args.pad_before_ms < 0:
+            print("Apply-cuts error: --pad-before-ms must be non-negative", file=sys.stderr)
+            return 2
+        padding["pad_before_seconds"] = args.pad_before_ms / 1000
+    if args.pad_after_ms is not None:
+        if args.pad_after_ms < 0:
+            print("Apply-cuts error: --pad-after-ms must be non-negative", file=sys.stderr)
+            return 2
+        padding["pad_after_seconds"] = args.pad_after_ms / 1000
+
+    if not raw_cuts:
+        print(
+            "Apply-cuts error: no approved CUT ranges to apply (REVIEW is never applied)",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        probe = probe_media(source)
+    except ProbeError as exc:
+        print(f"Apply-cuts error: cannot inspect the video: {exc}", file=sys.stderr)
+        return 2
+    if probe.duration_seconds is None or probe.duration_seconds <= 0:
+        print("Apply-cuts error: the video has no usable duration", file=sys.stderr)
+        return 2
+
+    try:
+        cuts, keeps, outcome = plan_cuts(
+            raw_cuts, duration_seconds=float(probe.duration_seconds), **padding
+        )
+    except CutsError as exc:
+        print(f"Apply-cuts error: {exc}", file=sys.stderr)
+        return 2
+    if not cuts or not keeps:
+        print(
+            "Apply-cuts error: after the safety margin there is nothing left to cut",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        artifact = render_cut_preview(
+            source,
+            preview_path,
+            [(interval.start_seconds, interval.end_seconds) for interval in keeps],
+        )
+    except FFmpegError as exc:
+        print(f"Apply-cuts error: {exc}", file=sys.stderr)
+        return 2
+
+    measured_seconds: float | None = None
+    try:
+        measured = probe_media(preview_path)
+        measured_seconds = measured.duration_seconds
+    except ProbeError:
+        pass
+
+    plan = {
+        "schema_version": 1,
+        "source_path": str(source),
+        "preview_path": str(preview_path.resolve()),
+        "frame_rate": artifact.frame_rate,
+        "padding_seconds": {
+            "before": padding.get("pad_before_seconds", 0.05),
+            "after": padding.get("pad_after_seconds", 0.05),
+        },
+        "cuts": [interval.to_dict() for interval in cuts],
+        "keep": [interval.to_dict() for interval in keeps],
+        **outcome.to_dict(),
+    }
+    if measured_seconds is not None:
+        plan["measured_final_seconds"] = round(float(measured_seconds), 3)
+    try:
+        plan_path.write_text(
+            json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        print(f"Apply-cuts error: cannot write {plan_path}: {exc}", file=sys.stderr)
+        return 2
+
+    drift = (
+        abs(measured_seconds - outcome.final_seconds)
+        if measured_seconds is not None
+        else None
+    )
+    summary = {
+        "preview_path": str(preview_path.resolve()),
+        "plan_path": str(plan_path.resolve()),
+        **outcome.to_dict(),
+        "segments_kept": artifact.segment_count,
+        "frame_rate": artifact.frame_rate,
+        "measured_final_seconds": (
+            round(float(measured_seconds), 3) if measured_seconds is not None else None
+        ),
+    }
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(f"Preview: {summary['preview_path']}")
+        print(f"Plan: {summary['plan_path']}")
+        print(
+            f"Original {summary['original_duration']} - removed "
+            f"{summary['removed_duration']} = final {summary['final_duration']} "
+            f"({summary['cuts_applied']} cut(s), {summary['segments_kept']} kept segment(s))"
+        )
+        if drift is not None and drift > 0.5:
+            print(
+                f"Warning: rendered preview is {measured_seconds:.2f} s, "
+                f"{drift:.2f} s off the expected {outcome.final_seconds:.2f} s"
+            )
     return 0
 
 

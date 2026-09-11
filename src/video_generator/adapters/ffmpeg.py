@@ -269,6 +269,18 @@ class SequenceArtifact:
     motion_text_count: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class CutPreviewArtifact:
+    """A preview cut from one source by concatenating the kept time ranges."""
+
+    source_path: str
+    output_path: str
+    segment_count: int
+    kept_seconds: float
+    file_size_bytes: int
+    frame_rate: str | None = None
+
+
 IMAGE_TIMELINE_FPS = 30
 # Above this many characters the filter graph is handed to FFmpeg as a file.
 # Well under the ~32k Windows command-line ceiling, and low enough that the
@@ -2368,4 +2380,255 @@ def compose_video_sequence(
         narration_lead_in_seconds=narration_lead_in,
         music_duck_db=duck,
         directed_segment_count=len(directed_indices),
+    )
+
+
+# Audio-only micro-fade at each internal join, long enough to kill a click and
+# short enough to be inaudible. No video fade -- the picture cut is hard.
+_CUT_JOIN_FADE_SECONDS = 0.010
+
+
+def _probe_frame_rate(source: Path, executable_lookup=shutil.which) -> str | None:
+    """The source's ``r_frame_rate`` (e.g. ``30000/1001``), or ``None``.
+
+    A tiny standalone ffprobe call: the shared ``StreamProbe`` is built
+    positionally in many callers, so its shape is left alone.
+    """
+
+    try:
+        probe = resolve_media_tool("ffprobe", path_lookup=executable_lookup)
+    except ToolResolutionError:
+        return None
+    if probe is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                probe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=r_frame_rate",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(source),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            shell=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if completed.returncode != 0:
+        return None
+    value = (completed.stdout or "").strip().splitlines()[0:1]
+    rate = value[0].strip() if value else ""
+    if not re.fullmatch(r"\d+(?:/\d+)?", rate) or rate in ("0", "0/0", "0/1"):
+        return None
+    return rate
+
+
+def render_cut_preview(
+    source_path: str | Path,
+    output_path: str | Path,
+    keep_intervals: Sequence[tuple[float, float]],
+    *,
+    video_bitrate: str = "5M",
+    audio_bitrate: str = "192k",
+    timeout_seconds: float = 1800,
+) -> CutPreviewArtifact:
+    """Concatenate the kept time ranges of one video into a new preview file.
+
+    ``keep_intervals`` is an ordered, non-overlapping sequence of
+    ``(start_seconds, end_seconds)`` pairs to keep -- the complement of the
+    approved cuts, as computed by :func:`video_generator.domain.cuts.keep_intervals`.
+
+    One FFmpeg pass with a ``filter_complex``: each range is ``trim``/``atrim``
+    with its PTS reset, a 10 ms audio fade is laid on both sides of every
+    internal join (never on the outer edges, never on the picture), and the
+    ranges are ``concat``-ed. Video is re-encoded with ``libopenh264`` at the
+    source frame rate and audio to AAC, so the cuts are frame-accurate and the
+    A/V stays in sync with no black frames or dropped frames between segments.
+    The source is never modified and an existing ``output_path`` is refused.
+    """
+
+    source = Path(source_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    timeout = _time(timeout_seconds, "timeout_seconds")
+    if timeout == 0:
+        raise FFmpegError("timeout_seconds must be greater than zero")
+    if not source.exists() or not source.is_file():
+        raise FFmpegError(f"source does not exist or is not a file: {source}")
+    if os.path.normcase(str(source)) == os.path.normcase(str(output)):
+        raise FFmpegError("output_path must not overwrite the source")
+    if output.exists():
+        raise FFmpegError(f"output already exists: {output}")
+    if output.suffix.lower() != ".mp4":
+        raise FFmpegError("cut preview requires an .mp4 output_path")
+
+    ranges: list[tuple[float, float]] = []
+    previous_end = 0.0
+    for pair in keep_intervals:
+        if (
+            not isinstance(pair, (tuple, list))
+            or len(pair) != 2
+        ):
+            raise FFmpegError("each keep interval must be a (start, end) pair")
+        start = _time(pair[0], "keep start")
+        end = _time(pair[1], "keep end")
+        if end <= start:
+            raise FFmpegError("keep interval end must be after its start")
+        if start + 1e-9 < previous_end:
+            raise FFmpegError("keep intervals must be ordered and non-overlapping")
+        previous_end = end
+        ranges.append((start, end))
+    if not ranges:
+        raise FFmpegError("at least one keep interval is required")
+
+    try:
+        executable = resolve_media_tool("ffmpeg", path_lookup=shutil.which)
+    except ToolResolutionError as exc:
+        raise FFmpegError(str(exc)) from exc
+    if executable is None:
+        raise FFmpegError("ffmpeg is not available locally or on PATH")
+
+    frame_rate = _probe_frame_rate(source)
+    fps_step = f"fps={frame_rate}," if frame_rate else ""
+
+    filters: list[str] = []
+    labels: list[str] = []
+    last = len(ranges) - 1
+    for index, (start, end) in enumerate(ranges):
+        s = _fmt(start)
+        e = _fmt(end)
+        filters.append(
+            f"[0:v]trim=start={s}:end={e},setpts=PTS-STARTPTS,{fps_step}"
+            f"setsar=1[v{index}]"
+        )
+        span = end - start
+        afades = ""
+        if index != 0 and span > 2 * _CUT_JOIN_FADE_SECONDS:
+            afades += f",afade=t=in:st=0:d={_fmt(_CUT_JOIN_FADE_SECONDS)}"
+        if index != last and span > 2 * _CUT_JOIN_FADE_SECONDS:
+            afades += (
+                f",afade=t=out:st={_fmt(span - _CUT_JOIN_FADE_SECONDS)}"
+                f":d={_fmt(_CUT_JOIN_FADE_SECONDS)}"
+            )
+        filters.append(
+            f"[0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS{afades}[a{index}]"
+        )
+        labels.append(f"[v{index}][a{index}]")
+    filters.append(
+        f"{''.join(labels)}concat=n={len(ranges)}:v=1:a=1[outv][outa]"
+    )
+    filter_graph = ";".join(filters)
+
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{output.stem}-",
+            suffix=output.suffix,
+            dir=output.parent,
+            delete=False,
+        ) as reserved:
+            temporary = Path(reserved.name)
+    except OSError as exc:
+        raise FFmpegError(f"could not prepare output path: {output}") from exc
+
+    command = [executable, "-v", "error", "-nostdin", "-y", "-i", str(source)]
+    filter_file: Path | None = None
+    if len(filter_graph) > _FILTER_GRAPH_INLINE_LIMIT:
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix=f".{output.stem}-filter-",
+                suffix=".txt",
+                dir=output.parent,
+                delete=False,
+            ) as handle:
+                filter_file = Path(handle.name)
+                handle.write(filter_graph)
+        except OSError as exc:
+            _cleanup(temporary)
+            raise FFmpegError(f"could not write the filter graph beside: {output}") from exc
+        command.extend(["-filter_complex_script", str(filter_file)])
+    else:
+        command.extend(["-filter_complex", filter_graph])
+    command.extend(["-map", "[outv]", "-map", "[outa]"])
+    if frame_rate:
+        command.extend(["-r", frame_rate])
+    command.extend(
+        [
+            "-fps_mode",
+            "cfr",
+            "-c:v",
+            "libopenh264",
+            "-b:v",
+            str(video_bitrate),
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            str(audio_bitrate),
+            "-movflags",
+            "+faststart",
+            str(temporary),
+        ]
+    )
+
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _cleanup(temporary)
+        if filter_file is not None:
+            _cleanup(filter_file)
+        raise FFmpegError("ffmpeg timed out while rendering the cut preview") from exc
+    except OSError as exc:
+        _cleanup(temporary)
+        if filter_file is not None:
+            _cleanup(filter_file)
+        raise FFmpegError(
+            f"ffmpeg could not render the cut preview: {type(exc).__name__}"
+        ) from exc
+    if filter_file is not None:
+        _cleanup(filter_file)
+
+    if completed.returncode != 0:
+        _cleanup(temporary)
+        detail = (completed.stderr or completed.stdout).strip()
+        suffix = f": {detail}" if detail else ""
+        raise FFmpegError(f"ffmpeg exited with {completed.returncode}{suffix}")
+    if not temporary.is_file() or temporary.stat().st_size == 0:
+        _cleanup(temporary)
+        raise FFmpegError("ffmpeg reported success without creating a non-empty preview")
+    try:
+        os.link(temporary, output)
+    except OSError as exc:
+        _cleanup(temporary)
+        raise FFmpegError(f"could not publish output without overwriting: {output}") from exc
+    _cleanup(temporary)
+    try:
+        size = output.stat().st_size
+    except OSError as exc:
+        raise FFmpegError(f"could not inspect published output: {output}") from exc
+    return CutPreviewArtifact(
+        source_path=str(source),
+        output_path=str(output),
+        segment_count=len(ranges),
+        kept_seconds=sum(end - start for start, end in ranges),
+        file_size_bytes=size,
+        frame_rate=frame_rate,
     )

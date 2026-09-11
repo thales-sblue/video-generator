@@ -64,7 +64,11 @@ CLI disponível hoje: `doctor`, `inspect`, `preflight`, `extract-segment`,
 (análise editorial de vídeo gravado: transcrição inteira + silêncios → trechos
 `KEEP`/`REVIEW`/`CUT` com categoria semântica, blocos removíveis e resumo de
 edição; `provenance` `heuristic`|`agent`; `--from-review` regenera o `.md`; sem
-render), `plan-scenes`
+render), `apply-cuts` (aplica cortes aprovados — `cut-review.json` só `CUT`, ou
+`approved-cuts.json` — com margem de segurança que encolhe o corte; um passe
+FFmpeg `trim`/`atrim`/`concat` + microfade de áudio, re-encode no FPS original;
+gera `<stem>_edited_preview.mp4` + `edit-preview.json`; `REVIEW` nunca é
+aplicado), `plan-scenes`
 (com `--semantic`, `--visual-relevance`, `--visual-direction`,
 `--editorial-translation` e `--motion-typography`),
 `resolve-assets`, `render-screens`, `curate-visuals`, `visual-lock`,

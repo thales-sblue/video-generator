@@ -22,6 +22,7 @@ class SchemaTests(unittest.TestCase):
             "visual-curation-set-v1.schema.json",
             "visual-lock-v1.schema.json",
             "cut-review-v1.schema.json",
+            "approved-cuts-v1.schema.json",
         }
         schema_paths = set((REPOSITORY_ROOT / "schemas").glob("*.schema.json"))
 

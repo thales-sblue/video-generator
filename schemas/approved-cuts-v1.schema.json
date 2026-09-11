@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/thales-sblue/video-generator/schemas/approved-cuts-v1.schema.json",
+  "title": "ApprovedCuts v1",
+  "description": "A human-approved list of time ranges to remove from one recorded video, consumed by the `apply-cuts` CLI. Only explicitly approved CUT ranges belong here; REVIEW ranges and un-approved silences must not be included. A conservative safety margin shrinks every cut inward so a dry cut never clips a word. `apply-cuts` also accepts a `cut-review.json` directly (it takes the segments whose suggestion is CUT), so this file is optional.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "cuts"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "source_path": {"type": "string", "minLength": 1},
+    "cut_padding_before_ms": {"type": "number", "minimum": 0, "maximum": 2000},
+    "cut_padding_after_ms": {"type": "number", "minimum": 0, "maximum": 2000},
+    "cuts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start", "end"],
+        "properties": {
+          "start": {"type": "string", "pattern": "^(?:[0-9]+:)?[0-5]?[0-9]:[0-5]?[0-9](?:\\.[0-9]{1,3})?$"},
+          "end": {"type": "string", "pattern": "^(?:[0-9]+:)?[0-5]?[0-9]:[0-5]?[0-9](?:\\.[0-9]{1,3})?$"},
+          "reason": {"type": "string"}
+        }
+      }
+    }
+  }
+}
