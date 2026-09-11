@@ -25,6 +25,9 @@ render-cache/
 renders/
 proxies/
 
+# Local worktrees (subagent-driven-development scratch workspaces)
+.worktrees/
+
 # Editors and OS
 .idea/
 .vscode/
@@ -76,6 +79,7 @@ output/*
 *.[gG][iI][fF]
 *.[wW][eE][bB][pP]
 *.[bB][mM][pP]
+!tests/fixtures/*.[pP][nN][gG]
 *.[tT][iI][fF]
 *.[tT][iI][fF][fF]
 *.[hH][eE][iI][cC]
