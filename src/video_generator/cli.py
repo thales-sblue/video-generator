@@ -18,18 +18,26 @@ from video_generator.adapters import (
     AudioArtifact,
     CutSegment,
     FFmpegError,
+    FreezeEvent,
     KokoroError,
     MediaProbe,
     NarrationArtifact,
     ProbeError,
+    RemotionError,
     ScreenRenderError,
     SegmentArtifact,
+    VisualEffectsArtifact,
+    ZoomEvent,
+    composite_overlay,
     detect_silences,
     extract_audio,
     extract_segment,
     probe_media,
+    probe_video_dimensions,
     render_cut_preview,
+    render_motion_overlay,
     render_screen_card,
+    render_visual_effects,
     synthesize_narration,
     transcribe_segments,
     transcribe_words,
@@ -92,9 +100,25 @@ from video_generator.domain.takes import (
 )
 from video_generator.domain.cuts import (
     CutsError,
+    TimelineSegment,
     build_timeline,
     consolidate_asides,
+    parse_clock,
     plan_cuts,
+)
+from video_generator.domain.motion_graphics import (
+    MotionGraphicsError,
+    build_motion_graphics_scene,
+)
+from video_generator.domain.visual_intervention import (
+    DEFAULT_KEYWORDS,
+    ReviewedSegment,
+    VisualPlanError,
+    build_visual_plan,
+    load_manual_events,
+    overlay_events_to_motion_text,
+    plan_from_dict,
+    shift_overlay_events_after_freezes,
 )
 from video_generator.domain.typography import (
     DEFAULT_TYPOGRAPHY_POLICY,
@@ -530,6 +554,66 @@ def build_parser() -> argparse.ArgumentParser:
         help="safety margin kept after each cut (default: file value or 50)",
     )
     apply_cuts_cmd.add_argument(
+        "--json", action="store_true", help="print the summary as JSON"
+    )
+
+    plan_visual_cmd = subparsers.add_parser(
+        "plan-visual-edits",
+        help="plan zoom/keyword/diagram/conflict/freeze cues over an already-cut preview",
+    )
+    plan_visual_cmd.add_argument(
+        "--cut-review",
+        required=True,
+        help="the cut-review.json this take was analysed from (its transcript "
+        "and KEEP/CUT suggestions drive automatic keyword spotting)",
+    )
+    plan_visual_cmd.add_argument(
+        "--edit-preview",
+        required=True,
+        help="the edit-preview.json apply-cuts produced (its timeline remaps "
+        "keyword timestamps into the cut preview's own timeline)",
+    )
+    plan_visual_cmd.add_argument(
+        "--manual",
+        help="a JSON list of hand-placed diagram/conflict/freeze/zoom cues, "
+        "already timed against the cut preview",
+    )
+    plan_visual_cmd.add_argument(
+        "--keywords",
+        help="comma-separated keyword list overriding the channel's default vocabulary",
+    )
+    plan_visual_dest = plan_visual_cmd.add_mutually_exclusive_group(required=True)
+    plan_visual_dest.add_argument(
+        "--project", help="project slug; writes under projects/<slug>/"
+    )
+    plan_visual_dest.add_argument(
+        "--out-dir", help="explicit output directory for visual-plan.json"
+    )
+    plan_visual_cmd.add_argument(
+        "--json", action="store_true", help="print the summary as JSON"
+    )
+
+    apply_visual_cmd = subparsers.add_parser(
+        "apply-visual-plan",
+        help="render a visual-plan.json (zoom/freeze via FFmpeg, keyword/diagram/"
+        "conflict via Remotion) over an already-cut preview",
+    )
+    apply_visual_cmd.add_argument("video", help="the cut preview video (apply-cuts' output)")
+    apply_visual_cmd.add_argument(
+        "--plan", required=True, help="the visual-plan.json plan-visual-edits produced"
+    )
+    apply_visual_dest = apply_visual_cmd.add_mutually_exclusive_group(required=True)
+    apply_visual_dest.add_argument(
+        "--project", help="project slug; writes under projects/<slug>/"
+    )
+    apply_visual_dest.add_argument(
+        "--out-dir", help="explicit output directory for the rendered video"
+    )
+    apply_visual_cmd.add_argument(
+        "--out-name",
+        help="final file name (default: <video-stem>_visual.mp4)",
+    )
+    apply_visual_cmd.add_argument(
         "--json", action="store_true", help="print the summary as JSON"
     )
 
@@ -1179,6 +1263,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_review_cuts(args)
     if args.command == "apply-cuts":
         return _run_apply_cuts(args)
+    if args.command == "plan-visual-edits":
+        return _run_plan_visual_edits(args)
+    if args.command == "apply-visual-plan":
+        return _run_apply_visual_plan(args)
     if args.command == "plan-scenes":
         return _run_plan_scenes(args)
     if args.command == "resolve-assets":
@@ -1774,6 +1862,265 @@ def _run_apply_cuts(args: argparse.Namespace) -> int:
                 f"Warning: rendered preview is {measured_seconds:.2f} s, "
                 f"{drift:.2f} s off the expected {expected_rendered_seconds:.2f} s"
             )
+    return 0
+
+
+def _run_plan_visual_edits(args: argparse.Namespace) -> int:
+    out_dir = _review_out_dir(args)
+    if out_dir is None:
+        return 2
+    plan_path = out_dir / "visual-plan.json"
+    if plan_path.exists():
+        print(f"Plan-visual-edits error: output already exists: {plan_path}", file=sys.stderr)
+        return 2
+
+    cut_review_path = Path(args.cut_review).expanduser()
+    try:
+        cut_review_payload = json.loads(cut_review_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        print(f"Plan-visual-edits error: cannot read {cut_review_path}: {exc}", file=sys.stderr)
+        return 2
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(
+            f"Plan-visual-edits error: {cut_review_path} is not valid UTF-8 JSON: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        raw_segments = cut_review_payload["segments"]
+        reviewed = tuple(
+            ReviewedSegment(
+                start_seconds=parse_clock(item["start"]),
+                end_seconds=parse_clock(item["end"]),
+                text=item["text"],
+                suggestion=item["suggestion"],
+            )
+            for item in raw_segments
+        )
+    except (KeyError, TypeError, CutsError) as exc:
+        print(f"Plan-visual-edits error: malformed cut-review.json: {exc}", file=sys.stderr)
+        return 2
+
+    edit_preview_path = Path(args.edit_preview).expanduser()
+    try:
+        edit_preview_payload = json.loads(edit_preview_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        print(
+            f"Plan-visual-edits error: cannot read {edit_preview_path}: {exc}", file=sys.stderr
+        )
+        return 2
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(
+            f"Plan-visual-edits error: {edit_preview_path} is not valid UTF-8 JSON: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        raw_timeline = edit_preview_payload["timeline"]
+        timeline = tuple(
+            TimelineSegment(
+                start_seconds=parse_clock(item["start"]),
+                end_seconds=parse_clock(item["end"]),
+                kind=item["kind"],
+                speed=item.get("speed", 1.0),
+                label=item.get("label"),
+            )
+            for item in raw_timeline
+        )
+    except (KeyError, TypeError, CutsError) as exc:
+        print(f"Plan-visual-edits error: malformed edit-preview.json: {exc}", file=sys.stderr)
+        return 2
+
+    manual_events: tuple = ()
+    if args.manual:
+        manual_path = Path(args.manual).expanduser()
+        try:
+            manual_payload = json.loads(manual_path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            print(f"Plan-visual-edits error: cannot read {manual_path}: {exc}", file=sys.stderr)
+            return 2
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            print(
+                f"Plan-visual-edits error: {manual_path} is not valid UTF-8 JSON: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            manual_events = load_manual_events(manual_payload)
+        except VisualPlanError as exc:
+            print(f"Plan-visual-edits error: {exc}", file=sys.stderr)
+            return 2
+
+    keywords = DEFAULT_KEYWORDS
+    if args.keywords:
+        keywords = tuple(word.strip() for word in args.keywords.split(",") if word.strip())
+
+    try:
+        plan = build_visual_plan(
+            reviewed, timeline=timeline, manual_events=manual_events, keywords=keywords
+        )
+    except VisualPlanError as exc:
+        print(f"Plan-visual-edits error: {exc}", file=sys.stderr)
+        return 2
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(
+        json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    if args.json:
+        print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(f"Plan: {plan_path.resolve()}")
+        print(f"{len(plan.events)} visual event(s):")
+        for event in plan.events:
+            start = _clock_for_display(event.start_seconds)
+            label = ", ".join(event.text) if event.text else (event.label or "")
+            print(f"  {start}  {event.kind.upper():9s}  {label}")
+    return 0
+
+
+def _clock_for_display(seconds: float) -> str:
+    total_ms = int(round(max(0.0, seconds) * 1000))
+    minutes, remainder = divmod(total_ms // 1000, 60)
+    return f"{minutes:02d}:{remainder:02d}.{total_ms % 1000:03d}"
+
+
+def _run_apply_visual_plan(args: argparse.Namespace) -> int:
+    source = Path(args.video).expanduser()
+    if not source.is_file():
+        print(f"Apply-visual-plan error: video does not exist: {source}", file=sys.stderr)
+        return 2
+    source = source.resolve()
+
+    out_dir = _review_out_dir(args)
+    if out_dir is None:
+        return 2
+
+    out_name = args.out_name or f"{source.stem}_visual.mp4"
+    if not out_name.lower().endswith(".mp4") or "/" in out_name or "\\" in out_name:
+        print("Apply-visual-plan error: --out-name must be a bare .mp4 file name", file=sys.stderr)
+        return 2
+    final_path = out_dir / out_name
+    effects_path = out_dir / f"{source.stem}_visual_effects.mp4"
+    overlay_path = out_dir / f"{source.stem}_overlay.mov"
+    summary_path = out_dir / "visual-preview.json"
+    for existing in (final_path, effects_path, overlay_path, summary_path):
+        if existing.exists():
+            print(f"Apply-visual-plan error: output already exists: {existing}", file=sys.stderr)
+            return 2
+
+    plan_path = Path(args.plan).expanduser()
+    try:
+        plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        print(f"Apply-visual-plan error: cannot read {plan_path}: {exc}", file=sys.stderr)
+        return 2
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(f"Apply-visual-plan error: {plan_path} is not valid UTF-8 JSON: {exc}", file=sys.stderr)
+        return 2
+    try:
+        plan = plan_from_dict(plan_payload)
+    except VisualPlanError as exc:
+        print(f"Apply-visual-plan error: {exc}", file=sys.stderr)
+        return 2
+    if not plan.events:
+        print("Apply-visual-plan error: the plan has no events to apply", file=sys.stderr)
+        return 2
+
+    shifted = shift_overlay_events_after_freezes(plan)
+    zoom_events = [
+        ZoomEvent(event.start_seconds, event.end_seconds, event.scale)
+        for event in shifted
+        if event.kind == "zoom"
+    ]
+    freeze_events = [
+        FreezeEvent(event.start_seconds, event.freeze_seconds, event.label)
+        for event in shifted
+        if event.kind == "freeze"
+    ]
+    overlay_events = tuple(
+        event for event in shifted if event.kind in ("keyword", "diagram", "conflict")
+    )
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    effects_artifact: VisualEffectsArtifact | None = None
+    if zoom_events or freeze_events:
+        try:
+            effects_artifact = render_visual_effects(
+                source, effects_path, zoom_events=zoom_events, freeze_events=freeze_events
+            )
+        except FFmpegError as exc:
+            print(f"Apply-visual-plan error: {exc}", file=sys.stderr)
+            return 2
+        base_video = effects_path
+        total_duration = effects_artifact.duration_seconds
+    else:
+        base_video = source
+        try:
+            total_duration = probe_video_dimensions(source).duration_seconds
+        except FFmpegError as exc:
+            print(f"Apply-visual-plan error: {exc}", file=sys.stderr)
+            return 2
+
+    if overlay_events:
+        try:
+            dimensions = probe_video_dimensions(base_video)
+        except FFmpegError as exc:
+            print(f"Apply-visual-plan error: {exc}", file=sys.stderr)
+            return 2
+        motion_events = overlay_events_to_motion_text(overlay_events)
+        try:
+            scene = build_motion_graphics_scene(
+                motion_events,
+                width=dimensions.width,
+                height=dimensions.height,
+                fps=dimensions.fps,
+                duration_seconds=total_duration,
+            )
+        except MotionGraphicsError as exc:
+            print(f"Apply-visual-plan error: {exc}", file=sys.stderr)
+            return 2
+        try:
+            render_motion_overlay(scene, overlay_path, timeout_seconds=3600.0)
+        except RemotionError as exc:
+            print(f"Apply-visual-plan error: Remotion could not render the overlay: {exc}", file=sys.stderr)
+            return 2
+        try:
+            composite_overlay(base_video, overlay_path, final_path)
+        except FFmpegError as exc:
+            print(f"Apply-visual-plan error: {exc}", file=sys.stderr)
+            return 2
+    else:
+        try:
+            os.link(base_video, final_path)
+        except OSError as exc:
+            print(f"Apply-visual-plan error: could not publish {final_path}: {exc}", file=sys.stderr)
+            return 2
+
+    summary = {
+        "schema_version": 1,
+        "source_path": str(source),
+        "final_path": str(final_path.resolve()),
+        "event_count": len(plan.events),
+        "zoom_count": len(zoom_events),
+        "freeze_count": len(freeze_events),
+        "overlay_count": len(overlay_events),
+        "duration_seconds": round(total_duration, 3),
+    }
+    summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(f"Final: {summary['final_path']}")
+        print(
+            f"{summary['zoom_count']} zoom, {summary['freeze_count']} freeze, "
+            f"{summary['overlay_count']} overlay event(s); {summary['duration_seconds']:.2f}s"
+        )
     return 0
 
 

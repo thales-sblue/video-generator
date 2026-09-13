@@ -2834,3 +2834,648 @@ def render_cut_preview(
         frame_rate=frame_rate,
         aside_count=len(labelled),
     )
+
+
+# --- editorial visual layer: punch-in zooms and freeze frames -----------------
+#
+# Applied to an already-cut preview (``render_cut_preview``'s output), never to
+# raw footage. Both are deliberately crude: a zoom is a plain crop+scale, a
+# freeze is a held frame with an optional Comic-Sans label, matching the
+# channel's hand-made, unpolished visual identity rather than a slick editing
+# look.
+
+
+@dataclass(frozen=True, slots=True)
+class ZoomEvent:
+    """A punch-in over an existing span: no cut, the picture scales in and back."""
+
+    start_seconds: float
+    end_seconds: float
+    scale: float = 1.08
+
+
+@dataclass(frozen=True, slots=True)
+class FreezeEvent:
+    """Hold the frame at ``at_seconds`` for ``freeze_seconds``, optionally labelled."""
+
+    at_seconds: float
+    freeze_seconds: float = 1.0
+    label: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VisualEffectsArtifact:
+    source_path: str
+    output_path: str
+    zoom_count: int
+    freeze_count: int
+    file_size_bytes: int
+    duration_seconds: float
+
+
+_FREEZE_FRAME_EPS = 0.05
+MIN_KEEP_SECONDS_FOR_VISUAL_EFFECTS = 0.04
+
+
+def _probe_video_width(source: Path, executable_lookup=shutil.which) -> int | None:
+    """The source's video width in pixels, or ``None``. See :func:`_probe_video_height`."""
+
+    try:
+        probe = resolve_media_tool("ffprobe", path_lookup=executable_lookup)
+    except ToolResolutionError:
+        return None
+    if probe is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                probe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(source),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            shell=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if completed.returncode != 0:
+        return None
+    value = (completed.stdout or "").strip().splitlines()[0:1]
+    try:
+        width = int(value[0]) if value else 0
+    except ValueError:
+        return None
+    return width if width > 0 else None
+
+
+def _probe_duration_seconds(source: Path, executable_lookup=shutil.which) -> float | None:
+    """The source container's total duration in seconds, or ``None``."""
+
+    try:
+        probe = resolve_media_tool("ffprobe", path_lookup=executable_lookup)
+    except ToolResolutionError:
+        return None
+    if probe is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                probe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(source),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            shell=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if completed.returncode != 0:
+        return None
+    value = (completed.stdout or "").strip().splitlines()[0:1]
+    try:
+        duration = float(value[0]) if value else 0.0
+    except ValueError:
+        return None
+    return duration if duration > 0 else None
+
+
+def _probe_audio_format(source: Path, executable_lookup=shutil.which) -> tuple[int, str]:
+    """``(sample_rate_hz, channel_layout)`` for the source's audio, defaulted on failure.
+
+    Used only to synthesize matching silence for a freeze's audio gap -- the
+    default (48 kHz stereo) is never wrong in a way that breaks the render, it
+    just means the concat below normalises every branch through the same
+    ``aformat`` regardless.
+    """
+
+    try:
+        probe = resolve_media_tool("ffprobe", path_lookup=executable_lookup)
+    except ToolResolutionError:
+        return 48000, "stereo"
+    if probe is None:
+        return 48000, "stereo"
+    try:
+        completed = subprocess.run(
+            [
+                probe,
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=sample_rate,channels",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(source),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            shell=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return 48000, "stereo"
+    if completed.returncode != 0:
+        return 48000, "stereo"
+    lines = (completed.stdout or "").strip().splitlines()
+    try:
+        sample_rate = int(lines[0]) if lines else 48000
+        channels = int(lines[1]) if len(lines) > 1 else 2
+    except ValueError:
+        return 48000, "stereo"
+    layout = "mono" if channels == 1 else "stereo"
+    return (sample_rate if sample_rate > 0 else 48000), layout
+
+
+@dataclass(frozen=True, slots=True)
+class VideoDimensions:
+    width: int
+    height: int
+    frame_rate: str
+    fps: float
+    duration_seconds: float
+
+
+def probe_video_dimensions(source_path: str | Path) -> VideoDimensions:
+    """Width, height, frame rate and duration a Remotion scene needs to match a video.
+
+    Fails closed with :class:`FFmpegError` rather than guessing a canvas size
+    that would silently letterbox or mis-time the overlay.
+    """
+
+    source = Path(source_path).expanduser().resolve()
+    if not source.exists() or not source.is_file():
+        raise FFmpegError(f"source does not exist or is not a file: {source}")
+    width = _probe_video_width(source)
+    height = _probe_video_height(source)
+    frame_rate = _probe_frame_rate(source)
+    duration = _probe_duration_seconds(source)
+    if width is None or height is None or frame_rate is None or duration is None:
+        raise FFmpegError(f"could not probe width/height/frame rate/duration for: {source}")
+    if "/" in frame_rate:
+        num, _, den = frame_rate.partition("/")
+        fps = float(num) / float(den)
+    else:
+        fps = float(frame_rate)
+    return VideoDimensions(
+        width=width, height=height, frame_rate=frame_rate, fps=fps, duration_seconds=duration
+    )
+
+
+def render_visual_effects(
+    source_path: str | Path,
+    output_path: str | Path,
+    *,
+    zoom_events: Sequence[ZoomEvent] = (),
+    freeze_events: Sequence[FreezeEvent] = (),
+    video_bitrate: str = "5M",
+    audio_bitrate: str = "192k",
+    timeout_seconds: float = 1800,
+) -> VisualEffectsArtifact:
+    """Apply punch-in zooms and freeze frames to an already-cut preview.
+
+    One FFmpeg pass: the source is split at every freeze's timestamp, each
+    plain span keeps its own picture (with a crop+scale zoom baked in wherever
+    a :class:`ZoomEvent` falls fully inside it) and each freeze span holds a
+    single frame for its duration with a short silent audio gap in its place,
+    optionally labelled the same way an ``aside`` is (a Comic-Sans, boxed,
+    single-line ``drawtext``, read from a private text file, never from the
+    filter graph). The pieces are re-concatenated with the same 10 ms audio
+    micro-fades ``render_cut_preview`` uses at internal joins. The source is
+    never modified and an existing ``output_path`` is refused.
+    """
+
+    source = Path(source_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    timeout = _time(timeout_seconds, "timeout_seconds")
+    if timeout == 0:
+        raise FFmpegError("timeout_seconds must be greater than zero")
+    if not source.exists() or not source.is_file():
+        raise FFmpegError(f"source does not exist or is not a file: {source}")
+    if os.path.normcase(str(source)) == os.path.normcase(str(output)):
+        raise FFmpegError("output_path must not overwrite the source")
+    if output.exists():
+        raise FFmpegError(f"output already exists: {output}")
+    if output.suffix.lower() != ".mp4":
+        raise FFmpegError("visual effects preview requires an .mp4 output_path")
+
+    zooms = sorted(zoom_events, key=lambda z: z.start_seconds)
+    for previous, current in zip(zooms, zooms[1:]):
+        if current.start_seconds < previous.end_seconds:
+            raise FFmpegError("zoom events must not overlap")
+    for zoom in zooms:
+        if not (1.0 < zoom.scale <= 1.6):
+            raise FFmpegError("zoom scale must be in (1.0, 1.6]")
+        if zoom.end_seconds <= zoom.start_seconds:
+            raise FFmpegError("zoom end must be after its start")
+
+    freezes = sorted(freeze_events, key=lambda f: f.at_seconds)
+    for previous, current in zip(freezes, freezes[1:]):
+        if current.at_seconds <= previous.at_seconds:
+            raise FFmpegError("freeze events must be at distinct, ordered timestamps")
+    for freeze in freezes:
+        if freeze.freeze_seconds <= 0:
+            raise FFmpegError("freeze_seconds must be positive")
+
+    if not zooms and not freezes:
+        raise FFmpegError("at least one zoom or freeze event is required")
+
+    try:
+        executable = resolve_media_tool("ffmpeg", path_lookup=shutil.which)
+    except ToolResolutionError as exc:
+        raise FFmpegError(str(exc)) from exc
+    if executable is None:
+        raise FFmpegError("ffmpeg is not available locally or on PATH")
+
+    duration = _probe_duration_seconds(source)
+    if duration is None:
+        raise FFmpegError(f"could not determine the source duration: {source}")
+    for freeze in freezes:
+        if freeze.at_seconds >= duration:
+            raise FFmpegError("freeze timestamp is at or past the end of the source")
+    for zoom in zooms:
+        if zoom.end_seconds > duration:
+            raise FFmpegError("zoom window extends past the end of the source")
+
+    frame_rate = _probe_frame_rate(source)
+    fps_step = f"fps={frame_rate}," if frame_rate else ""
+    sample_rate, channel_layout = _probe_audio_format(source)
+
+    height = _probe_video_height(source)
+    width = _probe_video_width(source)
+    if zooms and (height is None or width is None):
+        raise FFmpegError(
+            "a zoom event needs the source's width and height, and at least "
+            "one could not be probed"
+        )
+
+    labelled = [freeze for freeze in freezes if freeze.label is not None]
+    font_size = _ASIDE_FONT_SIZE_FALLBACK
+    if labelled and height:
+        font_size = max(16, round(height * _ASIDE_FONT_HEIGHT_FRACTION))
+
+    # A punch-in here is a hard cut to a tighter, constant framing and a hard
+    # cut back -- not an eased ramp. FFmpeg's crop filter cannot read the
+    # timestamp in its w/h expressions (only x/y can), so an eased zoom would
+    # need zoompan, whose per-frame resampling does not stay 1:1 with a plain
+    # video source. A deliberately un-animated punch-in sidesteps that
+    # entirely and, for a channel whose whole identity is hand-made and a
+    # little rough, is arguably the more honest choice anyway.
+    zoom_by_window: dict[tuple[float, float], ZoomEvent] = {
+        (zoom.start_seconds, zoom.end_seconds): zoom for zoom in zooms
+    }
+    freeze_by_at: dict[float, FreezeEvent] = {freeze.at_seconds: freeze for freeze in freezes}
+
+    cut_points = sorted(
+        {0.0, duration, *freeze_by_at, *(w[0] for w in zoom_by_window), *(w[1] for w in zoom_by_window)}
+    )
+
+    filters: list[str] = []
+    concat_labels: list[str] = []
+    label_files: dict[str, str] = {}
+    piece_index = 0
+    freeze_index = 0
+    for point_index in range(len(cut_points) - 1):
+        a, b = cut_points[point_index], cut_points[point_index + 1]
+
+        freeze = freeze_by_at.get(a)
+        if freeze is not None:
+            hold_start = min(a, max(duration - _FREEZE_FRAME_EPS, 0.0))
+            hold_end = min(hold_start + _FREEZE_FRAME_EPS, duration)
+            hs, he = _fmt(hold_start), _fmt(hold_end)
+            grabbed = max(hold_end - hold_start, 1e-6)
+            stop_duration = max(freeze.freeze_seconds - grabbed, 0.0)
+            freeze_video_steps = [
+                f"trim=start={hs}:end={he}",
+                "setpts=PTS-STARTPTS",
+                f"tpad=stop_mode=clone:stop_duration={_fmt(stop_duration)}",
+            ]
+            if freeze.label is not None:
+                name = f"freeze{freeze_index:03d}.txt"
+                label_files[name] = freeze.label
+                freeze_video_steps.append(
+                    "drawtext="
+                    f"font={_ASIDE_FONT}:textfile={name}:"
+                    f"fontcolor=white:fontsize={font_size}:"
+                    f"x={_ASIDE_LABEL_MARGIN}:y=h-th-{_ASIDE_LABEL_MARGIN}:"
+                    "box=1:boxcolor=black@0.55:boxborderw=10"
+                )
+            freeze_video_steps.append(f"{fps_step}setsar=1" if fps_step else "setsar=1")
+            fvlabel = f"p{piece_index}v"
+            falabel = f"p{piece_index}a"
+            filters.append(f"[0:v]{','.join(freeze_video_steps)}[{fvlabel}]")
+            filters.append(
+                f"anullsrc=r={sample_rate}:cl={channel_layout}:d={_fmt(freeze.freeze_seconds)}[{falabel}]"
+            )
+            concat_labels.append(f"[{fvlabel}][{falabel}]")
+            piece_index += 1
+            freeze_index += 1
+
+        if b - a < MIN_KEEP_SECONDS_FOR_VISUAL_EFFECTS:
+            continue
+        s, e = _fmt(a), _fmt(b)
+        video_steps = [f"trim=start={s}:end={e}", "setpts=PTS-STARTPTS"]
+        zoom = zoom_by_window.get((a, b))
+        if zoom is not None:
+            crop_w = _even(width / zoom.scale)
+            crop_h = _even(height / zoom.scale)
+            crop_x = (width - crop_w) // 2
+            crop_y = (height - crop_h) // 2
+            video_steps.append(
+                f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={width}:{height}"
+            )
+        video_steps.append(f"{fps_step}setsar=1" if fps_step else "setsar=1")
+        vlabel = f"p{piece_index}v"
+        alabel = f"p{piece_index}a"
+        filters.append(f"[0:v]{','.join(video_steps)}[{vlabel}]")
+        filters.append(
+            f"[0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS,"
+            f"aformat=sample_rates={sample_rate}:channel_layouts={channel_layout}[{alabel}]"
+        )
+        concat_labels.append(f"[{vlabel}][{alabel}]")
+        piece_index += 1
+
+    if not concat_labels:
+        raise FFmpegError("visual effects plan produced an empty timeline")
+
+    filters.append(
+        f"{''.join(concat_labels)}concat=n={len(concat_labels)}:v=1:a=1[outv][outa]"
+    )
+    filter_graph = ";".join(filters)
+
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{output.stem}-",
+            suffix=output.suffix,
+            dir=output.parent,
+            delete=False,
+        ) as reserved:
+            temporary = Path(reserved.name)
+    except OSError as exc:
+        raise FFmpegError(f"could not prepare output path: {output}") from exc
+
+    command = [executable, "-v", "error", "-nostdin", "-y", "-i", str(source)]
+    filter_file: Path | None = None
+    workspace_dir = tempfile.TemporaryDirectory(prefix=f".{output.stem}-labels-")
+    try:
+        for name, text in label_files.items():
+            (Path(workspace_dir.name) / name).write_text(text, encoding="utf-8")
+    except OSError as exc:
+        workspace_dir.cleanup()
+        _cleanup(temporary)
+        raise FFmpegError(f"could not write a freeze label beside: {output}") from exc
+
+    if len(filter_graph) > _FILTER_GRAPH_INLINE_LIMIT:
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix=f".{output.stem}-filter-",
+                suffix=".txt",
+                dir=output.parent,
+                delete=False,
+            ) as handle:
+                filter_file = Path(handle.name)
+                handle.write(filter_graph)
+        except OSError as exc:
+            workspace_dir.cleanup()
+            _cleanup(temporary)
+            raise FFmpegError(f"could not write the filter graph beside: {output}") from exc
+        command.extend(["-filter_complex_script", str(filter_file)])
+    else:
+        command.extend(["-filter_complex", filter_graph])
+    command.extend(["-map", "[outv]", "-map", "[outa]"])
+    if frame_rate:
+        command.extend(["-r", frame_rate])
+    command.extend(
+        [
+            "-fps_mode",
+            "cfr",
+            "-c:v",
+            "libopenh264",
+            "-b:v",
+            str(video_bitrate),
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            str(audio_bitrate),
+            "-movflags",
+            "+faststart",
+            str(temporary),
+        ]
+    )
+
+    try:
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                shell=False,
+                cwd=workspace_dir.name,
+            )
+        except subprocess.TimeoutExpired as exc:
+            _cleanup(temporary)
+            if filter_file is not None:
+                _cleanup(filter_file)
+            raise FFmpegError("ffmpeg timed out while rendering visual effects") from exc
+        except OSError as exc:
+            _cleanup(temporary)
+            if filter_file is not None:
+                _cleanup(filter_file)
+            raise FFmpegError(
+                f"ffmpeg could not render visual effects: {type(exc).__name__}"
+            ) from exc
+        if filter_file is not None:
+            _cleanup(filter_file)
+
+        if completed.returncode != 0:
+            _cleanup(temporary)
+            detail = (completed.stderr or completed.stdout).strip()
+            suffix = f": {detail}" if detail else ""
+            raise FFmpegError(f"ffmpeg exited with {completed.returncode}{suffix}")
+        if not temporary.is_file() or temporary.stat().st_size == 0:
+            _cleanup(temporary)
+            raise FFmpegError("ffmpeg reported success without creating a non-empty output")
+    finally:
+        workspace_dir.cleanup()
+    try:
+        os.link(temporary, output)
+    except OSError as exc:
+        _cleanup(temporary)
+        raise FFmpegError(f"could not publish output without overwriting: {output}") from exc
+    _cleanup(temporary)
+    try:
+        size = output.stat().st_size
+    except OSError as exc:
+        raise FFmpegError(f"could not inspect published output: {output}") from exc
+
+    total_duration = duration + sum(freeze.freeze_seconds for freeze in freezes)
+    return VisualEffectsArtifact(
+        source_path=str(source),
+        output_path=str(output),
+        zoom_count=len(zooms),
+        freeze_count=len(freezes),
+        file_size_bytes=size,
+        duration_seconds=round(total_duration, 3),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class OverlayCompositeArtifact:
+    base_path: str
+    overlay_path: str
+    output_path: str
+    file_size_bytes: int
+
+
+def composite_overlay(
+    base_video_path: str | Path,
+    overlay_clip_path: str | Path,
+    output_path: str | Path,
+    *,
+    video_bitrate: str = "5M",
+    audio_bitrate: str = "192k",
+    timeout_seconds: float = 1800,
+) -> OverlayCompositeArtifact:
+    """Composite a transparent motion-graphics overlay over a base video.
+
+    ``overlay_clip_path`` is a Remotion-rendered alpha clip (see
+    :func:`video_generator.adapters.remotion.render_motion_overlay`) already
+    timed against the base video's own timeline -- it is placed at ``0:0`` for
+    its own duration and simply lets the base picture show through wherever it
+    is transparent (``overlay=format=auto``). Audio passes through untouched.
+    """
+
+    base = Path(base_video_path).expanduser().resolve()
+    overlay = Path(overlay_clip_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    timeout = _time(timeout_seconds, "timeout_seconds")
+    if timeout == 0:
+        raise FFmpegError("timeout_seconds must be greater than zero")
+    if not base.exists() or not base.is_file():
+        raise FFmpegError(f"base video does not exist or is not a file: {base}")
+    if not overlay.exists() or not overlay.is_file():
+        raise FFmpegError(f"overlay clip does not exist or is not a file: {overlay}")
+    if output.exists():
+        raise FFmpegError(f"output already exists: {output}")
+    if output.suffix.lower() != ".mp4":
+        raise FFmpegError("overlay composite requires an .mp4 output_path")
+
+    try:
+        executable = resolve_media_tool("ffmpeg", path_lookup=shutil.which)
+    except ToolResolutionError as exc:
+        raise FFmpegError(str(exc)) from exc
+    if executable is None:
+        raise FFmpegError("ffmpeg is not available locally or on PATH")
+
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{output.stem}-",
+            suffix=output.suffix,
+            dir=output.parent,
+            delete=False,
+        ) as reserved:
+            temporary = Path(reserved.name)
+    except OSError as exc:
+        raise FFmpegError(f"could not prepare output path: {output}") from exc
+
+    command = [
+        executable,
+        "-v",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        str(base),
+        "-i",
+        str(overlay),
+        "-filter_complex",
+        "[0:v][1:v]overlay=0:0:format=auto:eof_action=pass[outv]",
+        "-map",
+        "[outv]",
+        "-map",
+        "0:a",
+        "-c:v",
+        "libopenh264",
+        "-b:v",
+        str(video_bitrate),
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        str(audio_bitrate),
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        str(temporary),
+    ]
+
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _cleanup(temporary)
+        raise FFmpegError("ffmpeg timed out compositing the overlay") from exc
+    except OSError as exc:
+        _cleanup(temporary)
+        raise FFmpegError(f"could not launch ffmpeg: {type(exc).__name__}") from exc
+
+    if completed.returncode != 0:
+        _cleanup(temporary)
+        detail = (completed.stderr or completed.stdout).strip()
+        suffix = f": {detail}" if detail else ""
+        raise FFmpegError(f"ffmpeg exited with {completed.returncode}{suffix}")
+    if not temporary.is_file() or temporary.stat().st_size == 0:
+        _cleanup(temporary)
+        raise FFmpegError("ffmpeg reported success without creating a non-empty composite")
+
+    try:
+        os.link(temporary, output)
+    except OSError as exc:
+        _cleanup(temporary)
+        raise FFmpegError(f"could not publish output without overwriting: {output}") from exc
+    _cleanup(temporary)
+    try:
+        size = output.stat().st_size
+    except OSError as exc:
+        raise FFmpegError(f"could not inspect published output: {output}") from exc
+
+    return OverlayCompositeArtifact(
+        base_path=str(base),
+        overlay_path=str(overlay),
+        output_path=str(output),
+        file_size_bytes=size,
+    )
